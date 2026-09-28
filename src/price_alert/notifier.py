@@ -29,6 +29,8 @@ SYMBOL_COLOR = Fore.LIGHTYELLOW_EX
 # 涨跌幅高亮只用终端标准 16 色，保证各终端都能显示；取正文方向色的亮色版本。
 SURGE_CHANGE_COLOR = Fore.LIGHTGREEN_EX
 DROP_CHANGE_COLOR = Fore.LIGHTRED_EX
+# 交易地址是辅助信息，置灰以免抢走提醒正文的注意力；同样只用标准 16 色中的亮黑（灰）。
+TRADE_URL_COLOR = Fore.LIGHTBLACK_EX
 
 
 class Notifier(Protocol):
@@ -87,10 +89,14 @@ class ConsoleNotifier:
 
     async def send(self, alert: PriceAlert) -> None:
         text = colorize_alert(alert, format_alert(alert), self.colors)
-        # 完整网址独占一行且不着色，便于终端自动识别链接，不支持点击时也能直接复制。
+        # 完整网址独占一行，便于终端自动识别链接，不支持点击时也能直接复制。
+        # 颜色转义只包在整行首尾、不插入网址中间，终端按显示文本识别链接，不受影响。
         trade_url = f"https://www.gate.com/zh/futures/USDT/{_url_path_segment(alert.symbol)}"
+        url_line = f"交易地址：{trade_url}"
+        if self.colors:
+            url_line = f"{TRADE_URL_COLOR}{url_line}{Style.RESET_ALL}"
         terminal_bell = "\a" if self.beep and not self._system_sound else ""
-        print(f"{terminal_bell}{text}\n交易地址：{trade_url}", flush=True)
+        print(f"{terminal_bell}{text}\n{url_line}", flush=True)
         # 音效约 1.65 秒，等待播完会让集中异动时的文字提醒逐条排队延迟，所以放到后台；
         # 上一次仍在播放时直接跳过，一波异动只响一次。
         if self._system_sound and (self._sound_task is None or self._sound_task.done()):

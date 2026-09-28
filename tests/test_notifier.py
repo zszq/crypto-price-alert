@@ -13,6 +13,7 @@ from price_alert.notifier import (
     MACOS_SOUND_PLAYER,
     SURGE_CHANGE_COLOR,
     SYMBOL_COLOR,
+    TRADE_URL_COLOR,
     AlertDispatcher,
     ConsoleNotifier,
     JsonlNotifier,
@@ -334,6 +335,15 @@ def test_console_trade_url_keeps_chinese_symbol_readable(monkeypatch, capsys):
     asyncio.run(ConsoleNotifier(beep=False, colors=False).send(make_alert(symbol="龙虾_USDT")))
 
     assert "交易地址：https://www.gate.com/zh/futures/USDT/龙虾_USDT\n" in capsys.readouterr().out
+
+
+def test_console_trade_url_is_gray_when_colors_enabled(monkeypatch, capsys):
+    monkeypatch.setattr("price_alert.notifier.sys.platform", "linux")
+
+    asyncio.run(ConsoleNotifier(beep=False, colors=True).send(make_alert(symbol="BTC_USDT")))
+
+    url = "https://www.gate.com/zh/futures/USDT/BTC_USDT"
+    assert f"\n{TRADE_URL_COLOR}交易地址：{url}{Style.RESET_ALL}\n" in capsys.readouterr().out
 
 
 def test_console_trade_url_still_escapes_ascii_reserved_characters(monkeypatch, capsys):
