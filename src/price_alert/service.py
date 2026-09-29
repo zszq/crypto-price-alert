@@ -9,13 +9,13 @@ import time
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 
-from price_alert.config import INTERVAL_SECONDS, AppConfig
+from price_alert.config import INTERVAL_SECONDS, AppConfig, WindowConfig
 from price_alert.detector import AtrMoveDetector
 from price_alert.gate import GateRestClient, GateTradeFeed, RateLimiter
 from price_alert.models import Candle, ContractTicker
 from price_alert.notifier import AlertDispatcher, build_notifiers
 from price_alert.universe import select_liquid_contracts
-from price_alert.windows import MoveWindow, WindowEvaluation
+from price_alert.windows import MoveWindow, WindowEvaluation, WindowName
 
 LOGGER = logging.getLogger(__name__)
 
@@ -26,31 +26,21 @@ def build_windows(config: AppConfig, cooldown_seconds: int | None = None) -> lis
     cooldown_seconds 覆盖全部窗口的冷却，供 simulate 这类不需要冷却的场景使用。
     """
     indicator = config.indicator
-    windows = [
+    configured: list[tuple[WindowName, WindowConfig]] = [("short", indicator.short_window)]
+    if indicator.long_window.enabled:
+        configured.append(("long", indicator.long_window))
+    return [
         MoveWindow(
-            name="short",
-            lookback_seconds=indicator.lookback_seconds,
-            trigger_atr_multiple=indicator.trigger_atr_multiple,
-            min_change_percent=indicator.min_change_percent,
-            confirmation_seconds=indicator.confirmation_seconds,
-            min_window_trades=indicator.min_window_trades,
-            cooldown_seconds=indicator.cooldown_seconds if cooldown_seconds is None else cooldown_seconds,
+            name=name,
+            lookback_seconds=window.lookback_seconds,
+            trigger_atr_multiple=window.trigger_atr_multiple,
+            min_change_percent=window.min_change_percent,
+            confirmation_seconds=window.confirmation_seconds,
+            min_window_trades=window.min_window_trades,
+            cooldown_seconds=window.cooldown_seconds if cooldown_seconds is None else cooldown_seconds,
         )
+        for name, window in configured
     ]
-    long_window = indicator.long_window
-    if long_window.enabled:
-        windows.append(
-            MoveWindow(
-                name="long",
-                lookback_seconds=long_window.lookback_seconds,
-                trigger_atr_multiple=long_window.trigger_atr_multiple,
-                min_change_percent=long_window.min_change_percent,
-                confirmation_seconds=long_window.confirmation_seconds,
-                min_window_trades=long_window.min_window_trades,
-                cooldown_seconds=long_window.cooldown_seconds if cooldown_seconds is None else cooldown_seconds,
-            )
-        )
-    return windows
 
 
 def build_detector(

@@ -53,7 +53,7 @@ python -m venv .venv
 - 乱序（时间早于上一笔）的成交直接丢弃。
 - ATR 由 `indicators.WilderAtr` 计算：预热 K 线 seed 后，实时成交维护 `_LiveBar`（可由 `live_candle` 初始化），跨入下一个 K 线周期时才把上一根 bar 喂给 ATR；若跨过了多个周期，中间按 Gate 的口径补开高低收都等于上一收盘价的平线 K 线（最多 `atr_period × 4` 根）。ATR 年龄按最后计入 K 线的**收盘时间**（开盘时间 + 周期）计算，超过 `max_atr_age_seconds` 则不判定。
 - 单个窗口的触发条件（全部满足）：基准桶在 `lookback_seconds` 前且间隔不超过 lookback+2 秒；窗口内成交笔数 ≥ `min_window_trades`；`|涨跌幅| ≥ min_change_percent` **且** `位移/ATR ≥ trigger_atr_multiple`；同方向连续 `confirmation_seconds` 个相邻秒满足（任一条件不满足就重置该窗口的候选）；冷却期已过。
-- 多窗口裁决（`_evaluate`）：每秒先各窗口独立评估，再按窗口顺序裁决——同一秒多个窗口满足只发第一个（短窗口优先，其余记 `SUPERSEDED`）；冷却按合约共享 `_last_alert` 时间、按窗口各自的冷却计时长（短窗口 `indicator.cooldown_seconds`、长窗口 `indicator.long_window.cooldown_seconds`，后者 ≥ 其窗口长度，配置层强制；冷却属于判定逻辑，不在 `alerts` 下）；发出提醒后重置全部窗口的候选。
+- 多窗口裁决（`_evaluate`）：每秒先各窗口独立评估，再按窗口顺序裁决——同一秒多个窗口满足只发第一个（短窗口优先，其余记 `SUPERSEDED`）；冷却按合约共享 `_last_alert` 时间、按窗口各自的冷却计时长（`indicator.short_window.cooldown_seconds`、`indicator.long_window.cooldown_seconds`，后者 ≥ 其窗口长度，配置层强制；冷却属于判定逻辑，不在 `alerts` 下）；发出提醒后重置全部窗口的候选。
 - 秒级桶按最长窗口保留；空秒补齐上限是**最短**窗口的 lookback，保证短窗口行为与单窗口时一致。窗口起点落在更长的空档里时，`_find_baseline` 沿用空档前最后成交价作基准，前提是空档不长于该窗口（短窗口的这类空档都已补齐，走不到这里）。基准定位用二分查找，窗口笔数用桶上的累计笔数 `trades_before` 相减，长窗口不必逐桶扫描。
 - 构造时可传 `observer`，每秒每个窗口回调一条 `WindowEvaluation`（含 `Outcome` 判定结果与涨跌幅、ATR 倍数、笔数等指标），回放靠它解释原因；实时监控不传。
 - `remove_symbols` 不清除冷却记录。`mark_stream_gap` 清空秒级窗口和确认进度并置 `atr_stale`：失效期间不判定、不向 ATR 喂 K 线（也不补平线），直到 `resync_symbol` 用 REST K 线重建 ATR。重建时若本地实时 K 线与交易所当前 K 线同一周期，高低点取并集；若本地已跨入新周期，交易所的“当前 K 线”按已收盘计入 ATR。`resync_symbol` 只作用于仍处于失效状态的合约。
@@ -70,7 +70,7 @@ python -m venv .venv
 - `PRICE_ALERT_WEBHOOK_URL` 环境变量覆盖 `alerts.webhook_url`。
 - `config.py` 中的代码默认值固定不变，没有特别要求不要改；它只在 YAML 缺少对应项时生效，实际运行以 YAML 为准。
 - `config/default.yaml` 每项注释中的「默认 X」标注的是代码默认值。调参时只改 YAML 的取值，注释里的默认值和 `config.py` 都不动，两者允许不一致；配置测试只校验 YAML 能通过校验。
-- `IndicatorConfig` 校验：`warmup_candles > atr_period`、`confirmation_seconds ≤ lookback_seconds`、`max_atr_age_seconds ≥ 2 个 K 线周期`（未显式设置时自动取 3 个周期）；启用长窗口时 `long_window.lookback_seconds > lookback_seconds`。`LongWindowConfig` 校验冷却 ≥ 窗口长度（未显式设置时等于窗口长度）、确认秒数 ≤ 窗口长度。`GateConfig` 校验 `reconnect_max_seconds ≥ reconnect_initial_seconds`。
+- `IndicatorConfig` 只放各窗口共用的 K 线/ATR 参数（`candle_interval`、`atr_period`、`warmup_candles`、`max_atr_age_seconds`），窗口参数在结构相同的 `short_window`（`ShortWindowConfig`）与 `long_window`（`LongWindowConfig`，多一个 `enabled`）里，二者继承 `WindowConfig`，只在默认值、取值范围和冷却规则上不同。校验：`warmup_candles > atr_period`、`max_atr_age_seconds ≥ 2 个 K 线周期`（未显式设置时自动取 3 个周期）；`WindowConfig` 校验确认秒数 ≤ 窗口长度；启用长窗口时 `long_window.lookback_seconds > short_window.lookback_seconds`；`LongWindowConfig` 额外校验冷却 ≥ 窗口长度（未显式设置时等于窗口长度）。`GateConfig` 校验 `reconnect_max_seconds ≥ reconnect_initial_seconds`。
 
 ### 新增/修改检测参数时需要同步的位置
 

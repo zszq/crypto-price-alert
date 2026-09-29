@@ -10,10 +10,25 @@ from price_alert.config import AppConfig
     ("indicator", "expected_alerts"),
     [
         ({}, 2),
-        ({"lookback_seconds": 60}, 2),
-        ({"lookback_seconds": 5, "confirmation_seconds": 5, "min_window_trades": 100}, 2),
-        ({"candle_interval": "5m", "atr_period": 2, "warmup_candles": 15, "trigger_atr_multiple": 20}, 2),
-        ({"lookback_seconds": 3600, "max_atr_age_seconds": 120, "long_window": {"enabled": False}}, 1),
+        ({"short_window": {"lookback_seconds": 60}}, 2),
+        ({"short_window": {"lookback_seconds": 5, "confirmation_seconds": 5, "min_window_trades": 100}}, 2),
+        (
+            {
+                "candle_interval": "5m",
+                "atr_period": 2,
+                "warmup_candles": 15,
+                "short_window": {"trigger_atr_multiple": 20},
+            },
+            2,
+        ),
+        (
+            {
+                "max_atr_age_seconds": 120,
+                "short_window": {"lookback_seconds": 3600},
+                "long_window": {"enabled": False},
+            },
+            1,
+        ),
         ({"long_window": {"lookback_seconds": 300, "min_window_trades": 1000, "trigger_atr_multiple": 20}}, 2),
     ],
 )

@@ -416,7 +416,7 @@ def test_sync_universe_uses_the_shared_semaphore():
 
 def test_build_windows_puts_short_window_first_and_respects_long_window_switch():
     app_config = AppConfig.model_validate(
-        {"indicator": {"cooldown_seconds": 45, "long_window": {"lookback_seconds": 300}}}
+        {"indicator": {"short_window": {"cooldown_seconds": 45}, "long_window": {"lookback_seconds": 300}}}
     )
 
     short, long = service.build_windows(app_config)
