@@ -96,7 +96,8 @@ def test_long_window_defaults_and_cooldown_follows_lookback():
 
 
 def test_rejects_long_window_cooldown_shorter_than_its_lookback():
-    with pytest.raises(ValidationError, match="cooldown_seconds"):
+    # 匹配完整报错文字：只匹配字段名的话，键被改名后未知键的报错同样含该字段名，测试会误判通过。
+    with pytest.raises(ValidationError, match="cooldown_seconds 不能小于 lookback_seconds"):
         AppConfig.model_validate({"indicator": {"long_window": {"lookback_seconds": 300, "cooldown_seconds": 120}}})
 
 
