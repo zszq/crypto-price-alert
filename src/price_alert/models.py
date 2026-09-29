@@ -7,6 +7,8 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
+from price_alert.windows import WindowName
+
 
 @dataclass(frozen=True, slots=True)
 class Candle:
@@ -52,6 +54,8 @@ class ContractTicker:
     symbol: str
     last_price: float
     volume_24h_quote: float
+    # 交易所报价精度（小数位数），只用于展示；缺失时由展示层按有效数字自行决定。
+    price_decimals: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +72,9 @@ class PriceAlert:
     trade_count: int
     volume_24h_quote: float
     timestamp: datetime
+    # 触发提醒的观察窗口；lookback_seconds 已给出长度，名字便于下游按窗口类型过滤。
+    window: WindowName = "short"
+    price_decimals: int | None = None
 
     @property
     def color(self) -> Literal["green", "red"]:

@@ -44,6 +44,31 @@ class GateConfig(BaseModel):
         return self
 
 
+class LongWindowConfig(BaseModel):
+    """较长的第二观察窗口，捕捉短窗口看不出的慢速单边行情；门槛与冷却独立于短窗口。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    lookback_seconds: int = Field(default=180, ge=60, le=3600)
+    trigger_atr_multiple: float = Field(default=2.0, gt=0, le=20)
+    min_change_percent: float = Field(default=2.0, gt=0, le=100)
+    confirmation_seconds: int = Field(default=3, ge=1, le=10)
+    min_window_trades: int = Field(default=30, ge=1)
+    # 未填写时等于 lookback_seconds：冷却一旦短于观察窗口，同一段行情会在窗口滑过期间被反复报出。
+    cooldown_seconds: int = Field(default=180, ge=60, le=86400)
+
+    @model_validator(mode="after")
+    def validate_cooldown_and_confirmation(self) -> LongWindowConfig:
+        if "cooldown_seconds" not in self.model_fields_set:
+            self.cooldown_seconds = self.lookback_seconds
+        if self.cooldown_seconds < self.lookback_seconds:
+            raise ValueError("cooldown_seconds 不能小于 lookback_seconds，否则同一段行情会被重复提醒")
+        if self.confirmation_seconds > self.lookback_seconds:
+            raise ValueError("confirmation_seconds 不能大于 lookback_seconds")
+        return self
+
+
 class IndicatorConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -56,6 +81,7 @@ class IndicatorConfig(BaseModel):
     confirmation_seconds: int = Field(default=3, ge=1, le=10)
     min_window_trades: int = Field(default=10, ge=1)
     max_atr_age_seconds: int = Field(default=180, ge=30, le=3600)
+    long_window: LongWindowConfig = Field(default_factory=LongWindowConfig)
 
     @model_validator(mode="after")
     def validate_warmup_and_freshness(self) -> IndicatorConfig:
@@ -70,6 +96,9 @@ class IndicatorConfig(BaseModel):
             self.max_atr_age_seconds = interval_seconds * 3
         if self.max_atr_age_seconds < interval_seconds * 2:
             raise ValueError("max_atr_age_seconds 不能小于两个 K 线周期")
+        if self.long_window.enabled and self.long_window.lookback_seconds <= self.lookback_seconds:
+            # 长窗口不比短窗口长时，它能看到的行情短窗口都已覆盖，只会多出一套重复门槛。
+            raise ValueError("long_window.lookback_seconds 必须大于 lookback_seconds")
         return self
 
 

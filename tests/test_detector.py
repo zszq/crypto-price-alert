@@ -4,6 +4,7 @@ import pytest
 
 from price_alert.detector import AtrMoveDetector
 from price_alert.models import Candle, PriceTick
+from price_alert.windows import MoveWindow, Outcome
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -21,17 +22,26 @@ def history(range_size: float, period: int = 3) -> list[Candle]:
     ]
 
 
-def detector() -> AtrMoveDetector:
+def short_window(**overrides) -> MoveWindow:
+    values = {
+        "name": "short",
+        "lookback_seconds": 10,
+        "trigger_atr_multiple": 0.8,
+        "min_change_percent": 1.0,
+        "confirmation_seconds": 2,
+        "min_window_trades": 2,
+        "cooldown_seconds": 120,
+    }
+    return MoveWindow(**(values | overrides))
+
+
+def detector(*extra_windows: MoveWindow, observer=None) -> AtrMoveDetector:
     return AtrMoveDetector(
         atr_period=3,
         candle_interval_seconds=60,
-        lookback_seconds=10,
-        trigger_atr_multiple=0.8,
-        min_change_percent=1.0,
-        confirmation_seconds=2,
-        min_window_trades=2,
         max_atr_age_seconds=180,
-        cooldown_seconds=120,
+        windows=[short_window(), *extra_windows],
+        observer=observer,
     )
 
 
@@ -357,3 +367,178 @@ def test_flat_fill_is_capped_and_skipped_while_stale():
     stale.add_tick(PriceTick("BTC_USDT", 100.0, 1.0, bar))
     stale.add_tick(PriceTick("BTC_USDT", 100.0, 1.0, bar + timedelta(minutes=3)))
     assert atr_of(stale, "BTC_USDT").last_timestamp == BASE + timedelta(minutes=2)
+
+
+def long_window(**overrides) -> MoveWindow:
+    values = {
+        "name": "long",
+        "lookback_seconds": 40,
+        "trigger_atr_multiple": 1.5,
+        "min_change_percent": 2.0,
+        "confirmation_seconds": 2,
+        "min_window_trades": 5,
+        "cooldown_seconds": 40,
+    }
+    return MoveWindow(**(values | overrides))
+
+
+def feed_prices(instance: AtrMoveDetector, symbol: str, prices: dict[int, float]):
+    start = BASE + timedelta(minutes=3)
+    alerts = []
+    for second, price in sorted(prices.items()):
+        alerts.extend(instance.add_tick(PriceTick(symbol, price, 1.0, start + timedelta(seconds=second), str(second))))
+    return alerts
+
+
+def test_slow_grind_is_caught_by_long_window_only():
+    instance = detector(long_window())
+    instance.add_symbol("QNT_USDT", history(1.0), 50_000_000)
+
+    # 每秒涨 0.06：10 秒只涨 0.6%，短窗口不达标；40 秒涨 2.4%、2.4 ATR，长窗口达标。
+    alerts = feed_prices(instance, "QNT_USDT", {second: 100.0 + 0.06 * second for second in range(56)})
+
+    assert len(alerts) == 1
+    assert alerts[0].window == "long"
+    assert alerts[0].lookback_seconds == 40
+    assert alerts[0].direction == "surge"
+    # 第 40、41 秒连续达标，第 41 秒对比第 1 秒：102.46 / 100.06。
+    assert alerts[0].change_percent == pytest.approx(2.4 / 100.06 * 100)
+
+
+def test_short_window_wins_when_both_windows_fire_in_the_same_second():
+    evaluations = []
+    instance = detector(long_window(), observer=evaluations.append)
+    instance.add_symbol("BTC_USDT", history(1.0), 1_000_000_000)
+
+    prices = {second: 100.0 for second in range(41)} | {second: 103.0 for second in range(41, 90)}
+    alerts = feed_prices(instance, "BTC_USDT", prices)
+
+    # 同一段跳涨只提醒一次，由更紧迫的短窗口发出；长窗口在自己的冷却内不会把同一段行情再报一次。
+    assert [alert.window for alert in alerts] == ["short"]
+    fired_second = next(item.second for item in evaluations if item.outcome is Outcome.ALERT)
+    long_outcomes = {item.outcome for item in evaluations if item.window == "long"}
+    assert any(
+        item.window == "long" and item.second == fired_second and item.outcome is Outcome.SUPERSEDED
+        for item in evaluations
+    )
+    assert Outcome.COOLDOWN in long_outcomes
+
+
+def test_long_cooldown_does_not_delay_a_new_short_move():
+    instance = detector(long_window(cooldown_seconds=300))
+    instance.add_symbol("BTC_USDT", history(1.0), 1_000_000_000)
+
+    # 先缓慢上涨触发长窗口，横盘后在第 170 秒急涨：此时已过短窗口的 120 秒冷却，
+    # 但仍在长窗口的 300 秒冷却内，长冷却不能拖住短窗口对新一波行情的提醒。
+    prices = {second: 100.0 + 0.06 * second for second in range(45)}
+    prices |= {second: 102.64 for second in range(45, 170)}
+    prices |= {second: 106.0 for second in range(170, 174)}
+    alerts = feed_prices(instance, "BTC_USDT", prices)
+
+    assert [alert.window for alert in alerts] == ["long", "short"]
+
+
+def test_long_window_baseline_carries_price_through_gap_longer_than_fill_limit():
+    evaluations = []
+    instance = AtrMoveDetector(
+        atr_period=3,
+        candle_interval_seconds=60,
+        max_atr_age_seconds=180,
+        # 短窗口门槛设到不可能达到，只观察长窗口；补齐上限仍由短窗口的 10 秒决定。
+        windows=[short_window(min_change_percent=50.0), long_window()],
+        observer=evaluations.append,
+    )
+    instance.add_symbol("THIN_USDT", history(1.0), 20_000_000, price_decimals=2)
+
+    # 第 5 秒到第 25 秒之间空了 19 秒，超过补齐上限，但短于长窗口的 40 秒。
+    prices = {second: 100.0 for second in range(6)} | {second: 100.0 for second in range(25, 50)}
+    prices |= {second: 103.0 for second in range(50, 54)}
+    alerts = feed_prices(instance, "THIN_USDT", prices)
+
+    assert len(alerts) == 1
+    alert = alerts[0]
+    assert alert.window == "long"
+    # 第 50 秒的窗口起点落在空档里，基准沿用空档前最后一笔成交价。
+    assert alert.reference_price == 100.0
+    assert alert.price_decimals == 2
+    # 窗口笔数只统计基准桶（第 5 秒）之后的成交：第 25~51 秒共 27 笔。
+    assert alert.trade_count == 27
+
+
+def test_long_window_skips_when_gap_is_longer_than_the_window():
+    evaluations = []
+    instance = AtrMoveDetector(
+        atr_period=3,
+        candle_interval_seconds=60,
+        max_atr_age_seconds=180,
+        windows=[short_window(min_change_percent=50.0), long_window()],
+        observer=evaluations.append,
+    )
+    instance.add_symbol("THIN_USDT", history(1.0), 20_000_000)
+
+    # 空档 44 秒，比长窗口还长：空档前的价格已失去参考意义，不能拿来当基准。
+    prices = {0: 100.0} | {second: 103.0 for second in range(45, 60)}
+    alerts = feed_prices(instance, "THIN_USDT", prices)
+
+    assert alerts == []
+    long_outcomes = [item.outcome for item in evaluations if item.window == "long" and item.second.second < 60]
+    assert Outcome.NO_BASELINE in long_outcomes
+    assert Outcome.ALERT not in long_outcomes
+
+
+def test_observer_reports_why_a_second_did_not_alert():
+    evaluations = []
+    instance = detector(observer=evaluations.append)
+    instance.add_symbol("BTC_USDT", history(1.0), 1_000_000_000)
+
+    feed_prices(instance, "BTC_USDT", {second: 100.0 for second in range(13)})
+
+    outcomes = [item.outcome for item in evaluations]
+    # 前 10 秒还没有 10 秒前的基准，之后价格不动，未达门槛。
+    assert outcomes[0] is Outcome.NO_BASELINE
+    assert outcomes[-1] is Outcome.BELOW_THRESHOLD
+    assert evaluations[-1].change_percent == 0.0
+    assert evaluations[-1].trade_count == 10
+
+
+def test_price_decimals_follow_the_latest_universe_refresh():
+    instance = detector()
+    instance.add_symbol("BTC_USDT", history(1.0), 1_000_000_000, price_decimals=1)
+    instance.add_symbol("BTC_USDT", [], 1_000_000_000, price_decimals=2)
+
+    assert feed_window(instance, "BTC_USDT", 101.0)[0].price_decimals == 2
+
+
+def test_rejects_invalid_window_sets():
+    with pytest.raises(ValueError, match="至少需要一个"):
+        AtrMoveDetector(atr_period=3, candle_interval_seconds=60, max_atr_age_seconds=180, windows=[])
+    with pytest.raises(ValueError, match="不能重复"):
+        AtrMoveDetector(
+            atr_period=3,
+            candle_interval_seconds=60,
+            max_atr_age_seconds=180,
+            windows=[short_window(), short_window()],
+        )
+    with pytest.raises(ValueError, match="confirmation_seconds"):
+        short_window(confirmation_seconds=11)
+
+
+def test_window_with_too_few_trades_does_not_alert_even_when_price_moved():
+    evaluations = []
+    instance = AtrMoveDetector(
+        atr_period=3,
+        candle_interval_seconds=60,
+        max_atr_age_seconds=180,
+        windows=[short_window(min_window_trades=20)],
+        observer=evaluations.append,
+    )
+    instance.add_symbol("THIN_USDT", history(1.0), 20_000_000)
+
+    # 每秒只有一笔成交，10 秒窗口最多 10 笔，涨 3% 也不够 20 笔的门槛。
+    prices = {second: 100.0 for second in range(11)} | {second: 103.0 for second in range(11, 14)}
+    alerts = feed_prices(instance, "THIN_USDT", prices)
+
+    assert alerts == []
+    last = evaluations[-1]
+    assert last.outcome is Outcome.FEW_TRADES
+    assert (last.trade_count, last.change_percent) == (10, pytest.approx(3.0))

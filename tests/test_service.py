@@ -412,3 +412,19 @@ def test_sync_universe_uses_the_shared_semaphore():
     tracker = asyncio.run(scenario())
 
     assert 0 < tracker.peak <= 2
+
+
+def test_build_windows_puts_short_window_first_and_respects_long_window_switch():
+    app_config = AppConfig.model_validate(
+        {"indicator": {"long_window": {"lookback_seconds": 300}}, "alerts": {"cooldown_seconds": 45}}
+    )
+
+    short, long = service.build_windows(app_config)
+    assert (short.name, short.lookback_seconds, short.cooldown_seconds) == ("short", 30, 45)
+    assert (long.name, long.lookback_seconds, long.cooldown_seconds) == ("long", 300, 300)
+    # simulate 这类场景整体关掉冷却。
+    assert {window.cooldown_seconds for window in service.build_windows(app_config, cooldown_seconds=0)} == {0}
+
+    disabled = AppConfig.model_validate({"indicator": {"long_window": {"enabled": False}}})
+    assert [window.name for window in service.build_windows(disabled)] == ["short"]
+    assert service.build_detector(disabled).max_lookback_seconds == 30

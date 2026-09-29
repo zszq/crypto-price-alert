@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections import deque
-from dataclasses import dataclass, field
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from price_alert.indicators import WilderAtr
 from price_alert.models import Candle, PriceAlert, PriceTick
+from price_alert.windows import MoveWindow, Outcome, WindowEvaluation
+
+# 基准桶允许比目标时刻早的秒数：成交稀疏时恰好落在目标秒上的桶未必存在，差一两秒不影响位移的含义。
+BASELINE_TOLERANCE_SECONDS = 2
 
 
 @dataclass(slots=True)
@@ -19,14 +25,20 @@ class _SecondBucket:
     price_sum: float = 0.0
     trade_count: int = 0
     last_price: float | None = None
+    # 本桶之前累计的成交笔数。窗口笔数取两个桶的累计值之差，长窗口不必每秒逐桶求和。
+    trades_before: int = 0
 
     @classmethod
-    def carried(cls, timestamp: datetime, price: float) -> _SecondBucket:
-        return cls(timestamp, last_price=price)
+    def carried(cls, timestamp: datetime, price: float, trades_before: int) -> _SecondBucket:
+        return cls(timestamp, last_price=price, trades_before=trades_before)
 
     @property
     def has_trades(self) -> bool:
         return self.trade_count > 0
+
+    @property
+    def trades_through(self) -> int:
+        return self.trades_before + self.trade_count
 
     def add(self, price: float, size: float) -> None:
         self.price_sum += price
@@ -46,6 +58,10 @@ class _SecondBucket:
         # 无成交的秒没有新的价格发现，市场价格仍停留在最后一笔成交。
         assert self.last_price is not None
         return self.last_price
+
+
+def _bucket_time(bucket: _SecondBucket) -> datetime:
+    return bucket.timestamp
 
 
 @dataclass(slots=True)
@@ -70,15 +86,39 @@ class _LiveBar:
 
 
 @dataclass(slots=True)
+class _Candidate:
+    """单个窗口的连续确认进度；各窗口独立计数，互不打断。"""
+
+    direction: Literal["surge", "drop"] | None = None
+    seconds: int = 0
+    last_second: datetime | None = None
+
+    def reset(self) -> None:
+        self.direction = None
+        self.seconds = 0
+        self.last_second = None
+
+    def confirm(self, direction: Literal["surge", "drop"], second: datetime) -> int:
+        is_consecutive = (
+            self.direction == direction
+            and self.last_second is not None
+            and second - self.last_second == timedelta(seconds=1)
+        )
+        self.seconds = self.seconds + 1 if is_consecutive else 1
+        self.direction = direction
+        self.last_second = second
+        return self.seconds
+
+
+@dataclass(slots=True)
 class _SymbolState:
     atr: WilderAtr
     volume_24h_quote: float
+    candidates: list[_Candidate]
+    price_decimals: int | None = None
     buckets: deque[_SecondBucket] = field(default_factory=deque)
     live_bar: _LiveBar | None = None
     last_tick_time: datetime | None = None
-    candidate_direction: Literal["surge", "drop"] | None = None
-    candidate_seconds: int = 0
-    candidate_last_second: datetime | None = None
     # 断线期间的成交永久缺失，实时 K 线无法自行修复，必须等 REST 回补后才能再用 ATR 判定。
     atr_stale: bool = False
 
@@ -89,23 +129,26 @@ class AtrMoveDetector:
         *,
         atr_period: int,
         candle_interval_seconds: int,
-        lookback_seconds: int,
-        trigger_atr_multiple: float,
-        min_change_percent: float,
-        confirmation_seconds: int,
-        min_window_trades: int,
         max_atr_age_seconds: int,
-        cooldown_seconds: int,
+        windows: Sequence[MoveWindow],
+        observer: Callable[[WindowEvaluation], None] | None = None,
     ) -> None:
+        if not windows:
+            raise ValueError("至少需要一个观察窗口")
+        if len({window.name for window in windows}) != len(windows):
+            raise ValueError("观察窗口名称不能重复")
         self.atr_period = atr_period
         self.candle_interval_seconds = candle_interval_seconds
-        self.lookback_seconds = lookback_seconds
-        self.trigger_atr_multiple = trigger_atr_multiple
-        self.min_change_percent = min_change_percent
-        self.confirmation_seconds = confirmation_seconds
-        self.min_window_trades = min_window_trades
         self.max_atr_age = timedelta(seconds=max_atr_age_seconds)
-        self.cooldown = timedelta(seconds=cooldown_seconds)
+        # 顺序即优先级：同一秒多个窗口同时满足时只发排在前面的那个，避免同一行情连发两条。
+        self.windows = tuple(windows)
+        self._observer = observer
+        self._cooldowns = tuple(timedelta(seconds=window.cooldown_seconds) for window in self.windows)
+        # 秒级数据按最长窗口保留，所有窗口共用同一份；空秒补齐只服务连续确认，以最短窗口为界，
+        # 保证短窗口的行为与单窗口时完全一致。
+        self.max_lookback_seconds = max(window.lookback_seconds for window in self.windows)
+        self._retention = timedelta(seconds=self.max_lookback_seconds)
+        self._fill_limit = min(window.lookback_seconds for window in self.windows)
         self._candle_interval = timedelta(seconds=candle_interval_seconds)
         self._states: dict[str, _SymbolState] = {}
         self._last_alert: dict[str, datetime] = {}
@@ -124,15 +167,22 @@ class AtrMoveDetector:
         candles: list[Candle],
         volume_24h_quote: float,
         live_candle: Candle | None = None,
+        price_decimals: int | None = None,
     ) -> None:
         normalized = symbol.upper()
         existing = self._states.get(normalized)
         if existing is not None:
             existing.volume_24h_quote = volume_24h_quote
+            existing.price_decimals = price_decimals
             return
         atr = WilderAtr(self.atr_period)
         atr.seed(candles)
-        state = _SymbolState(atr=atr, volume_24h_quote=volume_24h_quote)
+        state = _SymbolState(
+            atr=atr,
+            volume_24h_quote=volume_24h_quote,
+            candidates=[_Candidate() for _ in self.windows],
+            price_decimals=price_decimals,
+        )
         if live_candle is not None and (atr.last_timestamp is None or live_candle.timestamp > atr.last_timestamp):
             # 订阅前当前 K 线已走完一段，用 REST 的未收盘 K 线起步，避免只含订阅后成交的残缺 K 线低估 ATR。
             state.live_bar = _LiveBar.from_candle(live_candle)
@@ -147,7 +197,8 @@ class AtrMoveDetector:
         """行情中断后调用：丢弃秒级窗口与确认进度，并暂停 ATR 判定直到 resync_symbol 回补 K 线。"""
         for state in self._states.values():
             state.buckets.clear()
-            self._reset_candidate(state)
+            for candidate in state.candidates:
+                candidate.reset()
             state.atr_stale = True
 
     def resync_symbol(
@@ -217,17 +268,22 @@ class AtrMoveDetector:
             # 紧邻结算只迟一秒，不复核，以免新一秒的单笔离群成交否掉本该发出的提醒。
             self._settle(symbol, state, completed, timestamp, alerts, tick.price if missing_seconds > 0 else None)
             # 稀疏合约在快速行情中常有空秒，沿用最后成交价补齐才能完成连续确认；
-            # 空档超过观察窗口说明行情停滞，补齐已无比较意义。
-            if 0 < missing_seconds <= self.lookback_seconds:
+            # 空档超过（最短）观察窗口说明行情停滞，补齐已无比较意义。
+            if 0 < missing_seconds <= self._fill_limit:
                 last_price = completed.last_price
                 assert last_price is not None
                 for offset in range(1, missing_seconds + 1):
-                    filler = _SecondBucket.carried(completed.timestamp + timedelta(seconds=offset), last_price)
+                    filler = _SecondBucket.carried(
+                        completed.timestamp + timedelta(seconds=offset),
+                        last_price,
+                        completed.trades_through,
+                    )
                     state.buckets.append(filler)
                     # 补齐桶本就不能触发提醒，无需复核。
                     self._settle(symbol, state, filler, timestamp, alerts, None)
 
-        current = _SecondBucket(second)
+        trades_before = state.buckets[-1].trades_through if state.buckets else 0
+        current = _SecondBucket(second, trades_before=trades_before)
         current.add(tick.price, tick.size)
         state.buckets.append(current)
         return alerts
@@ -241,7 +297,8 @@ class AtrMoveDetector:
         alerts: list[PriceAlert],
         latest_price: float | None,
     ) -> None:
-        oldest_required = bucket.timestamp - timedelta(seconds=self.lookback_seconds)
+        # 保留最长窗口所需的全部秒，另留一个不晚于窗口起点的桶，空档中的基准价要靠它确定。
+        oldest_required = bucket.timestamp - self._retention
         while len(state.buckets) > 2 and state.buckets[1].timestamp <= oldest_required:
             state.buckets.popleft()
         alert = self._evaluate(symbol, state, bucket, timestamp, latest_price)
@@ -289,85 +346,133 @@ class AtrMoveDetector:
         timestamp: datetime,
         latest_price: float | None,
     ) -> PriceAlert | None:
-        """评估一个已结束的秒；latest_price 非空时还需该价格仍满足门槛才允许提醒。"""
+        """在所有窗口上评估一个已结束的秒，再统一裁决冷却与多窗口同时满足的情况。"""
+        evaluations = [
+            self._evaluate_window(symbol, state, window, candidate, current, latest_price)
+            for window, candidate in zip(self.windows, state.candidates, strict=True)
+        ]
+
+        alert: PriceAlert | None = None
+        previous_alert = self._last_alert.get(symbol)
+        for index, evaluation in enumerate(evaluations):
+            if evaluation.outcome is not Outcome.ALERT:
+                continue
+            if alert is not None:
+                evaluations[index] = replace(evaluation, outcome=Outcome.SUPERSEDED)
+            elif previous_alert is not None and timestamp - previous_alert < self._cooldowns[index]:
+                # 冷却按合约共享“上次提醒时间”、按窗口各自计时长：长窗口的冷却须覆盖它自己的观察窗口，
+                # 否则同一段行情会在窗口滑过期间被它反复报出，而短窗口的提醒又不该被长冷却拖住。
+                evaluations[index] = replace(evaluation, outcome=Outcome.COOLDOWN)
+                state.candidates[index].reset()
+            else:
+                alert = self._build_alert(symbol, state, self.windows[index], evaluation, timestamp)
+
+        if alert is not None:
+            self._last_alert[symbol] = timestamp
+            for candidate in state.candidates:
+                candidate.reset()
+        if self._observer is not None:
+            for evaluation in evaluations:
+                self._observer(evaluation)
+        return alert
+
+    def _evaluate_window(
+        self,
+        symbol: str,
+        state: _SymbolState,
+        window: MoveWindow,
+        candidate: _Candidate,
+        current: _SecondBucket,
+        latest_price: float | None,
+    ) -> WindowEvaluation:
+        """评估一个窗口；latest_price 非空时还需该价格仍满足门槛才允许提醒。
+
+        返回 ALERT 只表示窗口本身的条件全部满足，冷却与多窗口裁决由调用方处理。
+        """
+
+        def result(outcome: Outcome, atr: float | None = None) -> WindowEvaluation:
+            return WindowEvaluation(
+                symbol, window.name, current.timestamp, outcome, current.price, not current.has_trades, atr
+            )
+
         atr = state.atr.value
         atr_timestamp = state.atr.last_timestamp
         if state.atr_stale or atr is None or atr <= 0 or atr_timestamp is None:
-            self._reset_candidate(state)
-            return None
+            candidate.reset()
+            return result(Outcome.ATR_UNAVAILABLE)
         # K 线时间戳是开盘时间，按收盘时间计算年龄，配置值才等于“ATR 最近一次更新距今多久”。
-        if timestamp - (atr_timestamp + self._candle_interval) > self.max_atr_age:
-            self._reset_candidate(state)
-            return None
+        if current.timestamp - (atr_timestamp + self._candle_interval) > self.max_atr_age:
+            candidate.reset()
+            return result(Outcome.ATR_EXPIRED, atr)
 
-        target = current.timestamp - timedelta(seconds=self.lookback_seconds)
-        baseline = next((bucket for bucket in reversed(state.buckets) if bucket.timestamp <= target), None)
+        baseline = self._find_baseline(state.buckets, current, window)
         if baseline is None:
-            self._reset_candidate(state)
-            return None
-        observed_seconds = (current.timestamp - baseline.timestamp).total_seconds()
-        if observed_seconds > self.lookback_seconds + 2:
-            self._reset_candidate(state)
-            return None
+            candidate.reset()
+            return result(Outcome.NO_BASELINE, atr)
+        baseline_bucket, baseline_price = baseline
+        price_move = current.price - baseline_price
+        trade_count = current.trades_through - baseline_bucket.trades_through
 
-        trade_count = sum(
-            bucket.trade_count
-            for bucket in state.buckets
-            if baseline.timestamp < bucket.timestamp <= current.timestamp
-        )
-        if trade_count < self.min_window_trades:
-            self._reset_candidate(state)
-            return None
+        def measured(outcome: Outcome, confirmed_seconds: int = 0) -> WindowEvaluation:
+            return replace(
+                result(outcome, atr),
+                baseline_price=baseline_price,
+                change_percent=price_move / baseline_price * 100.0,
+                move_atr=abs(price_move) / atr,
+                trade_count=trade_count,
+                confirmed_seconds=confirmed_seconds,
+            )
 
-        price_move = current.price - baseline.price
-        if not self._exceeds_thresholds(price_move, baseline.price, atr):
-            self._reset_candidate(state)
-            return None
+        if trade_count < window.min_window_trades:
+            candidate.reset()
+            return measured(Outcome.FEW_TRADES)
+        if not window.exceeds_thresholds(price_move, baseline_price, atr):
+            candidate.reset()
+            return measured(Outcome.BELOW_THRESHOLD)
 
-        direction = "surge" if price_move > 0 else "drop"
-        if not self._confirm_candidate(state, direction, current.timestamp):
-            return None
+        direction: Literal["surge", "drop"] = "surge" if price_move > 0 else "drop"
+        confirmed = candidate.confirm(direction, current.timestamp)
+        if confirmed < window.confirmation_seconds:
+            return measured(Outcome.CONFIRMING, confirmed)
         if not current.has_trades:
             # 补齐的空秒只延续确认进度，不能单独触发：否则一笔离群成交后恰好无人成交也会被当成持续异动。
-            return None
-        if latest_price is not None and not self._still_moving(latest_price, baseline.price, atr, direction):
+            return measured(Outcome.CARRIED, confirmed)
+        if latest_price is not None and not self._still_moving(window, latest_price, baseline_price, atr, direction):
             # 这一秒是在空档之后才被结算的，它的价格已经过期，而触发结算的那笔成交是此刻唯一的
             # 价格证据：它若已不满足门槛，说明异动在空档中就结束了，再按旧价格提醒只会误导。
             # 同样只拦提醒、不重置确认进度，与上面补齐桶的处理保持一致。
+            return measured(Outcome.MOVE_FADED, confirmed)
+        return measured(Outcome.ALERT, confirmed)
+
+    @staticmethod
+    def _find_baseline(
+        buckets: deque[_SecondBucket],
+        current: _SecondBucket,
+        window: MoveWindow,
+    ) -> tuple[_SecondBucket, float] | None:
+        """找窗口起点的基准桶与基准价；空档过长、基准价已无意义时返回 None。"""
+        target = current.timestamp - timedelta(seconds=window.lookback_seconds)
+        # 桶按时间严格递增，二分查找让长窗口的定位成本与窗口长度基本无关。
+        index = bisect_right(buckets, target, key=_bucket_time) - 1
+        if index < 0:
             return None
+        baseline = buckets[index]
+        tolerance = timedelta(seconds=window.lookback_seconds + BASELINE_TOLERANCE_SECONDS)
+        if current.timestamp - baseline.timestamp <= tolerance:
+            return baseline, baseline.price
+        # 窗口起点落在无成交的空档里：空档内价格停在最后一笔成交，只要空档不长于本窗口就沿用它。
+        # 短窗口的这类空档都已补齐、走不到这里，所以它的行为与单窗口时一致；长窗口据此跨过
+        # 比补齐上限更长的短暂空档，而不是整段失明。
+        following = buckets[index + 1]
+        missing = following.timestamp - baseline.timestamp - timedelta(seconds=1)
+        if missing <= timedelta(seconds=window.lookback_seconds):
+            assert baseline.last_price is not None
+            return baseline, baseline.last_price
+        return None
 
-        previous_alert = self._last_alert.get(symbol)
-        if previous_alert is not None and timestamp - previous_alert < self.cooldown:
-            self._reset_candidate(state)
-            return None
-        self._last_alert[symbol] = timestamp
-        self._reset_candidate(state)
-
-        return PriceAlert(
-            symbol=symbol,
-            direction=direction,
-            price=current.price,
-            reference_price=baseline.price,
-            change_percent=price_move / baseline.price * 100.0,
-            move_atr=abs(price_move) / atr,
-            atr=atr,
-            atr_period=self.atr_period,
-            lookback_seconds=self.lookback_seconds,
-            trade_count=trade_count,
-            volume_24h_quote=state.volume_24h_quote,
-            timestamp=timestamp,
-        )
-
-    def _exceeds_thresholds(self, price_move: float, baseline_price: float, atr: float) -> bool:
-        # 两道门槛必须同时满足：百分比保证肉眼可感知，ATR 倍数适配不同市场波动率。
-        # 判定与空档后的复核共用这一份规则，避免两处阈值逐渐走偏。
-        return (
-            abs(price_move / baseline_price * 100.0) >= self.min_change_percent
-            and abs(price_move) / atr >= self.trigger_atr_multiple
-        )
-
+    @staticmethod
     def _still_moving(
-        self,
+        window: MoveWindow,
         latest_price: float,
         baseline_price: float,
         atr: float,
@@ -377,26 +482,33 @@ class AtrMoveDetector:
         # 反向必须单独判断：仅看幅度的话，急涨过后直接砸穿基准价也能满足门槛而发出急涨提醒。
         if (price_move > 0) != (direction == "surge"):
             return False
-        return self._exceeds_thresholds(price_move, baseline_price, atr)
+        return window.exceeds_thresholds(price_move, baseline_price, atr)
 
-    def _confirm_candidate(
+    def _build_alert(
         self,
+        symbol: str,
         state: _SymbolState,
-        direction: Literal["surge", "drop"],
-        second: datetime,
-    ) -> bool:
-        is_consecutive = (
-            state.candidate_direction == direction
-            and state.candidate_last_second is not None
-            and second - state.candidate_last_second == timedelta(seconds=1)
+        window: MoveWindow,
+        evaluation: WindowEvaluation,
+        timestamp: datetime,
+    ) -> PriceAlert:
+        # 走到 ALERT 的判定一定带齐了全部指标，这里只做类型收窄。
+        assert evaluation.baseline_price is not None and evaluation.change_percent is not None
+        assert evaluation.move_atr is not None and evaluation.atr is not None
+        assert evaluation.trade_count is not None
+        return PriceAlert(
+            symbol=symbol,
+            direction="surge" if evaluation.change_percent > 0 else "drop",
+            price=evaluation.price,
+            reference_price=evaluation.baseline_price,
+            change_percent=evaluation.change_percent,
+            move_atr=evaluation.move_atr,
+            atr=evaluation.atr,
+            atr_period=self.atr_period,
+            lookback_seconds=window.lookback_seconds,
+            trade_count=evaluation.trade_count,
+            volume_24h_quote=state.volume_24h_quote,
+            timestamp=timestamp,
+            window=window.name,
+            price_decimals=state.price_decimals,
         )
-        state.candidate_seconds = state.candidate_seconds + 1 if is_consecutive else 1
-        state.candidate_direction = direction
-        state.candidate_last_second = second
-        return state.candidate_seconds >= self.confirmation_seconds
-
-    @staticmethod
-    def _reset_candidate(state: _SymbolState) -> None:
-        state.candidate_direction = None
-        state.candidate_seconds = 0
-        state.candidate_last_second = None

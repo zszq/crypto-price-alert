@@ -65,3 +65,44 @@ def test_atr_age_default_follows_candle_interval_but_explicit_value_is_validated
 
     with pytest.raises(ValidationError, match="max_atr_age_seconds"):
         AppConfig.model_validate({"indicator": {"candle_interval": "5m", "max_atr_age_seconds": 180}})
+
+
+def test_default_yaml_long_window_cooldown_follows_lookback(monkeypatch, tmp_path):
+    # 运营只改长窗口长度时不应被冷却校验卡住，所以 default.yaml 刻意不写死冷却。
+    monkeypatch.delenv("PRICE_ALERT_WEBHOOK_URL", raising=False)
+    default_yaml = Path(__file__).resolve().parents[1] / "config" / "default.yaml"
+    edited = tmp_path / "config.yaml"
+    edited.write_text(
+        default_yaml.read_text(encoding="utf-8").replace("lookback_seconds: 180", "lookback_seconds: 300"),
+        encoding="utf-8",
+    )
+
+    assert load_config(edited).indicator.long_window.cooldown_seconds == 300
+
+
+def test_long_window_defaults_and_cooldown_follows_lookback():
+    long_window = AppConfig().indicator.long_window
+    assert long_window.enabled is True
+    assert (long_window.lookback_seconds, long_window.cooldown_seconds) == (180, 180)
+
+    # 只改观察窗口长度时冷却自动跟随，不会因为忘改冷却而重复提醒同一段行情。
+    configured = AppConfig.model_validate({"indicator": {"long_window": {"lookback_seconds": 300}}})
+    assert configured.indicator.long_window.cooldown_seconds == 300
+
+
+def test_rejects_long_window_cooldown_shorter_than_its_lookback():
+    with pytest.raises(ValidationError, match="cooldown_seconds"):
+        AppConfig.model_validate({"indicator": {"long_window": {"lookback_seconds": 300, "cooldown_seconds": 120}}})
+
+
+def test_rejects_long_window_not_longer_than_short_window():
+    with pytest.raises(ValidationError, match="long_window.lookback_seconds"):
+        AppConfig.model_validate({"indicator": {"lookback_seconds": 180}})
+
+    # 关闭长窗口后不再要求它比短窗口长。
+    AppConfig.model_validate({"indicator": {"lookback_seconds": 180, "long_window": {"enabled": False}}})
+
+
+def test_rejects_unknown_long_window_keys():
+    with pytest.raises(ValidationError, match="long_window"):
+        AppConfig.model_validate({"indicator": {"long_window": {"lookback": 300}}})

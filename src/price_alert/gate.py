@@ -8,6 +8,7 @@ import http.client
 import itertools
 import json
 import logging
+import math
 import threading
 import time
 import urllib.error
@@ -19,6 +20,7 @@ from typing import Any
 
 import websockets
 
+from price_alert.formatting import beijing_time
 from price_alert.models import Candle, PriceTick
 
 LOGGER = logging.getLogger(__name__)
@@ -32,6 +34,9 @@ RATE_LIMITED_BACKOFF_SECONDS = 2.0
 MAX_RETRY_AFTER_SECONDS = 30.0
 # Gate 不返回标准的 Retry-After，限频恢复时刻放在这个专有头里（Unix 秒级绝对时间戳）。
 RATE_LIMIT_RESET_HEADER = "X-Gate-RateLimit-Reset-Timestamp"
+# 历史成交接口单页上限；offset 翻页在十万级就会被拒绝（offset too big），所以翻页主要靠收缩 to。
+TRADES_PAGE_SIZE = 1000
+TRADES_PROGRESS_PAGES = 20
 
 
 class RateLimiter:
@@ -170,6 +175,81 @@ class GateRestClient:
         candles = [parse_candle(item) for item in payload if isinstance(item, Mapping)]
         return sorted(candles, key=lambda item: item.timestamp)
 
+    def fetch_contract(self, symbol: str) -> dict[str, Any]:
+        payload = self._get(f"/futures/{self.settle}/contracts/{urllib.parse.quote(symbol, safe='')}")
+        if not isinstance(payload, dict):
+            raise TypeError(f"Gate {symbol} 合约响应不是对象")
+        return payload
+
+    def fetch_candles_between(self, symbol: str, interval: str, start: datetime, end: datetime) -> list[Candle]:
+        """按开盘时间取 [start, end] 闭区间内的 K 线（Gate 的 from/to 两端都包含）。"""
+        payload = self._get(
+            f"/futures/{self.settle}/candlesticks",
+            {"contract": symbol, "interval": interval, "from": int(start.timestamp()), "to": int(end.timestamp())},
+        )
+        if not isinstance(payload, list):
+            raise TypeError(f"Gate {symbol} K 线响应不是列表")
+        candles = [parse_candle(item) for item in payload if isinstance(item, Mapping)]
+        return sorted(candles, key=lambda item: item.timestamp)
+
+    def fetch_trades(self, symbol: str, start: datetime, end: datetime, max_trades: int = 300_000) -> list[PriceTick]:
+        """取 [start, end) 内的全部历史成交，按时间升序返回。
+
+        Gate 在时间范围内按从新到旧分页，每页最多 1000 笔。翻页靠把 to 收缩到本页最早那一秒：
+        to 是开区间，所以取“最早秒 + 1”，同一秒里更早的成交留到下一页，重复的按 id 去重。
+        整页都挤在同一秒时 to 收缩不动，只能在这一秒内用 offset 继续翻。
+        """
+        start_second = math.floor(start.timestamp())
+        to = math.ceil(end.timestamp())
+        trades: dict[str, PriceTick] = {}
+        pages = 0
+        while to > start_second:
+            page = self._trades_page(symbol, start_second, to)
+            self._collect_trades(page, trades, max_trades)
+            pages += 1
+            if pages % TRADES_PROGRESS_PAGES == 0:
+                # 长区间要翻上百页、耗时以分钟计，定期报告进度，免得被误以为卡死。
+                reached = beijing_time(datetime.fromtimestamp(to, tz=UTC))
+                LOGGER.info("%s 已获取 %s 笔历史成交，回溯到北京时间 %s", symbol, f"{len(trades):,}", reached)
+            if len(page) < TRADES_PAGE_SIZE:
+                break
+            oldest_second = _oldest_trade_second(page)
+            if oldest_second + 1 < to:
+                to = oldest_second + 1
+                continue
+            offset = TRADES_PAGE_SIZE
+            while len(page) == TRADES_PAGE_SIZE:
+                page = self._trades_page(symbol, oldest_second, oldest_second + 1, offset)
+                self._collect_trades(page, trades, max_trades)
+                offset += TRADES_PAGE_SIZE
+            to = oldest_second
+        return sorted(trades.values(), key=lambda tick: (tick.timestamp, _trade_order(tick)))
+
+    def _trades_page(self, symbol: str, start: int, end: int, offset: int = 0) -> list[Mapping[str, Any]]:
+        params: dict[str, object] = {"contract": symbol, "from": start, "to": end, "limit": TRADES_PAGE_SIZE}
+        if offset:
+            params["offset"] = offset
+        payload = self._get(f"/futures/{self.settle}/trades", params)
+        if not isinstance(payload, list):
+            raise TypeError(f"Gate {symbol} 成交响应不是列表")
+        return [item for item in payload if isinstance(item, Mapping)]
+
+    @staticmethod
+    def _collect_trades(page: list[Mapping[str, Any]], trades: dict[str, PriceTick], max_trades: int) -> None:
+        for item in page:
+            try:
+                tick = parse_rest_trade(item)
+            except (KeyError, TypeError, ValueError, OverflowError, OSError) as exc:
+                _INVALID_DATA_LOG.warning("忽略无法解析的 Gate 历史成交（%s）：%s", exc, item)
+                continue
+            if tick is None:
+                continue
+            # 缺 id 的成交无法去重，用时间与价格拼一个键，宁可极少数重复也不丢数据。
+            key = tick.trade_id or f"{tick.timestamp.isoformat()}|{tick.price}|{tick.size}"
+            trades[key] = tick
+        if len(trades) > max_trades:
+            raise ValueError(f"成交超过 {max_trades:,} 笔，请缩短时间范围")
+
     def _get(self, path: str, params: Mapping[str, object] | None = None) -> Any:
         query = f"?{urllib.parse.urlencode(params)}" if params else ""
         request = urllib.request.Request(  # noqa: S310 - 基础地址来自本地配置
@@ -234,6 +314,16 @@ def build_subscription(symbols: Sequence[str], event: str = "subscribe", request
     return json.dumps(request, separators=(",", ":"))
 
 
+def _tick_from_trade(trade: Mapping[str, Any], timestamp_seconds: float) -> PriceTick:
+    return PriceTick(
+        symbol=str(trade["contract"]).upper(),
+        price=float(trade["price"]),
+        size=abs(float(trade["size"])),
+        timestamp=datetime.fromtimestamp(timestamp_seconds, tz=UTC),
+        trade_id=str(trade.get("id")) if trade.get("id") is not None else None,
+    )
+
+
 def _parse_trade(trade: Any) -> PriceTick | None:
     if not isinstance(trade, Mapping):
         raise TypeError("成交记录不是对象")
@@ -243,14 +333,39 @@ def _parse_trade(trade: Any) -> PriceTick | None:
     timestamp_value = trade.get("create_time_ms")
     if timestamp_value is None:
         timestamp_value = float(trade["create_time"]) * 1000
-    timestamp_ms = float(timestamp_value)
-    return PriceTick(
-        symbol=str(trade["contract"]).upper(),
-        price=float(trade["price"]),
-        size=abs(float(trade["size"])),
-        timestamp=datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC),
-        trade_id=str(trade.get("id")) if trade.get("id") is not None else None,
-    )
+    return _tick_from_trade(trade, float(timestamp_value) / 1000)
+
+
+def parse_rest_trade(trade: Any) -> PriceTick | None:
+    """解析 REST 历史成交；口径与实时推送一致，内部成交同样忽略。"""
+    if not isinstance(trade, Mapping):
+        raise TypeError("成交记录不是对象")
+    if trade.get("is_internal"):
+        return None
+    # REST 响应里的 create_time_ms 实测单位是秒（带毫秒小数），与 WebSocket 的毫秒不同，只能用 create_time。
+    return _tick_from_trade(trade, float(trade["create_time"]))
+
+
+def _oldest_trade_second(page: Sequence[Mapping[str, Any]]) -> int:
+    times: list[float] = []
+    for item in page:
+        try:
+            times.append(float(item["create_time"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    finite = [value for value in times if math.isfinite(value)]
+    if not finite:
+        # 整页都没有可用时间就无法确定下一页的边界，继续请求只会原地打转。
+        raise ValueError("Gate 历史成交整页缺少有效时间，无法继续翻页")
+    return math.floor(min(finite))
+
+
+def _trade_order(tick: PriceTick) -> int:
+    # 同一毫秒内的成交按 id 排序才能还原撮合顺序；id 缺失或非数字时退化为不排序。
+    try:
+        return int(tick.trade_id) if tick.trade_id is not None else 0
+    except ValueError:
+        return 0
 
 
 def parse_trade_payload(payload: Mapping[str, Any]) -> list[PriceTick]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import http.client
 import logging
 import math
 from datetime import UTC, datetime, timedelta
@@ -13,14 +14,25 @@ import yaml
 from pydantic import ValidationError
 
 from price_alert.config import INTERVAL_SECONDS, AppConfig, load_config
-from price_alert.gate import GateRestClient, RateLimiter
+from price_alert.formatting import BEIJING_TIME
 from price_alert.instance import AlreadyRunningError, ProcessLock
 from price_alert.models import Candle, PriceTick
 from price_alert.notifier import ConsoleNotifier
-from price_alert.service import build_detector, run_monitor
+from price_alert.replay import (
+    fetch_replay_data,
+    normalize_symbol,
+    parse_time,
+    plan_replay,
+    render_replay,
+    run_replay,
+)
+from price_alert.service import build_detector, build_rest_client, build_windows, run_monitor
 from price_alert.universe import select_liquid_contracts
+from price_alert.windows import MoveWindow, describe_rule
 
 DEMO_ATR = 2.0
+# 只给开始时间时回放的时长：足够覆盖长窗口一个完整周期以及前后的行情。
+DEFAULT_REPLAY_MINUTES = 15
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -31,10 +43,19 @@ def build_parser() -> argparse.ArgumentParser:
         ("universe", "查看当前满足成交额条件的合约"),
         ("check-config", "校验配置文件"),
         ("simulate", "使用合成行情验证 ATR 异动提醒"),
+        ("replay", "用历史成交回放某个合约，逐秒解释为什么提醒或没有提醒"),
     ):
         command = commands.add_parser(name, help=help_text)
         command.add_argument("--config", default="config/default.yaml")
+    _add_replay_arguments(commands.choices["replay"])
     return parser
+
+
+def _add_replay_arguments(command: argparse.ArgumentParser) -> None:
+    command.add_argument("symbol", help="合约名，如 QNT_USDT；只写 QNT 会自动补 _USDT")
+    command.add_argument("--start", required=True, help="开始时间（北京时间），如 '2026-09-29 09:25' 或 09:25（今天）")
+    command.add_argument("--end", help=f"结束时间，格式同 --start；默认开始后 {DEFAULT_REPLAY_MINUTES} 分钟")
+    command.add_argument("--all", action="store_true", help="输出每一秒每个窗口的判定，而不只是达标的秒")
 
 
 def _build_demo_candles(end: datetime, count: int, interval_seconds: int) -> list[Candle]:
@@ -53,16 +74,25 @@ def _build_demo_candles(end: datetime, count: int, interval_seconds: int) -> lis
 
 
 async def simulate(config: AppConfig) -> int:
+    """为每个启用的观察窗口各跑一遍合成异动，返回提醒总数；正常时等于窗口数。"""
+    notifier = ConsoleNotifier(beep=False, colors=config.alerts.console_colors)
+    alert_count = 0
+    for window in build_windows(config, cooldown_seconds=0):
+        alert_count += await _simulate_window(config, window, notifier)
+    return alert_count
+
+
+async def _simulate_window(config: AppConfig, window: MoveWindow, notifier: ConsoleNotifier) -> int:
     indicator = config.indicator
     interval_seconds = INTERVAL_SECONDS[indicator.candle_interval]
-    detector = build_detector(config, cooldown_seconds=0)
-    notifier = ConsoleNotifier(beep=False, colors=config.alerts.console_colors)
+    # 每个窗口用只含它自己的检测器：要验证的是这个窗口的门槛能否被满足，不能让另一个窗口先提醒掩盖问题。
+    detector = build_detector(config, windows=[window])
 
     # 让异动恰好从 K 线边界开始：异动秒全部落在同一根未收盘 K 线里，不会被提前计入 ATR 而削弱倍数，
     # 同时之前的平稳 K 线按时收盘，ATR 始终新鲜，结果不随 lookback 等参数变化而失效。
     now = datetime.now(UTC)
     move_start = datetime.fromtimestamp(int(now.timestamp()) // interval_seconds * interval_seconds, tz=UTC)
-    flat_start = move_start - timedelta(seconds=indicator.lookback_seconds + 1)
+    flat_start = move_start - timedelta(seconds=window.lookback_seconds + 1)
     history_end = datetime.fromtimestamp(
         int(flat_start.timestamp()) // interval_seconds * interval_seconds,
         tz=UTC,
@@ -74,7 +104,7 @@ async def simulate(config: AppConfig) -> int:
     )
 
     # 每秒成交笔数要足以让一个观察窗口满足 min_window_trades。
-    trades_per_second = max(1, math.ceil(indicator.min_window_trades / indicator.lookback_seconds))
+    trades_per_second = max(1, math.ceil(window.min_window_trades / window.lookback_seconds))
 
     def ticks_at(second: datetime, price: float, label: str) -> list[PriceTick]:
         return [
@@ -82,14 +112,15 @@ async def simulate(config: AppConfig) -> int:
             for index in range(trades_per_second)
         ]
 
-    for offset in range(indicator.lookback_seconds + 1):
+    for offset in range(window.lookback_seconds + 1):
         for tick in ticks_at(flat_start + timedelta(seconds=offset), 100.0, f"flat-{offset}"):
             detector.add_tick(tick)
 
-    moved_price = 100.0 + max(DEMO_ATR * indicator.trigger_atr_multiple, indicator.min_change_percent) * 1.1
+    # 平稳段跨过的 K 线只会让 ATR 衰减，按 DEMO_ATR 计算的位移因此总能满足 ATR 倍数。
+    moved_price = 100.0 + max(DEMO_ATR * window.trigger_atr_multiple, window.min_change_percent) * 1.1
     alert_count = 0
     # 多送一秒用于结算最后一个确认桶，与真实行情的完整秒检测保持一致。
-    for offset in range(indicator.confirmation_seconds + 1):
+    for offset in range(window.confirmation_seconds + 1):
         for tick in ticks_at(move_start + timedelta(seconds=offset), moved_price, f"demo-{offset}"):
             for alert in detector.add_tick(tick):
                 alert_count += 1
@@ -97,14 +128,28 @@ async def simulate(config: AppConfig) -> int:
     return alert_count
 
 
+def replay(config: AppConfig, args: argparse.Namespace) -> None:
+    try:
+        start = parse_time(args.start)
+        # 结束时间只写时分时取开始那天，否则回放昨天时 --end 会被当成今天，区间意外拉长到一整天。
+        end_day = start.astimezone(BEIJING_TIME).date()
+        end = parse_time(args.end, today=end_day) if args.end else start + timedelta(minutes=DEFAULT_REPLAY_MINUTES)
+        plan = plan_replay(normalize_symbol(args.symbol), start, end, config)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    try:
+        data = fetch_replay_data(build_rest_client(config), plan, config)
+    except (OSError, ValueError, TypeError, http.client.HTTPException) as exc:
+        # REST 重试用尽后原样抛出，这里转成一行可读的错误，而不是整段堆栈。
+        raise SystemExit(f"获取 {plan.symbol} 历史数据失败：{exc}") from exc
+    if not data.trades:
+        raise SystemExit(f"{plan.symbol} 在该时间段没有取到成交：合约名可能有误，或 Gate 已不再提供这么早的成交")
+    result = run_replay(config, plan, data)
+    print("\n".join(render_replay(result, show_all=args.all)))
+
+
 def print_universe(config: AppConfig) -> None:
-    rest = GateRestClient(
-        config.gate.rest_url,
-        config.gate.settle,
-        config.gate.rest_timeout_seconds,
-        config.gate.rest_retries,
-        RateLimiter(config.gate.rest_rate_limit_per_second, config.gate.rest_rate_limit_burst),
-    )
+    rest = build_rest_client(config)
     selected = select_liquid_contracts(
         rest.fetch_tickers(),
         rest.fetch_contracts(),
@@ -137,19 +182,21 @@ def main() -> None:
     config = _load_config_or_exit(args.config)
 
     if args.command == "check-config":
-        print(
-            f"配置有效：Gate.io USDT 永续，成交额门槛 {config.gate.min_volume_24h_quote / 1_000_000:.1f}M，"
-            f"触发阈值 {config.indicator.trigger_atr_multiple:g} ATR，"
-            f"最低涨跌 {config.indicator.min_change_percent:g}%，"
-            f"连续 {config.indicator.confirmation_seconds} 秒确认"
-        )
+        print(f"配置有效：Gate.io USDT 永续，成交额门槛 {config.gate.min_volume_24h_quote / 1_000_000:.1f}M")
+        for window in build_windows(config):
+            print(f"  {describe_rule(window)}")
         return
     if args.command == "universe":
         print_universe(config)
         return
     if args.command == "simulate":
-        if asyncio.run(simulate(config)) == 0:
-            raise SystemExit("模拟未产生提醒，请检查 indicator 配置是否互相矛盾")
+        expected = len(build_windows(config))
+        produced = asyncio.run(simulate(config))
+        if produced != expected:
+            raise SystemExit(f"模拟应产生 {expected} 条提醒（每个窗口一条），实际 {produced} 条，请检查 indicator 配置")
+        return
+    if args.command == "replay":
+        replay(config, args)
         return
     try:
         with ProcessLock(Path("data/price-alert.lock")):

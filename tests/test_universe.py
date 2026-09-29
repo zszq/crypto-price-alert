@@ -1,4 +1,6 @@
-from price_alert.universe import select_liquid_contracts
+import pytest
+
+from price_alert.universe import price_decimals, select_liquid_contracts
 
 
 def test_selects_only_usdt_contracts_strictly_above_quote_volume_threshold():
@@ -95,3 +97,28 @@ def test_retained_contracts_use_lower_exit_threshold():
     )
 
     assert [item.symbol for item in selected] == ["KEEP_USDT"]
+
+
+def test_selected_contracts_carry_price_precision_from_order_price_round():
+    selected = select_liquid_contracts(
+        [
+            {"contract": "BTC_USDT", "last": "112345.6", "volume_24h_quote": "20000000"},
+            {"contract": "ODD_USDT", "last": "1", "volume_24h_quote": "20000000"},
+        ],
+        [
+            {"name": "BTC_USDT", "contract_type": "", "status": "trading", "order_price_round": "0.1"},
+            {"name": "ODD_USDT", "contract_type": "", "status": "trading"},
+        ],
+        10_000_000,
+    )
+
+    assert {item.symbol: item.price_decimals for item in selected} == {"BTC_USDT": 1, "ODD_USDT": None}
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("0.01", 2), ("0.010", 2), ("0.1", 1), ("1", 0), ("5", 0), ("1e-8", 8), (None, None), ("abc", None),
+     ("0", None), ("-0.1", None), ("nan", None), ("inf", None)],
+)
+def test_price_decimals_parses_gate_price_step(raw, expected):
+    assert price_decimals(raw) == expected

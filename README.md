@@ -23,6 +23,17 @@ ATR 异动强度 = |当前完整秒 VWAP - N 秒前完整秒 VWAP| / Wilder ATR
 
 触发距离等于 `max(基准价格 × 1%, ATR × 1.5)`。最低 1% 保证提醒具有足够的实际价格幅度，ATR 门槛则随着近期波动率动态变化。完整秒 VWAP 和连续确认用于过滤单笔离群成交与瞬时价格尖刺。
 
+### 长窗口：慢速单边行情
+
+短窗口只比较首尾两个点，每 30 秒都跌不到门槛的连续阴跌（例如 3 分钟跌 3%）会一直漏报。为此另设一个更长的观察窗口（默认 3 分钟，`indicator.long_window`），用同一份秒级数据和 ATR、但独立的一套门槛（默认涨跌 ≥ 2% 且 ≥ 2 ATR、窗口成交 ≥ 30 笔、连续 3 秒）。两个窗口任意一个满足即提醒：
+
+- 同一秒两个窗口都满足时只发一条，优先短窗口；
+- 冷却按合约共享「上次提醒时间」，时长按窗口各算：短窗口 `alerts.cooldown_seconds`，长窗口 `long_window.cooldown_seconds`（默认等于窗口长度，且不能更短）。所以短窗口刚提醒过的那段行情，长窗口不会在自己的窗口滑过期间再报一次；而长窗口的长冷却也不会拖住短窗口对下一波急涨急跌的提醒；
+- 长窗口要攒满窗口长度的数据才开始判定，启动和断线恢复后的前几分钟只有短窗口在工作；
+- 长窗口的起点落在无成交的空档里时，沿用空档前的最后成交价作基准（空档不长于长窗口）；短窗口的行为与此前完全一致。
+
+长窗口的提醒文本以分钟描述，例如「3分钟内价格下跌 2.51%」；JSONL/Webhook 中 `window` 字段为 `short` 或 `long`。设置 `long_window.enabled: false` 即可关闭。
+
 成交稀疏的合约在快速行情中常出现没有成交的空秒。空秒（不超过观察窗口长度）会沿用最后成交价参与连续确认，但提醒只会在有真实成交的秒触发，所以一笔离群成交后恰好无人成交，不会被误判为持续异动。实时连接断开重连后，秒级窗口和确认进度会清空，不会把断线前后的价格当作连续行情比较；同时全部合约暂停异动判定，连接恢复后自动从 REST 回补最近的 K 线并重建 ATR，回补完成的合约才恢复判定（失败的合约按退避重试）。连接正常时，某个 K 线周期内没有成交，会像 Gate 官方 K 线一样按上一收盘价补一根平线，保证实时 ATR 与预热数据口径一致。
 
 交易所返回的价格、数量、成交额和 K 线数值中出现 NaN 或 Infinity 时一律视为无效数据丢弃。ATR 预热时，REST 返回的当前未收盘 K 线会作为实时 K 线的起点，避免第一根实时 K 线只包含订阅之后的成交而低估 ATR。
@@ -38,7 +49,7 @@ Gate REST candlesticks 预热 ATR
         ↓
 Gate WebSocket futures.trades 实时成交
         ↓
-完整秒 VWAP 窗口 + 实时分钟 K 线 + Wilder ATR
+完整秒 VWAP（短窗口 + 长窗口）+ 实时分钟 K 线 + Wilder ATR
         ↓
 连续确认 / 成交笔数 / ATR 新鲜度 / 统一冷却过滤
         ↓
@@ -88,14 +99,32 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 .\.venv\Scripts\python.exe -m price_alert.cli simulate
 ```
 
-如果当前配置下模拟行情没有产生提醒，命令会以非零退出码结束并给出提示。配置文件缺失或校验失败时，会列出出错的配置键路径。
+模拟会为每个启用的观察窗口各跑一遍，正常时每个窗口产生一条提醒；数量不符时命令以非零退出码结束并给出提示。配置文件缺失或校验失败时，会列出出错的配置键路径。
+
+## 回放历史行情
+
+想知道某段时间为什么提醒或没有提醒，可以用 Gate 的历史成交把行情按当前配置逐秒重放一遍：
+
+```powershell
+.\.venv\Scripts\python.exe -m price_alert.cli replay QNT --start "2026-09-29 09:25" --end "2026-09-29 09:36"
+```
+
+- 合约名只写币名时自动补 `_USDT`；时间按北京时间解析，只写 `09:25` 表示今天；`--end` 默认为开始后 15 分钟；
+- 程序会自动多取最长窗口所需的历史成交，并用更早的已收盘 K 线预热 ATR，与实时监控启动时的口径一致；
+- 输出依次是：规则摘要、回放得到的提醒、每个窗口的判定统计和「最接近触发」的一秒（列出涨跌幅、ATR 倍数、成交笔数与各自门槛），以及所有达标、确认中、冷却中的秒；加 `--all` 输出每一秒每个窗口的判定；
+- 回放从空白冷却开始，也不模拟断线：实时进程当时没有运行、断线或正处于冷却时，实际结果会与回放不同；
+- 区间越长、成交越密，拉取越慢（每页 1000 笔，受 REST 限速约束），进度会写入日志；单次最多 30 万笔成交。Gate 只保留近期的历史成交，太早的区间会取不到数据。
 
 ## 提醒示例
 
 ```text
-[急涨提醒] 2026-09-16 16:20:30 | BTC_USDT | 30秒内价格上涨 1.24% | 75800 → 76739.92 | 异动强度 2.84 ATR
+[急涨提醒] 2026-09-16 16:20:30 | BTC_USDT | 30秒内价格上涨 1.24% | 75800.0 → 76739.9 | 异动强度 2.84 ATR
 交易地址：https://www.gate.com/zh/futures/USDT/BTC_USDT
+[急涨提醒] 2026-09-29 10:39:35 | QNT_USDT | 3分钟内价格上涨 2.51% | 211.78 → 217.08 | 异动强度 2.79 ATR
+交易地址：https://www.gate.com/zh/futures/USDT/QNT_USDT
 ```
+
+价格按合约的报价精度（Gate 合约的 `order_price_round`）显示，高价币不会再被截掉小数；取不到精度时按 8 位有效数字显示。
 
 提醒时间使用北京时间，格式为 `YYYY-MM-DD HH:MM:SS`。控制台中急涨提醒显示为绿色，急跌提醒显示为红色，交易对以亮黄色突出，涨跌幅百分比以同方向的亮绿/亮红色突出；`alerts.beep` 开启时，macOS 使用系统 `Glass` 音效，其他平台使用终端响铃。文本明确显示价格涨跌百分比，不显示原始 ATR 数值和 24 小时成交额。JSONL 和 Webhook 记录仍保留完整结构化字段，并包含值为 `green` 或 `red` 的 `color` 字段。
 
@@ -134,6 +163,11 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 - `indicator.confirmation_seconds`：超过动态门槛后需要连续确认的秒数，不能大于 `lookback_seconds`；
 - `indicator.min_window_trades`：窗口内最低成交笔数；
 - `indicator.max_atr_age_seconds`：ATR 过期保护，按最近一根计入 ATR 的 K 线的收盘时间计算，不能小于两个 K 线周期；不填写时默认为三个 K 线周期；
+- `indicator.long_window.enabled`：是否启用长窗口，默认开启；
+- `indicator.long_window.lookback_seconds`：长窗口长度，默认 180 秒（5 分钟填 300），必须大于 `indicator.lookback_seconds`；
+- `indicator.long_window.trigger_atr_multiple` / `min_change_percent`：长窗口的 ATR 倍数与最低涨跌幅，默认 2 与 2%，两者同时满足；
+- `indicator.long_window.confirmation_seconds` / `min_window_trades`：长窗口的连续确认秒数与窗口最低成交笔数，默认 3 秒、30 笔；
+- `indicator.long_window.cooldown_seconds`：长窗口提醒后的冷却，不能小于长窗口长度，不填写时等于长窗口长度；
 - `alerts.cooldown_seconds`：同一合约的统一提醒冷却时间；
 - `alerts.queue_size`：每个通知通道允许积压的提醒数量；
 - `alerts.console_colors`：是否启用控制台颜色，默认开启；
@@ -150,11 +184,14 @@ src/price_alert/
 ├── universe.py              动态高成交额合约池
 ├── gate.py                  Gate REST / WebSocket 适配器
 ├── indicators.py            Wilder ATR
-├── detector.py              ATR 标准化异动检测
+├── windows.py               观察窗口规则与逐秒判定记录
+├── detector.py              ATR 标准化异动检测（多窗口）
+├── formatting.py            价格、窗口长度与北京时间的展示格式
+├── replay.py                历史成交回放与逐秒判定解释
 ├── instance.py              防止重复提醒的跨平台进程锁
 ├── notifier.py              控制台、JSONL、Webhook 与独立队列分发
 ├── service.py               预热、增量刷新、重连和服务编排
-└── cli.py                   run/universe/check-config/simulate
+└── cli.py                   run/universe/check-config/simulate/replay
 tests/                       指标、筛选、解析、检测、通知、服务编排和命令行测试
 data/alerts/                 本地告警记录
 ```

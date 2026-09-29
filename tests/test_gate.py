@@ -495,3 +495,126 @@ def test_rate_limit_headers_are_read_case_insensitively():
     exc = urllib.error.HTTPError("https://example.test", 429, "too many", headers, None)
 
     assert GateRestClient("https://example.test")._retry_delay(0, exc) == gate.MAX_RETRY_AFTER_SECONDS
+
+
+class FakeTradeHistory:
+    """按实测的 Gate 语义返回历史成交：[from, to) 内从新到旧，limit 截断，offset 跳过。"""
+
+    def __init__(self, trades: list[dict]) -> None:
+        self.trades = trades
+        self.requests: list[dict] = []
+
+    def __call__(self, path: str, params: dict | None = None):
+        assert path == "/futures/usdt/trades"
+        assert params is not None
+        self.requests.append(dict(params))
+        matched = [item for item in self.trades if params["from"] <= item["create_time"] < params["to"]]
+        matched.sort(key=lambda item: (item["create_time"], item["id"]), reverse=True)
+        offset = params.get("offset", 0)
+        return matched[offset : offset + params["limit"]]
+
+
+def history_trade(trade_id: int, create_time: float, price: str = "100", **extra) -> dict:
+    # REST 的 create_time_ms 实际也是秒，故意放一个会被误当成毫秒的值，确保解析只认 create_time。
+    return {"id": trade_id, "contract": "QNT_USDT", "create_time": create_time, "create_time_ms": create_time,
+            "size": -3, "price": price} | extra
+
+
+def test_rest_trade_timestamp_is_read_as_seconds_and_internal_trades_are_dropped():
+    tick = gate.parse_rest_trade(history_trade(7, 1_790_645_229.845))
+
+    assert tick is not None
+    assert tick.timestamp == datetime.fromtimestamp(1_790_645_229.845, tz=UTC)
+    assert (tick.size, tick.trade_id) == (3.0, "7")
+    assert gate.parse_rest_trade(history_trade(8, 1_790_645_229.845, is_internal=True)) is None
+
+
+def test_fetch_trades_pages_back_by_shrinking_to_and_deduplicates(monkeypatch):
+    monkeypatch.setattr(gate, "TRADES_PAGE_SIZE", 3)
+    base = 1_790_645_220
+    trades = [history_trade(index, base + index * 0.5) for index in range(1, 11)]
+    fake = FakeTradeHistory(trades)
+    client = GateRestClient("https://example.test")
+    monkeypatch.setattr(client, "_get", fake)
+
+    ticks = client.fetch_trades(
+        "QNT_USDT",
+        datetime.fromtimestamp(base, tz=UTC),
+        datetime.fromtimestamp(base + 10, tz=UTC),
+    )
+
+    assert [tick.trade_id for tick in ticks] == [str(index) for index in range(1, 11)]
+    # 翻页只靠收缩 to，不需要 offset。
+    assert all("offset" not in request for request in fake.requests)
+
+
+def test_fetch_trades_uses_offset_when_a_whole_page_is_one_second(monkeypatch):
+    monkeypatch.setattr(gate, "TRADES_PAGE_SIZE", 3)
+    base = 1_790_645_220
+    burst = [history_trade(index, base + 5.1 + index / 1000) for index in range(1, 8)]
+    trades = [history_trade(100, base + 1.0), *burst, history_trade(200, base + 8.0)]
+    fake = FakeTradeHistory(trades)
+    client = GateRestClient("https://example.test")
+    monkeypatch.setattr(client, "_get", fake)
+
+    ticks = client.fetch_trades(
+        "QNT_USDT",
+        datetime.fromtimestamp(base, tz=UTC),
+        datetime.fromtimestamp(base + 10, tz=UTC),
+    )
+
+    # 第 5 秒挤了 7 笔，超过一页：必须在这一秒内用 offset 翻完，前后两侧的成交也不能丢。
+    assert sorted(int(tick.trade_id) for tick in ticks) == sorted(item["id"] for item in trades)
+    assert [tick.timestamp for tick in ticks] == sorted(tick.timestamp for tick in ticks)
+    assert any(request.get("offset") for request in fake.requests)
+
+
+def test_fetch_trades_refuses_ranges_with_too_many_trades(monkeypatch):
+    monkeypatch.setattr(gate, "TRADES_PAGE_SIZE", 3)
+    base = 1_790_645_220
+    client = GateRestClient("https://example.test")
+    monkeypatch.setattr(client, "_get", FakeTradeHistory([history_trade(i, base + i) for i in range(10)]))
+
+    with pytest.raises(ValueError, match="缩短时间范围"):
+        client.fetch_trades(
+            "QNT_USDT",
+            datetime.fromtimestamp(base, tz=UTC),
+            datetime.fromtimestamp(base + 10, tz=UTC),
+            max_trades=5,
+        )
+
+
+def test_fetch_candles_between_sends_inclusive_unix_range(monkeypatch):
+    requests = []
+
+    def fake_get(path, params=None):
+        requests.append((path, params))
+        return [{"t": 1_790_645_160, "o": "1", "h": "2", "l": "1", "c": "2"},
+                {"t": 1_790_645_100, "o": "1", "h": "2", "l": "1", "c": "1"}]
+
+    client = GateRestClient("https://example.test")
+    monkeypatch.setattr(client, "_get", fake_get)
+    start = datetime.fromtimestamp(1_790_645_100, tz=UTC)
+
+    candles = client.fetch_candles_between("QNT_USDT", "1m", start, start + timedelta(minutes=1))
+
+    assert requests == [
+        (
+            "/futures/usdt/candlesticks",
+            {"contract": "QNT_USDT", "interval": "1m", "from": 1_790_645_100, "to": 1_790_645_160},
+        )
+    ]
+    assert [candle.timestamp for candle in candles] == sorted(candle.timestamp for candle in candles)
+
+
+def test_fetch_contract_quotes_symbol_and_requires_object(monkeypatch):
+    paths = []
+    client = GateRestClient("https://example.test")
+    monkeypatch.setattr(client, "_get", lambda path, params=None: paths.append(path) or {"order_price_round": "0.1"})
+
+    assert client.fetch_contract("A/B_USDT") == {"order_price_round": "0.1"}
+    assert paths == ["/futures/usdt/contracts/A%2FB_USDT"]
+
+    monkeypatch.setattr(client, "_get", lambda path, params=None: [])
+    with pytest.raises(TypeError, match="合约响应不是对象"):
+        client.fetch_contract("BTC_USDT")

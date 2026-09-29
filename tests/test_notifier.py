@@ -360,3 +360,19 @@ def test_console_trade_url_escapes_non_ascii_whitespace_and_invisible_characters
     asyncio.run(ConsoleNotifier(beep=False, colors=False).send(make_alert(symbol="龙\u3000虾\u200b_USDT")))
 
     assert "/futures/USDT/龙%E3%80%80虾%E2%80%8B_USDT\n" in capsys.readouterr().out
+
+
+def test_high_price_is_not_truncated_and_uses_exchange_precision():
+    btc = replace(make_alert(), price=112345.63, reference_price=110000.04, price_decimals=1)
+    assert "110000.0 → 112345.6" in format_alert(btc)
+
+    # 没有交易所精度时按有效数字显示，整数部分和小数都不能被 :g 截掉。
+    unknown = replace(btc, price_decimals=None)
+    assert "110000.04 → 112345.63" in format_alert(unknown)
+
+
+def test_long_window_alert_is_described_in_minutes():
+    alert = replace(make_alert(), lookback_seconds=180, window="long")
+
+    assert "3分钟内价格上涨" in format_alert(alert)
+    assert alert.to_dict()["window"] == "long"

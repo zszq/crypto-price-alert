@@ -9,7 +9,6 @@ import logging
 import sys
 import urllib.request
 from collections.abc import Iterable
-from datetime import timedelta, timezone
 from pathlib import Path
 from types import TracebackType
 from typing import Protocol
@@ -18,10 +17,10 @@ from urllib.parse import quote
 from colorama import Fore, Style, just_fix_windows_console
 
 from price_alert.config import AlertConfig
+from price_alert.formatting import beijing_time, describe_window, format_price
 from price_alert.models import PriceAlert
 
 LOGGER = logging.getLogger(__name__)
-BEIJING_TIME = timezone(timedelta(hours=8))
 MACOS_SOUND_PLAYER = "/usr/bin/afplay"
 MACOS_ALERT_SOUND = "/System/Library/Sounds/Glass.aiff"
 # 交易对用与涨跌红绿都不冲突的亮黄色（非加粗）突出，便于在连续提醒中快速定位币种。
@@ -40,10 +39,12 @@ class Notifier(Protocol):
 def format_alert(alert: PriceAlert) -> str:
     label = "急涨" if alert.direction == "surge" else "急跌"
     move_label = "上涨" if alert.direction == "surge" else "下跌"
-    occurred_at = alert.timestamp.astimezone(BEIJING_TIME).strftime("%Y-%m-%d %H:%M:%S")
+    reference = format_price(alert.reference_price, alert.price_decimals)
+    price = format_price(alert.price, alert.price_decimals)
     return (
-        f"[{label}提醒] {occurred_at} | {alert.symbol} | {alert.lookback_seconds}秒内价格{move_label} "
-        f"{format_change(alert)} | {alert.reference_price:g} → {alert.price:g}"
+        f"[{label}提醒] {beijing_time(alert.timestamp)} | {alert.symbol} | "
+        f"{describe_window(alert.lookback_seconds)}内价格{move_label} "
+        f"{format_change(alert)} | {reference} → {price}"
         f" | 异动强度 {alert.move_atr:.2f} ATR"
     )
 

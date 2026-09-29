@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import time
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 
 from price_alert.config import INTERVAL_SECONDS, AppConfig
@@ -14,23 +15,71 @@ from price_alert.gate import GateRestClient, GateTradeFeed, RateLimiter
 from price_alert.models import Candle, ContractTicker
 from price_alert.notifier import AlertDispatcher, build_notifiers
 from price_alert.universe import select_liquid_contracts
+from price_alert.windows import MoveWindow, WindowEvaluation
 
 LOGGER = logging.getLogger(__name__)
 
 
-def build_detector(config: AppConfig, cooldown_seconds: int | None = None) -> AtrMoveDetector:
-    # 实时监控与 simulate 共用同一份组装逻辑，新增检测参数时只需改这里。
+def build_windows(config: AppConfig, cooldown_seconds: int | None = None) -> list[MoveWindow]:
+    """按配置生成观察窗口，短窗口在前：同一秒两个窗口都满足时优先发更紧迫的短窗口提醒。
+
+    cooldown_seconds 覆盖全部窗口的冷却，供 simulate 这类不需要冷却的场景使用。
+    """
+    indicator = config.indicator
+    windows = [
+        MoveWindow(
+            name="short",
+            lookback_seconds=indicator.lookback_seconds,
+            trigger_atr_multiple=indicator.trigger_atr_multiple,
+            min_change_percent=indicator.min_change_percent,
+            confirmation_seconds=indicator.confirmation_seconds,
+            min_window_trades=indicator.min_window_trades,
+            cooldown_seconds=config.alerts.cooldown_seconds if cooldown_seconds is None else cooldown_seconds,
+        )
+    ]
+    long_window = indicator.long_window
+    if long_window.enabled:
+        windows.append(
+            MoveWindow(
+                name="long",
+                lookback_seconds=long_window.lookback_seconds,
+                trigger_atr_multiple=long_window.trigger_atr_multiple,
+                min_change_percent=long_window.min_change_percent,
+                confirmation_seconds=long_window.confirmation_seconds,
+                min_window_trades=long_window.min_window_trades,
+                cooldown_seconds=long_window.cooldown_seconds if cooldown_seconds is None else cooldown_seconds,
+            )
+        )
+    return windows
+
+
+def build_detector(
+    config: AppConfig,
+    cooldown_seconds: int | None = None,
+    *,
+    windows: Sequence[MoveWindow] | None = None,
+    observer: Callable[[WindowEvaluation], None] | None = None,
+) -> AtrMoveDetector:
+    # 实时监控、simulate 与 replay 共用同一份组装逻辑，新增检测参数时只需改这里和 build_windows。
     indicator = config.indicator
     return AtrMoveDetector(
         atr_period=indicator.atr_period,
         candle_interval_seconds=INTERVAL_SECONDS[indicator.candle_interval],
-        lookback_seconds=indicator.lookback_seconds,
-        trigger_atr_multiple=indicator.trigger_atr_multiple,
-        min_change_percent=indicator.min_change_percent,
-        confirmation_seconds=indicator.confirmation_seconds,
-        min_window_trades=indicator.min_window_trades,
         max_atr_age_seconds=indicator.max_atr_age_seconds,
-        cooldown_seconds=config.alerts.cooldown_seconds if cooldown_seconds is None else cooldown_seconds,
+        windows=build_windows(config, cooldown_seconds) if windows is None else windows,
+        observer=observer,
+    )
+
+
+def build_rest_client(config: AppConfig) -> GateRestClient:
+    # 所有入口共用同一份限速与重试口径，命令行查询也不会绕过令牌桶打满交易所限频。
+    gate = config.gate
+    return GateRestClient(
+        gate.rest_url,
+        gate.settle,
+        gate.rest_timeout_seconds,
+        gate.rest_retries,
+        RateLimiter(gate.rest_rate_limit_per_second, gate.rest_rate_limit_burst),
     )
 
 
@@ -111,7 +160,8 @@ async def _sync_universe(
     detector.remove_symbols(current - target)
 
     for symbol in current & target:
-        detector.add_symbol(symbol, [], selected_by_symbol[symbol].volume_24h_quote)
+        ticker = selected_by_symbol[symbol]
+        detector.add_symbol(symbol, [], ticker.volume_24h_quote, price_decimals=ticker.price_decimals)
 
     async def add_new_symbol(symbol: str) -> None:
         closed: list[Candle] = []
@@ -121,7 +171,8 @@ async def _sync_universe(
         except Exception as exc:
             # 单个新品种预热失败时仍加入监控，它会在实时 K 线积累后自行就绪。
             LOGGER.warning("%s ATR 预热失败：%s", symbol, exc)
-        detector.add_symbol(symbol, closed, selected_by_symbol[symbol].volume_24h_quote, live)
+        ticker = selected_by_symbol[symbol]
+        detector.add_symbol(symbol, closed, ticker.volume_24h_quote, live, ticker.price_decimals)
 
     await asyncio.gather(*(add_new_symbol(symbol) for symbol in sorted(target - current)))
 
@@ -292,13 +343,7 @@ async def _stream_loop(
 
 async def run_monitor(config: AppConfig) -> None:
     detector = build_detector(config)
-    rest = GateRestClient(
-        config.gate.rest_url,
-        config.gate.settle,
-        config.gate.rest_timeout_seconds,
-        config.gate.rest_retries,
-        RateLimiter(config.gate.rest_rate_limit_per_second, config.gate.rest_rate_limit_burst),
-    )
+    rest = build_rest_client(config)
     feed = GateTradeFeed(
         config.gate.websocket_url,
         config.gate.subscription_chunk_size,
