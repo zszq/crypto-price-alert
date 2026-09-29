@@ -81,6 +81,8 @@ class IndicatorConfig(BaseModel):
     confirmation_seconds: int = Field(default=3, ge=1, le=10)
     min_window_trades: int = Field(default=10, ge=1)
     max_atr_age_seconds: int = Field(default=180, ge=30, le=3600)
+    # 冷却由检测器执行、参与多窗口裁决，属于判定逻辑而非通知通道，因此与长窗口的冷却一样放在这里。
+    cooldown_seconds: int = Field(default=30, ge=0, le=86400)
     long_window: LongWindowConfig = Field(default_factory=LongWindowConfig)
 
     @model_validator(mode="after")
@@ -105,7 +107,6 @@ class IndicatorConfig(BaseModel):
 class AlertConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    cooldown_seconds: int = Field(default=30, ge=0, le=86400)
     queue_size: int = Field(default=1000, ge=1, le=100_000)
     console: bool = True
     console_colors: bool = True

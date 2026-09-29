@@ -34,7 +34,7 @@ def build_windows(config: AppConfig, cooldown_seconds: int | None = None) -> lis
             min_change_percent=indicator.min_change_percent,
             confirmation_seconds=indicator.confirmation_seconds,
             min_window_trades=indicator.min_window_trades,
-            cooldown_seconds=config.alerts.cooldown_seconds if cooldown_seconds is None else cooldown_seconds,
+            cooldown_seconds=indicator.cooldown_seconds if cooldown_seconds is None else cooldown_seconds,
         )
     ]
     long_window = indicator.long_window

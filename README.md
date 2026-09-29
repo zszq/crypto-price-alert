@@ -28,7 +28,7 @@ ATR 异动强度 = |当前完整秒 VWAP - N 秒前完整秒 VWAP| / Wilder ATR
 短窗口只比较首尾两个点，每 30 秒都跌不到门槛的连续阴跌（例如 3 分钟跌 3%）会一直漏报。为此另设一个更长的观察窗口（默认 3 分钟，`indicator.long_window`），用同一份秒级数据和 ATR、但独立的一套门槛（默认涨跌 ≥ 2% 且 ≥ 2 ATR、窗口成交 ≥ 30 笔、连续 3 秒）。两个窗口任意一个满足即提醒：
 
 - 同一秒两个窗口都满足时只发一条，优先短窗口；
-- 冷却按合约共享「上次提醒时间」，时长按窗口各算：短窗口 `alerts.cooldown_seconds`，长窗口 `long_window.cooldown_seconds`（默认等于窗口长度，且不能更短）。所以短窗口刚提醒过的那段行情，长窗口不会在自己的窗口滑过期间再报一次；而长窗口的长冷却也不会拖住短窗口对下一波急涨急跌的提醒；
+- 冷却按合约共享「上次提醒时间」，时长按窗口各算：短窗口 `indicator.cooldown_seconds`，长窗口 `long_window.cooldown_seconds`（默认等于窗口长度，且不能更短）。所以短窗口刚提醒过的那段行情，长窗口不会在自己的窗口滑过期间再报一次；而长窗口的长冷却也不会拖住短窗口对下一波急涨急跌的提醒；
 - 长窗口要攒满窗口长度的数据才开始判定，启动和断线恢复后的前几分钟只有短窗口在工作；
 - 长窗口的起点落在无成交的空档里时，沿用空档前的最后成交价作基准（空档不长于长窗口）；短窗口的行为与此前完全一致。
 
@@ -163,12 +163,12 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 - `indicator.confirmation_seconds`：超过动态门槛后需要连续确认的秒数，不能大于 `lookback_seconds`；
 - `indicator.min_window_trades`：窗口内最低成交笔数；
 - `indicator.max_atr_age_seconds`：ATR 过期保护，按最近一根计入 ATR 的 K 线的收盘时间计算，不能小于两个 K 线周期；不填写时默认为三个 K 线周期；
+- `indicator.cooldown_seconds`：短窗口提醒后的同一合约冷却时间，不分涨跌方向；
 - `indicator.long_window.enabled`：是否启用长窗口，默认开启；
 - `indicator.long_window.lookback_seconds`：长窗口长度，默认 180 秒（5 分钟填 300），必须大于 `indicator.lookback_seconds`；
 - `indicator.long_window.trigger_atr_multiple` / `min_change_percent`：长窗口的 ATR 倍数与最低涨跌幅，默认 2 与 2%，两者同时满足；
 - `indicator.long_window.confirmation_seconds` / `min_window_trades`：长窗口的连续确认秒数与窗口最低成交笔数，默认 3 秒、30 笔；
 - `indicator.long_window.cooldown_seconds`：长窗口提醒后的冷却，不能小于长窗口长度，不填写时等于长窗口长度；
-- `alerts.cooldown_seconds`：同一合约的统一提醒冷却时间；
 - `alerts.queue_size`：每个通知通道允许积压的提醒数量；
 - `alerts.console_colors`：是否启用控制台颜色，默认开启；
 - `alerts.beep`：是否在控制台提醒时播放提示音；macOS 使用系统音效，不依赖终端响铃设置；

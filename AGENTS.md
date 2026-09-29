@@ -53,7 +53,7 @@ python -m venv .venv
 - 乱序（时间早于上一笔）的成交直接丢弃。
 - ATR 由 `indicators.WilderAtr` 计算：预热 K 线 seed 后，实时成交维护 `_LiveBar`（可由 `live_candle` 初始化），跨入下一个 K 线周期时才把上一根 bar 喂给 ATR；若跨过了多个周期，中间按 Gate 的口径补开高低收都等于上一收盘价的平线 K 线（最多 `atr_period × 4` 根）。ATR 年龄按最后计入 K 线的**收盘时间**（开盘时间 + 周期）计算，超过 `max_atr_age_seconds` 则不判定。
 - 单个窗口的触发条件（全部满足）：基准桶在 `lookback_seconds` 前且间隔不超过 lookback+2 秒；窗口内成交笔数 ≥ `min_window_trades`；`|涨跌幅| ≥ min_change_percent` **且** `位移/ATR ≥ trigger_atr_multiple`；同方向连续 `confirmation_seconds` 个相邻秒满足（任一条件不满足就重置该窗口的候选）；冷却期已过。
-- 多窗口裁决（`_evaluate`）：每秒先各窗口独立评估，再按窗口顺序裁决——同一秒多个窗口满足只发第一个（短窗口优先，其余记 `SUPERSEDED`）；冷却按合约共享 `_last_alert` 时间、按窗口各自的 `cooldown_seconds` 计时长（长窗口冷却 ≥ 其窗口长度，配置层强制）；发出提醒后重置全部窗口的候选。
+- 多窗口裁决（`_evaluate`）：每秒先各窗口独立评估，再按窗口顺序裁决——同一秒多个窗口满足只发第一个（短窗口优先，其余记 `SUPERSEDED`）；冷却按合约共享 `_last_alert` 时间、按窗口各自的冷却计时长（短窗口 `indicator.cooldown_seconds`、长窗口 `indicator.long_window.cooldown_seconds`，后者 ≥ 其窗口长度，配置层强制；冷却属于判定逻辑，不在 `alerts` 下）；发出提醒后重置全部窗口的候选。
 - 秒级桶按最长窗口保留；空秒补齐上限是**最短**窗口的 lookback，保证短窗口行为与单窗口时一致。窗口起点落在更长的空档里时，`_find_baseline` 沿用空档前最后成交价作基准，前提是空档不长于该窗口（短窗口的这类空档都已补齐，走不到这里）。基准定位用二分查找，窗口笔数用桶上的累计笔数 `trades_before` 相减，长窗口不必逐桶扫描。
 - 构造时可传 `observer`，每秒每个窗口回调一条 `WindowEvaluation`（含 `Outcome` 判定结果与涨跌幅、ATR 倍数、笔数等指标），回放靠它解释原因；实时监控不传。
 - `remove_symbols` 不清除冷却记录。`mark_stream_gap` 清空秒级窗口和确认进度并置 `atr_stale`：失效期间不判定、不向 ATR 喂 K 线（也不补平线），直到 `resync_symbol` 用 REST K 线重建 ATR。重建时若本地实时 K 线与交易所当前 K 线同一周期，高低点取并集；若本地已跨入新周期，交易所的“当前 K 线”按已收盘计入 ATR。`resync_symbol` 只作用于仍处于失效状态的合约。

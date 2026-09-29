@@ -103,6 +103,13 @@ def test_rejects_long_window_not_longer_than_short_window():
     AppConfig.model_validate({"indicator": {"lookback_seconds": 180, "long_window": {"enabled": False}}})
 
 
+def test_cooldown_lives_under_indicator_not_alerts():
+    assert AppConfig.model_validate({"indicator": {"cooldown_seconds": 45}}).indicator.cooldown_seconds == 45
+    # 旧位置直接报错而不是静默忽略，避免以为改了冷却其实没生效。
+    with pytest.raises(ValidationError, match="cooldown_seconds"):
+        AppConfig.model_validate({"alerts": {"cooldown_seconds": 45}})
+
+
 def test_rejects_unknown_long_window_keys():
     with pytest.raises(ValidationError, match="long_window"):
         AppConfig.model_validate({"indicator": {"long_window": {"lookback": 300}}})
