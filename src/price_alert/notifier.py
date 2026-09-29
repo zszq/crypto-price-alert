@@ -19,7 +19,6 @@ from colorama import Fore, Style, just_fix_windows_console
 from price_alert.config import AlertConfig
 from price_alert.formatting import beijing_time, describe_window, format_price
 from price_alert.models import PriceAlert
-from price_alert.windows import WindowName
 
 LOGGER = logging.getLogger(__name__)
 MACOS_SOUND_PLAYER = "/usr/bin/afplay"
@@ -31,8 +30,6 @@ SURGE_CHANGE_COLOR = Fore.LIGHTGREEN_EX
 DROP_CHANGE_COLOR = Fore.LIGHTRED_EX
 # 交易地址是辅助信息，置灰以免抢走提醒正文的注意力；同样只用标准 16 色中的亮黑（灰）。
 TRADE_URL_COLOR = Fore.LIGHTBLACK_EX
-# 窗口长度用两种与红绿、黄、灰都不冲突的颜色，既与正文区分，也让短窗口和长窗口一眼可辨。
-WINDOW_COLORS: dict[WindowName, str] = {"short": Fore.LIGHTBLUE_EX, "long": Fore.LIGHTMAGENTA_EX}
 
 
 class Notifier(Protocol):
@@ -71,11 +68,12 @@ def colorize_alert(alert: PriceAlert, text: str, enabled: bool = True) -> str:
     symbol = f"{SYMBOL_COLOR}{alert.symbol}{Style.RESET_ALL}{color}"
     change = format_change(alert)
     highlighted_change = f"{bright}{change}{Style.RESET_ALL}{color}"
-    window = format_window(alert)
-    highlighted_window = f"{WINDOW_COLORS[alert.window]}{window}{Style.RESET_ALL}{color}"
-    # 窗口字样必带“秒”或“分钟”，时间戳、价格、交易对和涨跌幅里都不会出现，按首次出现替换不会误伤。
-    text = text.replace(alert.symbol, symbol, 1).replace(window, highlighted_window, 1)
-    text = text.replace(change, highlighted_change, 1)
+    text = text.replace(alert.symbol, symbol, 1).replace(change, highlighted_change, 1)
+    if alert.window == "long":
+        # 短窗口是常态，保持正文色；只有长窗口的窗口长度高亮，一眼认出这是慢速单边行情。
+        # 与涨跌幅用同一个亮色，不再引入新颜色。窗口字样必带“秒”或“分钟”，其他字段里不会出现，按首次出现替换不会误伤。
+        window = format_window(alert)
+        text = text.replace(window, f"{bright}{window}{Style.RESET_ALL}{color}", 1)
     return f"{color}{text}{Style.RESET_ALL}"
 
 
