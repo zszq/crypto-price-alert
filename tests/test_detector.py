@@ -542,3 +542,35 @@ def test_window_with_too_few_trades_does_not_alert_even_when_price_moved():
     last = evaluations[-1]
     assert last.outcome is Outcome.FEW_TRADES
     assert (last.trade_count, last.change_percent) == (10, pytest.approx(3.0))
+
+
+def test_short_window_does_not_fill_gaps_just_because_a_long_window_exists():
+    instance = detector(long_window())
+    instance.add_symbol("THIN_USDT", history(1.0), 20_000_000)
+
+    # 空档 29 秒：长于短窗口的 10 秒、短于长窗口的 40 秒。补齐上限若误用最长窗口，
+    # 短窗口会拿空档前的旧价补出基准，把 1% 的位移误报成 10 秒内的急涨。
+    prices = {second: 100.0 for second in range(11)} | {second: 101.0 for second in range(40, 46)}
+
+    assert feed_prices(instance, "THIN_USDT", prices) == []
+
+
+def test_confirmation_restarts_after_each_alert():
+    instance = AtrMoveDetector(
+        atr_period=3,
+        candle_interval_seconds=60,
+        max_atr_age_seconds=180,
+        windows=[short_window(cooldown_seconds=0)],
+    )
+    instance.add_symbol("BTC_USDT", history(1.0), 1_000_000_000)
+
+    start = BASE + timedelta(minutes=3)
+    for second in range(11):
+        instance.add_tick(PriceTick("BTC_USDT", 100.0, 1.0, start + timedelta(seconds=second)))
+    fired = []
+    for second in range(11, 18):
+        if instance.add_tick(PriceTick("BTC_USDT", 101.0, 1.0, start + timedelta(seconds=second))):
+            fired.append(second)
+
+    # 没有冷却时，每次提醒后仍要重新连续确认 2 秒，而不是之后每秒都提醒。
+    assert fired == [13, 15, 17]
