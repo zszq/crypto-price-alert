@@ -14,6 +14,7 @@ from price_alert.notifier import (
     SURGE_CHANGE_COLOR,
     SYMBOL_COLOR,
     TRADE_URL_COLOR,
+    WINDOW_COLORS,
     AlertDispatcher,
     ConsoleNotifier,
     JsonlNotifier,
@@ -376,3 +377,16 @@ def test_long_window_alert_is_described_in_minutes():
 
     assert "3分钟内价格上涨" in format_alert(alert)
     assert alert.to_dict()["window"] == "long"
+
+
+def test_colorize_highlights_window_length_by_window_type():
+    short = make_alert()
+    text = colorize_alert(short, format_alert(short))
+    assert f"{WINDOW_COLORS['short']}30秒{Style.RESET_ALL}{Fore.GREEN}内价格上涨" in text
+
+    long = replace(make_alert(), lookback_seconds=180, window="long", direction="drop", change_percent=-2.5)
+    text = colorize_alert(long, format_alert(long))
+    assert f"{WINDOW_COLORS['long']}3分钟{Style.RESET_ALL}{Fore.RED}内价格下跌" in text
+    # 两种窗口颜色必须不同，且都不与正文、交易对、涨跌幅、地址的颜色重复。
+    used = {Fore.GREEN, Fore.RED, SYMBOL_COLOR, SURGE_CHANGE_COLOR, DROP_CHANGE_COLOR, TRADE_URL_COLOR}
+    assert len(set(WINDOW_COLORS.values())) == 2 and not used & set(WINDOW_COLORS.values())

@@ -19,6 +19,7 @@ from colorama import Fore, Style, just_fix_windows_console
 from price_alert.config import AlertConfig
 from price_alert.formatting import beijing_time, describe_window, format_price
 from price_alert.models import PriceAlert
+from price_alert.windows import WindowName
 
 LOGGER = logging.getLogger(__name__)
 MACOS_SOUND_PLAYER = "/usr/bin/afplay"
@@ -30,6 +31,8 @@ SURGE_CHANGE_COLOR = Fore.LIGHTGREEN_EX
 DROP_CHANGE_COLOR = Fore.LIGHTRED_EX
 # 交易地址是辅助信息，置灰以免抢走提醒正文的注意力；同样只用标准 16 色中的亮黑（灰）。
 TRADE_URL_COLOR = Fore.LIGHTBLACK_EX
+# 窗口长度用两种与红绿、黄、灰都不冲突的颜色，既与正文区分，也让短窗口和长窗口一眼可辨。
+WINDOW_COLORS: dict[WindowName, str] = {"short": Fore.LIGHTBLUE_EX, "long": Fore.LIGHTMAGENTA_EX}
 
 
 class Notifier(Protocol):
@@ -43,7 +46,7 @@ def format_alert(alert: PriceAlert) -> str:
     price = format_price(alert.price, alert.price_decimals)
     return (
         f"[{label}提醒] {beijing_time(alert.timestamp)} | {alert.symbol} | "
-        f"{describe_window(alert.lookback_seconds)}内价格{move_label} "
+        f"{format_window(alert)}内价格{move_label} "
         f"{format_change(alert)} | {reference} → {price}"
         f" | 异动强度 {alert.move_atr:.2f} ATR"
     )
@@ -52,6 +55,11 @@ def format_alert(alert: PriceAlert) -> str:
 def format_change(alert: PriceAlert) -> str:
     # format_alert 与 colorize_alert 共用同一格式，保证着色时能在文本中准确找到百分比。
     return f"{abs(alert.change_percent):.2f}%"
+
+
+def format_window(alert: PriceAlert) -> str:
+    # 与 format_change 同理：着色靠在文本中查找这段字样，两处必须出自同一个函数。
+    return describe_window(alert.lookback_seconds)
 
 
 def colorize_alert(alert: PriceAlert, text: str, enabled: bool = True) -> str:
@@ -63,7 +71,11 @@ def colorize_alert(alert: PriceAlert, text: str, enabled: bool = True) -> str:
     symbol = f"{SYMBOL_COLOR}{alert.symbol}{Style.RESET_ALL}{color}"
     change = format_change(alert)
     highlighted_change = f"{bright}{change}{Style.RESET_ALL}{color}"
-    text = text.replace(alert.symbol, symbol, 1).replace(change, highlighted_change, 1)
+    window = format_window(alert)
+    highlighted_window = f"{WINDOW_COLORS[alert.window]}{window}{Style.RESET_ALL}{color}"
+    # 窗口字样必带“秒”或“分钟”，时间戳、价格、交易对和涨跌幅里都不会出现，按首次出现替换不会误伤。
+    text = text.replace(alert.symbol, symbol, 1).replace(window, highlighted_window, 1)
+    text = text.replace(change, highlighted_change, 1)
     return f"{color}{text}{Style.RESET_ALL}"
 
 
