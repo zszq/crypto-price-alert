@@ -9,6 +9,7 @@ from colorama import Fore, Style
 from price_alert.models import PriceAlert
 from price_alert.notifier import (
     DROP_CHANGE_COLOR,
+    LONG_WINDOW_COLOR,
     MACOS_ALERT_SOUND,
     MACOS_SOUND_PLAYER,
     SURGE_CHANGE_COLOR,
@@ -378,15 +379,18 @@ def test_long_window_alert_is_described_in_minutes():
     assert alert.to_dict()["window"] == "long"
 
 
-def test_only_long_window_length_is_highlighted_in_direction_bright_color():
+def test_only_long_window_length_is_highlighted_in_one_color_for_both_directions():
     # 短窗口的「30秒」沿用正文方向色，前面不插入任何颜色码。
     short = make_alert()
     assert f"{Style.RESET_ALL}{Fore.GREEN} | 30秒内价格上涨" in colorize_alert(short, format_alert(short))
 
-    # 长窗口的「3分钟」与涨跌幅同色：急涨亮绿、急跌亮红。
+    # 长窗口的「3分钟」急涨急跌都用同一个颜色，之后恢复各自的正文色。
     surge = replace(make_alert(), lookback_seconds=180, window="long")
     surge_text = colorize_alert(surge, format_alert(surge))
-    assert f"{SURGE_CHANGE_COLOR}3分钟{Style.RESET_ALL}{Fore.GREEN}内价格上涨" in surge_text
+    assert f"{LONG_WINDOW_COLOR}3分钟{Style.RESET_ALL}{Fore.GREEN}内价格上涨" in surge_text
     drop = replace(surge, direction="drop", change_percent=-2.5)
     drop_text = colorize_alert(drop, format_alert(drop))
-    assert f"{DROP_CHANGE_COLOR}3分钟{Style.RESET_ALL}{Fore.RED}内价格下跌" in drop_text
+    assert f"{LONG_WINDOW_COLOR}3分钟{Style.RESET_ALL}{Fore.RED}内价格下跌" in drop_text
+    # 不能与正文、交易对、涨跌幅、地址撞色，否则起不到区分作用。
+    used = {Fore.GREEN, Fore.RED, SYMBOL_COLOR, SURGE_CHANGE_COLOR, DROP_CHANGE_COLOR, TRADE_URL_COLOR}
+    assert LONG_WINDOW_COLOR not in used

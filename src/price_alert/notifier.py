@@ -30,6 +30,9 @@ SURGE_CHANGE_COLOR = Fore.LIGHTGREEN_EX
 DROP_CHANGE_COLOR = Fore.LIGHTRED_EX
 # 交易地址是辅助信息，置灰以免抢走提醒正文的注意力；同样只用标准 16 色中的亮黑（灰）。
 TRADE_URL_COLOR = Fore.LIGHTBLACK_EX
+# 长窗口的窗口长度要在绿、红两种正文里都醒目又协调：亮青色与红绿都不冲突，也不带涨跌含义，
+# 且与交易对的亮黄色明显不同；同样只用标准 16 色。
+LONG_WINDOW_COLOR = Fore.LIGHTCYAN_EX
 
 
 class Notifier(Protocol):
@@ -71,9 +74,9 @@ def colorize_alert(alert: PriceAlert, text: str, enabled: bool = True) -> str:
     text = text.replace(alert.symbol, symbol, 1).replace(change, highlighted_change, 1)
     if alert.window == "long":
         # 短窗口是常态，保持正文色；只有长窗口的窗口长度高亮，一眼认出这是慢速单边行情。
-        # 与涨跌幅用同一个亮色，不再引入新颜色。窗口字样必带“秒”或“分钟”，其他字段里不会出现，按首次出现替换不会误伤。
+        # 窗口字样必带“秒”或“分钟”，其他字段里不会出现，按首次出现替换不会误伤。
         window = format_window(alert)
-        text = text.replace(window, f"{bright}{window}{Style.RESET_ALL}{color}", 1)
+        text = text.replace(window, f"{LONG_WINDOW_COLOR}{window}{Style.RESET_ALL}{color}", 1)
     return f"{color}{text}{Style.RESET_ALL}"
 
 
