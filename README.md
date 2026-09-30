@@ -39,6 +39,23 @@ ATR 异动强度 = |当前完整秒 VWAP - N 秒前完整秒 VWAP| / Wilder ATR
 
 交易所返回的价格、数量、成交额和 K 线数值中出现 NaN 或 Infinity 时一律视为无效数据丢弃。ATR 预热时，REST 返回的当前未收盘 K 线会作为实时 K 线的起点，避免第一根实时 K 线只包含订阅之后的成交而低估 ATR。
 
+### K 线形态趋势：持续单边行情
+
+秒级窗口最长只看 3 分钟，而且 ATR 会被行情本身抬高：先拉盘再阴跌时，每 3 分钟只跌 2%~3%，累计十几分钟却跌掉 10% 以上，这种行情秒级判定一条都报不出来。趋势提醒（`trend`，与秒级判定相互独立）按 K 线形态识别这类行情：
+
+- 由实时成交聚合 1 分钟 K 线，再合成 1m / 3m / 5m / 15m 四个周期，各周期并行判定、参数独立；
+- 每个周期对最近 `candles` 根已收盘 K 线整体打分，而不是要求每根都是阴线。以下条件全部满足才算趋势成立：
+  - **累计涨跌幅**：第一根开盘到最后一根收盘，默认 1m 8 根 ≥ 4%、3m 6 根 ≥ 5%、5m 6 根 ≥ 6%、15m 6 根 ≥ 8%；可选再要求不低于趋势前基准 K 线平均真实波幅的若干倍（`min_change_atr`，默认关闭）；
+  - **最大反弹比例**：窗口内从滚动极值算起的最大反向回撤（按收盘价）不超过累计位移的 30%。小阳线、十字星可以容忍，真正的反转会被排除，这是区分趋势与震荡的关键；
+  - **顺势 K 线占比**与**收盘递进占比**：都不低于 70%（下跌时阴线、收盘比上一根低）；
+  - **实体占比**：各根实体之和 ÷ 各根振幅之和不低于 50%，即整体影线不长，允许个别长影线；
+  - **放量**：窗口平均成交量不低于前 `baseline_candles` 根成交量中位数的 1.5 倍。基准用中位数、且取窗口之前的 K 线，趋势前的一波放量急拉急砸不会把门槛抬高；
+- 一段趋势按状态机提醒，所有周期共用：哪个周期先发现就按哪个报「开始」，同一分钟多个周期成立只发最短周期，其他周期随后成立也不再重复；之后每 1 分钟收盘推进一次——从起点累计每多跨过 5% 报一次「延续」；从极值反向回撤达到起点到极值幅度的一半、或 30 分钟没有创新极值、或出现反向趋势时报「结束」；同方向两次「开始」至少间隔 30 分钟；
+- **衰竭提示**：趋势进行中，5m / 15m K 线出现逆向长影线（下跌看下影线，占振幅 ≥ 60%），且影线探到了趋势极值附近时，提示趋势可能放缓；它不参与开始判定，每档只提示一次。用近 3 天 33 个合约的 1 分钟 K 线回测，1 分钟 K 线的长影线之后 30 分钟内趋势不再延伸 2% 的比例只有 42%，还不如趋势中随机时点（50%），所以默认只看 5m 和 15m（56%~63%）。这是弱信号，仅供参考；
+- 周期 K 线在收盘后、下一分钟第一笔成交到达时判定，比收盘最多晚一分钟左右；断线时暂停判定，恢复后与 ATR 一起从 REST 回补 1 分钟 K 线，进行中的趋势跟踪不受影响。
+
+以 2026-09-30 晚间 ARK_USDT 为例：21:55 拉到 0.4278 后开始阶梯式下跌，秒级判定只在几次急跌时提醒，22:33–22:45 的阴跌一条都没有；趋势提醒在 22:17 以 1 分钟 K 线发现下跌（8 根累计 -8.04%），此后每跌一档报一次延续（-10%、-15%……一直到 01:15 的 -51.39%），中途在 5 分钟 K 线上给出 4 次衰竭提示，02:12 因 30 分钟未创新低结束，整段 4 个小时共 15 条提醒。可以用 `trend-replay` 复现，见下文。
+
 ## 数据流程
 
 ```text
@@ -46,14 +63,15 @@ Gate REST /futures/usdt/contracts + /tickers
         ↓ 仅虚拟币、交易中、24h quote volume > 10M USDT
 动态交易对池
         ↓
-Gate REST candlesticks 预热 ATR
+Gate REST candlesticks 预热 ATR 与趋势（同周期合并为一次请求）
         ↓
 Gate WebSocket futures.trades 实时成交
-        ↓
-完整秒 VWAP（短窗口 + 长窗口）+ 实时分钟 K 线 + Wilder ATR
-        ↓
-连续确认 / 成交笔数 / ATR 新鲜度 / 统一冷却过滤
-        ↓
+        ↓                                    ↓
+完整秒 VWAP（短窗口 + 长窗口）          1 分钟 K 线 → 1m/3m/5m/15m 周期 K 线
++ 实时分钟 K 线 + Wilder ATR                   ↓
+        ↓                              形态打分 → 开始/延续/衰竭/结束状态机
+连续确认 / 成交笔数 / ATR 新鲜度 / 统一冷却过滤  ↓
+        ↓                                    ↓
 控制台声音 + JSONL + 可选 Webhook
 ```
 
@@ -94,13 +112,13 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 .\.venv\Scripts\python.exe -m price_alert.cli check-config
 ```
 
-使用合成数据验证 ATR 提醒，不联网、不写告警文件：
+使用合成数据验证 ATR 与趋势提醒，不联网、不写告警文件：
 
 ```powershell
 .\.venv\Scripts\python.exe -m price_alert.cli simulate
 ```
 
-模拟会为每个启用的观察窗口各跑一遍，正常时每个窗口产生一条提醒；数量不符时命令以非零退出码结束并给出提示。配置文件缺失或校验失败时，会列出出错的配置键路径。
+模拟会为每个启用的观察窗口和趋势周期各跑一遍，正常时每个窗口、每个趋势周期各产生一条提醒；数量不符时命令以非零退出码结束并给出提示。配置文件缺失或校验失败时，会列出出错的配置键路径。
 
 ## 回放历史行情
 
@@ -116,6 +134,16 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 - 回放从空白冷却开始，也不模拟断线：实时进程当时没有运行、断线或正处于冷却时，实际结果会与回放不同；
 - 区间越长、成交越密，拉取越慢（每页 1000 笔，受 REST 限速约束），进度会写入日志；单次最多 30 万笔成交。Gate 只保留近期的历史成交，太早的区间会取不到数据。
 
+趋势提醒用历史 1 分钟 K 线回放，几个小时的区间也只需几次请求：
+
+```powershell
+.\.venv\Scripts\python.exe -m price_alert.cli trend-replay ARK --start "2026-09-30 21:30" --end "2026-10-01 00:30"
+```
+
+- `--end` 默认为开始后 3 小时，时间与合约名的写法同 `replay`；
+- 输出依次是：各周期规则、回放得到的提醒、各周期的判定统计（含每个条件未满足的次数和「最接近成立」的一次），以及所有形态成立的时刻；加 `--all` 输出每个周期每根 K 线的判定；
+- 实时监控由成交聚合 1 分钟 K 线，回放直接用交易所的 1 分钟 K 线（同样由成交生成、排除内部成交），两者可能有细微差别；冷却与趋势跟踪从空白开始。
+
 ## 提醒示例
 
 ```text
@@ -124,6 +152,17 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 [急涨提醒] 2026-09-29 10:39:35 | QNT_USDT | 3分钟内价格上涨 2.51% | 211.78 → 217.08 | 异动强度 2.79 ATR
 交易地址：https://www.gate.com/zh/futures/USDT/QNT_USDT
 ```
+
+趋势提醒以亮紫色的阶段标签开头，一段趋势通常是这样几条：
+
+```text
+[趋势下跌] 2026-09-30 22:17:00 | ARK_USDT | 1分钟K线 8 根持续下跌，累计下跌 8.04% | 0.4129 → 0.3797 | 阴线 88% · 收盘递进 88% · 最大反弹 8% · 实体占比 58% · 量能 1.8 倍
+[下跌延续] 2026-09-30 22:35:00 | ARK_USDT | 累计下跌 15.89%（自 22:09 起 26 分钟） | 0.4129 → 0.3473
+[下跌衰竭提示] 2026-09-30 22:55:00 | ARK_USDT | 5分钟K线出现长下影线（占振幅 68%），下跌可能放缓 | 累计下跌 19.98%（自 22:09 起 46 分钟） | 0.4129 → 0.3304
+[下跌趋势结束] 2026-10-01 02:12:00 | ARK_USDT | 长时间未创新极值，自 22:09 起 243 分钟 | 0.4129 → 最低 0.2000（最大下跌 51.56%），当前 0.2131
+```
+
+JSONL/Webhook 中趋势提醒带 `kind: "trend"`，并有 `stage`（`start` / `extend` / `exhaustion` / `end`）、`period`、`anchor_price`、`extreme_price`、`end_reason` 等字段，「开始」提醒另有 `metrics`（各项比例）；秒级异动提醒没有 `kind` 字段。
 
 价格按合约的报价精度（Gate 合约的 `order_price_round`）显示，高价币不会再被截掉小数；取不到精度时按 8 位有效数字显示。
 
@@ -155,7 +194,7 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 - `gate.max_data_lag_seconds`：实时成交的最大允许滞后，默认 10 秒。网络拥塞时成交会在链路上积压，推送过来的已是几十秒前的行情，此时秒级判定失去意义；逐笔校验成交时间戳，超过该值即主动断开重连以清空积压，滞后的成交在判定之前就被拦下，不会产生提醒。若日志频繁出现「行情数据滞后」，说明到 Gate 的网络链路不稳，应先排查网络而不是调高该值；
 - `gate.rest_rate_limit_per_second` / `gate.rest_rate_limit_burst`：所有 REST 请求共用的令牌桶速率与突发额度，默认 10 次/秒、突发 20 次。交易所限频按单位时间的请求数计算，而合约池大小只决定单轮请求数，因此上限必须加在时间维度上：合约池再大、断线重连再频繁，长期平均速率都收敛到该值，只会拉长一轮预热或回补的耗时。注意突发额度是瞬时放行的额度——桶攒满时可以一次发出 20 个请求，限制的是长期平均速率而非任意一秒内的绝对上限，所以突发额度不应超过交易所在一个限频窗口内的配额——Gate 公共接口的官方口径是每个端点每 10 秒 200 次（响应头 `X-Gate-RateLimit-Limit` 实测同为 200），折合平均 20 次/秒，而本项目的令牌桶是所有端点共用的，比按端点计算更保守。若日志出现 429，应下调速率而不是调高重试次数；
 - `gate.rest_retries`：单个请求的最大尝试次数。429 按交易所告知的恢复时刻等待（封顶 30 秒）：优先读 HTTP 标准头 `Retry-After`，Gate 实际不返回该头，恢复时刻放在专有头 `X-Gate-RateLimit-Reset-Timestamp`（Unix 秒级绝对时间戳）里；两者都没有时才按 2 秒起的指数退避，明显长于其他临时故障的 0.5 秒，避免在限频期间继续加码请求；
-- `gate.warmup_concurrency`：ATR 预热与断线回补共用的并发上限，两者共用同一个信号量，峰值并发不会叠加；
+- `gate.warmup_concurrency`：K 线预热与断线回补共用的并发上限，两者共用同一个信号量，峰值并发不会叠加；
 - `indicator.candle_interval`：ATR K 线周期；
 - `indicator.atr_period`：Wilder ATR 周期；
 - `indicator.max_atr_age_seconds`：ATR 过期保护，按最近一根计入 ATR 的 K 线的收盘时间计算，不能小于两个 K 线周期；不填写时默认为三个 K 线周期；
@@ -172,6 +211,17 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 - `indicator.long_window.trigger_atr_multiple` / `min_change_percent`：长窗口的 ATR 倍数与最低涨跌幅，默认 2 与 2%，两者同时满足；
 - `indicator.long_window.confirmation_seconds` / `min_window_trades`：长窗口的连续确认秒数与窗口最低成交笔数，默认 3 秒、30 笔；
 - `indicator.long_window.cooldown_seconds`：不能小于长窗口长度，不填写时等于长窗口长度（短窗口冷却没有这条限制，默认 30 秒）；
+- `trend.enabled`：是否启用 K 线形态趋势提醒，默认开启；关闭后不创建趋势检测器，也不会多拉 K 线；
+- `trend.periods.1m` / `3m` / `5m` / `15m`：各周期的形态门槛，结构相同、默认值不同（只写部分字段时其余取该周期自己的默认值）：
+  - `enabled`、`candles`（参与判定的 K 线根数）、`min_change_percent`（累计涨跌幅下限）；
+  - `max_rebound_ratio`（最大反弹比例上限，默认 0.3）、`min_trend_candle_ratio` / `min_step_ratio`（顺势 K 线与收盘递进占比下限，默认 0.7）、`min_body_ratio`（实体占比下限，默认 0.5）；
+  - `min_volume_ratio`（放量倍数下限，默认 1.5，null 关闭）、`min_change_atr`（位移不低于基准平均真实波幅的倍数，默认 null 关闭）、`baseline_candles`（量能与波幅基准的 K 线根数）；
+  - 预热需要 `(candles + baseline_candles) × 周期分钟数` 根 1 分钟 K 线，最长周期不能超过 1999 根（Gate 单次请求上限）；
+- `trend.cooldown_minutes`：同方向两次「开始」提醒的最短间隔，默认 30 分钟；
+- `trend.escalation_step_percent`：「延续」提醒的档位，默认每 5%；
+- `trend.end_rebound_ratio` / `trend.stall_minutes`：结束条件，从极值回撤达到起点到极值幅度的该比例（默认 0.5），或连续这么多分钟没有新极值（默认 30）；
+- `trend.notify_end`：趋势结束时是否提醒，默认开启；
+- `trend.exhaustion`：衰竭提示的开关、检查周期（默认 5m、15m）、长影线占振幅比例（默认 0.6）与检查最近几根 K 线（默认 2）；
 - `alerts.queue_size`：每个通知通道允许积压的提醒数量；
 - `alerts.console_colors`：是否启用控制台颜色，默认开启；
 - `alerts.beep`：是否在控制台提醒时播放提示音；macOS 使用系统音效，不依赖终端响铃设置；
@@ -180,7 +230,7 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 ## 工程结构
 
 ```text
-config/default.yaml          Gate、ATR、提醒配置
+config/default.yaml          Gate、ATR、趋势、提醒配置
 src/price_alert/
 ├── config.py                配置模型与严格校验
 ├── models.py                领域模型
@@ -191,11 +241,19 @@ src/price_alert/
 ├── detector.py              ATR 标准化异动检测（多窗口）
 ├── formatting.py            价格、窗口长度与北京时间的展示格式
 ├── replay.py                历史成交回放与逐秒判定解释
+├── trend/                   K 线形态趋势提醒（独立模块，只经 assembly 接入）
+│   ├── pattern.py           形态条件与周期 K 线合成（纯函数）
+│   ├── detector.py          1 分钟 K 线聚合、多周期判定与开始/延续/衰竭/结束状态机
+│   ├── alerts.py            趋势提醒模型与文本
+│   ├── config.py            trend 配置段
+│   ├── replay.py            历史 1 分钟 K 线回放
+│   └── simulate.py          合成行情验证
+├── detection.py             服务对检测器的约定（多个检测器共用成交与合约池）
 ├── instance.py              防止重复提醒的跨平台进程锁
 ├── notifier.py              控制台、JSONL、Webhook 与独立队列分发
 ├── assembly.py              按配置组装检测器与 REST 客户端（各入口共用）
 ├── service.py               预热、增量刷新、重连和服务编排
-└── cli.py                   run/universe/check-config/simulate/replay
+└── cli.py                   run/universe/check-config/simulate/replay/trend-replay
 tests/                       指标、筛选、解析、检测、通知、服务编排和命令行测试
 data/alerts/                 本地告警记录
 ```

@@ -16,9 +16,12 @@ from typing import Protocol
 from colorama import Fore, Style, just_fix_windows_console
 
 from price_alert.config import AlertConfig
+from price_alert.detection import Alert
 from price_alert.formatting import beijing_time, describe_window, format_price
 from price_alert.gate import futures_trade_url
 from price_alert.models import PriceAlert
+from price_alert.trend import alerts as trend_alerts
+from price_alert.trend.alerts import TrendAlert
 
 LOGGER = logging.getLogger(__name__)
 MACOS_SOUND_PLAYER = "/usr/bin/afplay"
@@ -36,13 +39,17 @@ DROP_CHANGE_COLOR = Fore.LIGHTRED_EX
 TRADE_URL_COLOR = Fore.LIGHTBLACK_EX
 # 长窗口的窗口长度（3分钟）：亮青色。
 LONG_WINDOW_COLOR = Fore.LIGHTCYAN_EX
+# 趋势提醒的阶段标签（[趋势下跌] 等）：亮紫色，与秒级异动提醒一眼区分。
+TREND_LABEL_COLOR = Fore.LIGHTMAGENTA_EX
 
 
 class Notifier(Protocol):
-    async def send(self, alert: PriceAlert) -> None: ...
+    async def send(self, alert: Alert) -> None: ...
 
 
-def format_alert(alert: PriceAlert) -> str:
+def format_alert(alert: Alert) -> str:
+    if isinstance(alert, TrendAlert):
+        return trend_alerts.format_trend_alert(alert)
     label = "急涨" if alert.direction == "surge" else "急跌"
     move_label = "上涨" if alert.direction == "surge" else "下跌"
     reference = format_price(alert.reference_price, alert.price_decimals)
@@ -65,17 +72,21 @@ def format_window(alert: PriceAlert) -> str:
     return describe_window(alert.lookback_seconds)
 
 
-def colorize_alert(alert: PriceAlert, text: str, enabled: bool = True) -> str:
+def colorize_alert(alert: Alert, text: str, enabled: bool = True) -> str:
     if not enabled:
         return text
     color = SURGE_COLOR if alert.direction == "surge" else DROP_COLOR
     bright = SURGE_CHANGE_COLOR if alert.direction == "surge" else DROP_CHANGE_COLOR
     # 标记结束后重新套上方向色，保证后半段文本颜色不丢。
     symbol = f"{SYMBOL_COLOR}{alert.symbol}{Style.RESET_ALL}{color}"
-    change = format_change(alert)
+    change = trend_alerts.format_change(alert) if isinstance(alert, TrendAlert) else format_change(alert)
     highlighted_change = f"{bright}{change}{Style.RESET_ALL}{color}"
     text = text.replace(alert.symbol, symbol, 1).replace(change, highlighted_change, 1)
-    if alert.window == "long":
+    if isinstance(alert, TrendAlert):
+        # 标签在行首，按首次出现替换不会误伤正文。
+        label = f"[{alert.label}]"
+        text = text.replace(label, f"{TREND_LABEL_COLOR}{label}{Style.RESET_ALL}{color}", 1)
+    elif alert.window == "long":
         # 只高亮长窗口，短窗口保持正文色。窗口字样带“秒”或“分钟”，按首次出现替换不会误伤。
         window = format_window(alert)
         text = text.replace(window, f"{LONG_WINDOW_COLOR}{window}{Style.RESET_ALL}{color}", 1)
@@ -94,7 +105,7 @@ class ConsoleNotifier:
             # Windows 控制台实现差异较大，初始化兼容层可避免直接显示转义字符。
             just_fix_windows_console()
 
-    async def send(self, alert: PriceAlert) -> None:
+    async def send(self, alert: Alert) -> None:
         text = colorize_alert(alert, format_alert(alert), self.colors)
         # 完整网址独占一行，便于终端自动识别链接，不支持点击时也能直接复制。
         # 颜色转义只包在整行首尾、不插入网址中间，终端按显示文本识别链接，不受影响。
@@ -139,10 +150,10 @@ class JsonlNotifier:
         self.max_bytes = max_bytes
         self.backup_count = backup_count
 
-    async def send(self, alert: PriceAlert) -> None:
+    async def send(self, alert: Alert) -> None:
         await asyncio.to_thread(self._append, alert)
 
-    def _append(self, alert: PriceAlert) -> None:
+    def _append(self, alert: Alert) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._rotate_if_needed()
         with self.path.open("a", encoding="utf-8") as handle:
@@ -164,10 +175,10 @@ class WebhookNotifier:
         self.url = url
         self.timeout_seconds = timeout_seconds
 
-    async def send(self, alert: PriceAlert) -> None:
+    async def send(self, alert: Alert) -> None:
         await asyncio.to_thread(self._post, alert)
 
-    def _post(self, alert: PriceAlert) -> None:
+    def _post(self, alert: Alert) -> None:
         payload = alert.to_dict() | {"text": format_alert(alert)}
         request = urllib.request.Request(  # noqa: S310 - URL 由用户配置
             self.url,
@@ -186,7 +197,7 @@ class AlertDispatcher:
     def __init__(self, notifiers: Iterable[Notifier], queue_size: int = 1000, drain_timeout: float = 5.0) -> None:
         self.notifiers = list(notifiers)
         self.drain_timeout = drain_timeout
-        self._queues: list[asyncio.Queue[PriceAlert]] = [asyncio.Queue(queue_size) for _ in self.notifiers]
+        self._queues: list[asyncio.Queue[Alert]] = [asyncio.Queue(queue_size) for _ in self.notifiers]
         self._workers: list[asyncio.Task[None]] = []
 
     async def __aenter__(self) -> AlertDispatcher:
@@ -204,7 +215,7 @@ class AlertDispatcher:
     ) -> None:
         await self.aclose()
 
-    def publish(self, alert: PriceAlert) -> None:
+    def publish(self, alert: Alert) -> None:
         for notifier, queue in zip(self.notifiers, self._queues, strict=True):
             try:
                 queue.put_nowait(alert)
@@ -225,7 +236,7 @@ class AlertDispatcher:
         self._workers = []
 
     @staticmethod
-    async def _run(notifier: Notifier, queue: asyncio.Queue[PriceAlert]) -> None:
+    async def _run(notifier: Notifier, queue: asyncio.Queue[Alert]) -> None:
         while True:
             alert = await queue.get()
             try:

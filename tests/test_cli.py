@@ -33,13 +33,50 @@ from price_alert.config import AppConfig
     ],
 )
 def test_simulate_produces_one_alert_per_enabled_window(indicator, expected_alerts, capsys):
-    config = AppConfig.model_validate({"indicator": indicator, "alerts": {"console_colors": False}})
+    # 关闭趋势提醒，只验证观察窗口；趋势周期由下面的用例单独覆盖。
+    config = AppConfig.model_validate(
+        {"indicator": indicator, "trend": {"enabled": False}, "alerts": {"console_colors": False}}
+    )
 
-    assert asyncio.run(cli.simulate(config)) == expected_alerts
+    assert asyncio.run(cli.simulate(config)) == expected_alerts == cli.expected_simulated_alerts(config)
     output = capsys.readouterr().out
     assert "急涨提醒" in output
     if expected_alerts == 2:
         assert "分钟内价格上涨" in output
+
+
+@pytest.mark.parametrize(
+    ("periods", "expected_trend_alerts"),
+    [
+        ({}, 4),
+        ({"1m": {"enabled": False}, "3m": {"enabled": False}}, 2),
+        # 启用可选的 ATR 倍数条件、放宽量能到很高的门槛，合成行情仍应满足。
+        ({"5m": {"min_change_atr": 50, "min_volume_ratio": 5}, "15m": {"candles": 12, "baseline_candles": 40}}, 4),
+    ],
+)
+def test_simulate_produces_one_start_alert_per_enabled_trend_period(periods, expected_trend_alerts, capsys):
+    config = AppConfig.model_validate({"trend": {"periods": periods}, "alerts": {"console_colors": False}})
+    windows = 2
+
+    assert asyncio.run(cli.simulate(config)) == windows + expected_trend_alerts
+    assert cli.expected_simulated_alerts(config) == windows + expected_trend_alerts
+    assert capsys.readouterr().out.count("[趋势下跌]") == expected_trend_alerts
+
+
+def test_trend_replay_arguments_default_to_three_hours(monkeypatch):
+    captured = {}
+
+    def fake_plan(symbol, start, end, detector):
+        captured.update(symbol=symbol, start=start, end=end)
+        raise ValueError("stop")
+
+    monkeypatch.setattr(cli, "plan_trend_replay", fake_plan)
+    args = cli.build_parser().parse_args(["trend-replay", "ark", "--start", "2026-09-30 21:30"])
+
+    with pytest.raises(SystemExit, match="stop"):
+        cli.trend_replay(AppConfig(), args)
+    assert captured["symbol"] == "ARK_USDT"
+    assert (captured["end"] - captured["start"]).total_seconds() == 3 * 3600
 
 
 def test_missing_config_file_exits_with_readable_message(tmp_path):
@@ -84,3 +121,34 @@ def test_replay_rejects_end_before_start(tmp_path):
 
     with pytest.raises(SystemExit, match="结束时间必须晚于开始时间"):
         cli.replay(AppConfig(), args)
+
+
+def test_trend_replay_survives_missing_contract_precision(monkeypatch, capsys):
+    from datetime import UTC, datetime, timedelta
+
+    from price_alert.models import Candle
+
+    class FakeRest:
+        def fetch_candles_between(self, symbol, interval, start, end):
+            count = int((end - start) / timedelta(minutes=1)) + 1
+            return [Candle(start + timedelta(minutes=i), 1.0, 1.0, 1.0, 1.0) for i in range(count)]
+
+        def fetch_contract(self, symbol):
+            raise ConnectionError("contract down")
+
+    monkeypatch.setattr(cli, "build_rest_client", lambda config: FakeRest())
+    start = datetime(2026, 9, 30, 13, 30, tzinfo=UTC).isoformat()
+    args = cli.build_parser().parse_args(["trend-replay", "ARK", "--start", start, "--end", "2026-09-30 21:40"])
+
+    cli.trend_replay(AppConfig(), args)
+
+    assert "趋势回放 ARK_USDT" in capsys.readouterr().out
+
+
+def test_trend_replay_without_enabled_periods_exits_readably():
+    periods = {name: {"enabled": False} for name in ("1m", "3m", "5m", "15m")}
+    config = AppConfig.model_validate({"trend": {"enabled": False, "periods": periods}})
+    args = cli.build_parser().parse_args(["trend-replay", "ARK", "--start", "09:30"])
+
+    with pytest.raises(SystemExit, match="没有启用任何周期"):
+        cli.trend_replay(config, args)

@@ -13,9 +13,10 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
-from price_alert.assembly import build_detector, build_rest_client, build_windows
+from price_alert.assembly import build_detector, build_rest_client, build_trend_detector, build_windows
 from price_alert.config import INTERVAL_SECONDS, AppConfig, load_config
 from price_alert.formatting import BEIJING_TIME
+from price_alert.gate import price_decimals
 from price_alert.instance import AlreadyRunningError, ProcessLock
 from price_alert.models import Candle, PriceTick
 from price_alert.notifier import ConsoleNotifier
@@ -28,12 +29,18 @@ from price_alert.replay import (
     run_replay,
 )
 from price_alert.service import run_monitor
+from price_alert.trend.alerts import describe_trend_rule
+from price_alert.trend.replay import fetch_minute_candles, plan_trend_replay, render_trend_replay, run_trend_replay
+from price_alert.trend.simulate import simulate_trend
 from price_alert.universe import select_liquid_contracts
 from price_alert.windows import MoveWindow, describe_rule
 
+LOGGER = logging.getLogger(__name__)
 DEMO_ATR = 2.0
 # 只给开始时间时回放的时长：足够覆盖长窗口一个完整周期以及前后的行情。
 DEFAULT_REPLAY_MINUTES = 15
+# 趋势回放只给开始时间时的时长：趋势以十几分钟到数小时计，区间要能容下一段完整的开始到结束。
+DEFAULT_TREND_REPLAY_HOURS = 3
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -45,18 +52,28 @@ def build_parser() -> argparse.ArgumentParser:
         ("check-config", "校验配置文件"),
         ("simulate", "使用合成行情验证 ATR 异动提醒"),
         ("replay", "用历史成交回放某个合约，逐秒解释为什么提醒或没有提醒"),
+        ("trend-replay", "用历史 1 分钟 K 线回放某个合约的趋势提醒，逐根解释判定结果"),
     ):
         command = commands.add_parser(name, help=help_text)
         command.add_argument("--config", default="config/default.yaml")
-    _add_replay_arguments(commands.choices["replay"])
+    _add_replay_arguments(
+        commands.choices["replay"],
+        f"默认开始后 {DEFAULT_REPLAY_MINUTES} 分钟",
+        "输出每一秒每个窗口的判定，而不只是达标的秒",
+    )
+    _add_replay_arguments(
+        commands.choices["trend-replay"],
+        f"默认开始后 {DEFAULT_TREND_REPLAY_HOURS} 小时",
+        "输出每个周期每根 K 线的判定，而不只是形态成立的时刻",
+    )
     return parser
 
 
-def _add_replay_arguments(command: argparse.ArgumentParser) -> None:
+def _add_replay_arguments(command: argparse.ArgumentParser, end_default: str, all_help: str) -> None:
     command.add_argument("symbol", help="合约名，如 QNT_USDT；只写 QNT 会自动补 _USDT")
     command.add_argument("--start", required=True, help="开始时间（北京时间），如 '2026-09-29 09:25' 或 09:25（今天）")
-    command.add_argument("--end", help=f"结束时间，格式同 --start；默认开始后 {DEFAULT_REPLAY_MINUTES} 分钟")
-    command.add_argument("--all", action="store_true", help="输出每一秒每个窗口的判定，而不只是达标的秒")
+    command.add_argument("--end", help=f"结束时间，格式同 --start；{end_default}")
+    command.add_argument("--all", action="store_true", help=all_help)
 
 
 def _build_demo_candles(end: datetime, count: int, interval_seconds: int) -> list[Candle]:
@@ -74,12 +91,21 @@ def _build_demo_candles(end: datetime, count: int, interval_seconds: int) -> lis
     ]
 
 
+def expected_simulated_alerts(config: AppConfig) -> int:
+    trend_periods = len(config.trend.rules()) if config.trend.enabled else 0
+    return len(build_windows(config)) + trend_periods
+
+
 async def simulate(config: AppConfig) -> int:
-    """为每个启用的观察窗口各跑一遍合成异动，返回提醒总数；正常时等于窗口数。"""
+    """为每个启用的观察窗口和趋势周期各跑一遍合成行情，返回提醒总数；正常时等于 expected_simulated_alerts。"""
     notifier = ConsoleNotifier(beep=False, colors=config.alerts.console_colors)
     alert_count = 0
     for window in build_windows(config, cooldown_seconds=0):
         alert_count += await _simulate_window(config, window, notifier)
+    if config.trend.enabled:
+        for alert in simulate_trend(config.trend):
+            alert_count += 1
+            await notifier.send(alert)
     return alert_count
 
 
@@ -131,10 +157,7 @@ async def _simulate_window(config: AppConfig, window: MoveWindow, notifier: Cons
 
 def replay(config: AppConfig, args: argparse.Namespace) -> None:
     try:
-        start = parse_time(args.start)
-        # 结束时间只写时分时取开始那天，否则回放昨天时 --end 会被当成今天，区间意外拉长到一整天。
-        end_day = start.astimezone(BEIJING_TIME).date()
-        end = parse_time(args.end, today=end_day) if args.end else start + timedelta(minutes=DEFAULT_REPLAY_MINUTES)
+        start, end = _replay_range(args, timedelta(minutes=DEFAULT_REPLAY_MINUTES))
         plan = plan_replay(normalize_symbol(args.symbol), start, end, config)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
@@ -147,6 +170,40 @@ def replay(config: AppConfig, args: argparse.Namespace) -> None:
         raise SystemExit(f"{plan.symbol} 在该时间段没有取到成交：合约名可能有误，或 Gate 已不再提供这么早的成交")
     result = run_replay(config, plan, data)
     print("\n".join(render_replay(result, show_all=args.all)))
+
+
+def _replay_range(args: argparse.Namespace, default_length: timedelta) -> tuple[datetime, datetime]:
+    start = parse_time(args.start)
+    # 结束时间只写时分时取开始那天，否则回放昨天时 --end 会被当成今天，区间意外拉长到一整天。
+    end_day = start.astimezone(BEIJING_TIME).date()
+    end = parse_time(args.end, today=end_day) if args.end else start + default_length
+    return start, end
+
+
+def trend_replay(config: AppConfig, args: argparse.Namespace) -> None:
+    if not config.trend.rules():
+        raise SystemExit("trend.periods 没有启用任何周期，无法回放")
+    detector = build_trend_detector(config.trend)
+    try:
+        start, end = _replay_range(args, timedelta(hours=DEFAULT_TREND_REPLAY_HOURS))
+        plan = plan_trend_replay(normalize_symbol(args.symbol), start, end, detector)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    rest = build_rest_client(config)
+    try:
+        candles = fetch_minute_candles(rest, plan.symbol, plan.warmup_start, plan.end)
+    except (OSError, ValueError, TypeError, http.client.HTTPException) as exc:
+        raise SystemExit(f"获取 {plan.symbol} 历史 K 线失败：{exc}") from exc
+    decimals: int | None = None
+    try:
+        decimals = price_decimals(rest.fetch_contract(plan.symbol).get("order_price_round"))
+    except Exception as exc:
+        # 与成交回放一致：精度只影响价格显示，取不到就按有效数字显示。
+        LOGGER.warning("%s 合约信息获取失败，价格按有效数字显示：%s", plan.symbol, exc)
+    if not candles:
+        raise SystemExit(f"{plan.symbol} 在该时间段没有取到 K 线：合约名可能有误")
+    result = run_trend_replay(config.trend, plan, candles, decimals)
+    print("\n".join(render_trend_replay(result, show_all=args.all)))
 
 
 def print_universe(config: AppConfig) -> None:
@@ -186,18 +243,29 @@ def main() -> None:
         print(f"配置有效：Gate.io USDT 永续，成交额门槛 {config.gate.min_volume_24h_quote / 1_000_000:.1f}M")
         for window in build_windows(config):
             print(f"  {describe_rule(window)}")
+        if config.trend.enabled:
+            for rule in config.trend.rules():
+                print(f"  {describe_trend_rule(rule)}")
+        else:
+            print("  趋势提醒：已关闭")
         return
     if args.command == "universe":
         print_universe(config)
         return
     if args.command == "simulate":
-        expected = len(build_windows(config))
+        expected = expected_simulated_alerts(config)
         produced = asyncio.run(simulate(config))
         if produced != expected:
-            raise SystemExit(f"模拟应产生 {expected} 条提醒（每个窗口一条），实际 {produced} 条，请检查 indicator 配置")
+            raise SystemExit(
+                f"模拟应产生 {expected} 条提醒（每个窗口、每个趋势周期各一条），实际 {produced} 条，"
+                "请检查 indicator 与 trend 配置"
+            )
         return
     if args.command == "replay":
         replay(config, args)
+        return
+    if args.command == "trend-replay":
+        trend_replay(config, args)
         return
     try:
         with ProcessLock(Path("data/price-alert.lock")):

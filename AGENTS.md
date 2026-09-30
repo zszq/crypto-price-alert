@@ -24,6 +24,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m price_alert.cli simulate      # 合成行情跑一遍检测，不联网、不写文件
 .\.venv\Scripts\python.exe -m price_alert.cli universe      # 联网列出当前合约池
 .\.venv\Scripts\python.exe -m price_alert.cli replay QNT --start "2026-09-29 09:25" --end "2026-09-29 09:36"  # 历史成交逐秒回放，解释为什么提醒/没提醒（--all 输出每一秒）
+.\.venv\Scripts\python.exe -m price_alert.cli trend-replay ARK --start "2026-09-30 21:30" --end "2026-10-01 00:30"  # 用历史 1 分钟 K 线回放趋势提醒（--all 输出每根 K 线）
 .\.venv\Scripts\python.exe -m price_alert.cli run           # 实时监控（或双击 start-monitor.bat）
 ```
 
@@ -31,10 +32,11 @@ python -m venv .venv
 
 ## 架构
 
-数据流：`universe.py` 筛选合约池 → `gate.py` REST 拉 K 线预热 ATR → `gate.py` WebSocket `futures.trades` 推送成交 → `detector.py` 判定 → `notifier.py` 分发（控制台 / JSONL / Webhook）。`service.py::run_monitor` 负责把这些串起来。
+数据流：`universe.py` 筛选合约池 → `gate.py` REST 拉 K 线预热 → `gate.py` WebSocket `futures.trades` 推送成交 → 各检测器判定（`detector.py` 秒级 ATR 异动、`trend/` K 线形态趋势）→ `notifier.py` 分发（控制台 / JSONL / Webhook）。`service.py::run_monitor` 负责把这些串起来。
 
 ### 服务主循环（service.py）
 
+- 服务同时驱动多个检测器，只依赖 `detection.Detector` 约定（`symbols`、`stale_symbols`、`add_symbol`、`remove_symbols`、`mark_stream_gap`、`resync_symbol`、`add_tick`），检测器列表由 `assembly.build_detectors` 给出，每个包装成 `MonitoredDetector`（名称、预热 K 线周期与根数）。同一周期的检测器共用一次 REST 请求（取最多的根数，再各自截取尾部，与单独请求结果相同）；合约池以第一个检测器为准，所有检测器同步增删；每笔成交依次交给所有检测器，断线时全部 `mark_stream_gap`，回补覆盖任一检测器失效的合约。新增/删除一种检测器只改 `build_detectors`，不改服务。
 - 检测器、REST 客户端、订阅、配置和预热信号量这组共享依赖装在 `_Monitor` 里，各循环是它的方法；首次初始化、断线回补与重连三处的指数退避共用 `_Backoff`。
 - `run_monitor` 先用 `initial_universe` 带退避地完成首次合约池初始化，然后在 `TaskGroup` 中并行跑两个互相独立的循环：`universe_loop` 定期刷新合约池，`stream_loop` 维持 WebSocket 长连接。合约池变化通过 `GateTradeFeed.set_symbols` 增量订阅/退订，**不会断线**。
 - `stream_loop` 中任何异常（包括握手/TCP 超时抛出的 `TimeoutError`）都按故障处理：先 `detector.mark_stream_gap()` 清空秒级窗口并把全部合约的 ATR 标记为失效，再按指数退避重连；收到第一笔成交后退避重置；若此前断过线，会再次 `mark_stream_gap()`（覆盖断线退避期间合约池刷新新增的合约），并在后台启动 `resync_stale_symbols` 为失效合约回补 K 线（失败按退避重试，断线时取消）。回补必须在实时成交恢复后发起，这样请求前的缺口由 REST 覆盖、请求后的成交由实时流覆盖。`GateTradeFeed` 的接收超时被转换成 `ConnectionError`。
@@ -59,6 +61,16 @@ python -m venv .venv
 - 构造时可传 `observer`，每秒每个窗口回调一条 `WindowEvaluation`（含 `Outcome` 判定结果与涨跌幅、ATR 倍数、笔数等指标），回放靠它解释原因；实时监控不传。
 - `remove_symbols` 不清除冷却记录。`mark_stream_gap` 清空秒级窗口和确认进度并置 `atr_stale`：失效期间不判定、不向 ATR 喂 K 线（也不补平线），直到 `resync_symbol` 用 REST K 线重建 ATR。重建时若本地实时 K 线与交易所当前 K 线同一周期，高低点取并集；若本地已跨入新周期，交易所的“当前 K 线”按已收盘计入 ATR。`resync_symbol` 只作用于仍处于失效状态的合约。回补保留秒级桶，回补前还没结算、且早于重建后实时 K 线周期的秒，其所在周期的 ATR 已被替换，`_atr_before` 返回 None，按 `ATR_UNAVAILABLE` 放弃判定，不拿含之后周期的 ATR 充数。
 
+### K 线形态趋势（trend/）
+
+独立子包，只经 `assembly.build_trend_detector` / `build_detectors` 接入，删除时去掉这两处、`config.AppConfig.trend`、`notifier` 中的 `TrendAlert` 分派与 `cli` 的 `trend-replay`/`simulate` 调用即可。
+
+- `pattern.py`：纯函数。`TrendRule` 描述一个周期的门槛；`evaluate_pattern(window, baseline, rule)` 对最近 `candles` 根周期 K 线整体打分，返回 `PatternMetrics`（含未满足的 `Condition`）。条件：累计涨跌幅（第一根开盘到最后一根收盘）、可选 `min_change_atr`（与百分比是「且」）、最大反弹比例（按收盘价从滚动极值算，起点之后先反向走也算反弹）、顺势 K 线占比（十字星不算）、收盘递进占比（第一根与其开盘价比）、实体占比（实体和 ÷ 振幅和）、可选量能（窗口均量 ÷ 基准**中位数**，中位数为 0 时退回均值）。量能与 ATR 基准都取窗口**之前**的 `baseline_candles` 根，不足时这两个条件记 `BASELINE` 失败；`PERIOD_MINUTES` 是趋势周期到分钟数的唯一映射。`aggregate_candles` 把对齐的 1 分钟 K 线合成周期 K 线。
+- `detector.py::TrendDetector`：由成交聚合 1 分钟 K 线（成交量用张数，与 REST K 线的 `v` 同单位，所以 `Candle` 有 `volume` 字段），**下一分钟第一笔成交到达时**才结算上一分钟；空分钟按上一收盘价补平线。保留最长周期所需的 1 分钟 K 线（`(candles + baseline_candles) × 分钟数`，预热请求 `warmup_candles` 为其 + 1，配置层限制 ≤ 2000）。每结算一分钟：先用 1 分钟收盘价推进进行中的趋势（更新极值 → 回撤达 `end_rebound_ratio` 或 `stall_minutes` 无新极值则结束 → 否则跨档报 `extend`，一根跨多档只报一次），再对收盘时刻落在周期边界的各周期判定，最后裁决：同一分钟多个周期成立只发最短周期（其余 `SUPERSEDED`，此判断先于「已在跟踪」），同方向趋势进行中记 `EPISODE_ACTIVE`，同方向 `cooldown_minutes` 内记 `COOLDOWN`，反向成立先以 `reversed` 结束原趋势再开始。每个合约同时只跟踪一段趋势，趋势起点（`started_at`）是发现它的窗口第一根 K 线。衰竭提示只在 `exhaustion.periods` 的周期上检查、只看发现之后收盘的 K 线、影线须探到趋势极值，每档一次，`extend` 后重新允许。`add_candle` 直接喂已收盘 1 分钟 K 线（回放、模拟、调研用），不能与 `add_tick` 混用。断线：`mark_stream_gap` 后只维护当前分钟、不结算不判定；`resync_symbol` 用 REST 1 分钟 K 线重建历史（当前分钟与交易所同一分钟时高低点取并集、成交量取较大者；本地已跨入新分钟则交易所当前 K 线按已收盘计入），趋势跟踪与冷却保留。`remove_symbols` 不清冷却。
+- `alerts.py`：`TrendAlert`（`stage`：start / extend / exhaustion / end）与文本格式；`to_dict()` 带 `kind: "trend"`。
+- `config.py`：`TrendConfig`；各周期是 `TrendPeriodConfig` 的子类（`Trend1mConfig` 等），只改默认值，YAML 键为 `1m`/`3m`/`5m`/`15m`（alias），部分覆盖时其余字段仍取该周期默认值；启用衰竭提示时 `exhaustion.periods` 必须都是已启用的周期。
+- `replay.py`：`cli trend-replay` 用 REST 1 分钟 K 线（分段请求，每段 ≤ 1000 根）驱动同一个检测器；`simulate.py` 为每个启用周期各跑一段合成单边行情，只统计「开始」提醒。
+
 ### 回放（replay.py）
 
 `cli replay` 用 Gate REST 历史成交离线重放一段行情：`plan_replay` 推算喂入起点（开始时间减最长窗口，向下对齐 K 线边界）与 K 线预热区间，`fetch_replay_data` 联网取合约精度、K 线和成交，`run_replay` 用 `build_detector(observer=...)` 驱动同一个检测器，`render_replay` 输出规则、提醒、各窗口统计与「最接近触发」的秒。回放从空白冷却开始、不模拟断线。
@@ -75,7 +87,7 @@ python -m venv .venv
 
 ### 新增/修改检测参数时需要同步的位置
 
-`AtrMoveDetector` 统一由 `assembly.build_detector` 组装（`run_monitor`、`cli.simulate`、`replay` 共用，REST 客户端同样由 `assembly.build_rest_client` 组装），窗口参数由 `assembly.build_windows` 从配置生成。各入口只依赖 `assembly`，不为了拿检测器去依赖实时编排模块 `service`。新增指标参数需要同时改 `config.py` 模型、`config/default.yaml`、`build_windows`/`build_detector`、README 的配置说明。`simulate` 为每个启用的窗口各用一个只含该窗口的检测器跑一遍，正常时提醒数等于窗口数。K 线周期到秒数的映射只有 `config.INTERVAL_SECONDS` 一份。
+`AtrMoveDetector` 统一由 `assembly.build_detector` 组装、`TrendDetector` 由 `assembly.build_trend_detector` 组装（`run_monitor`、`cli.simulate`、`replay` 共用，REST 客户端同样由 `assembly.build_rest_client` 组装），窗口参数由 `assembly.build_windows` 从配置生成。各入口只依赖 `assembly`，不为了拿检测器去依赖实时编排模块 `service`。新增指标参数需要同时改 `config.py` 模型、`config/default.yaml`、`build_windows`/`build_detector`、README 的配置说明。`simulate` 为每个启用的窗口各用一个只含该窗口的检测器跑一遍，再为每个启用的趋势周期各跑一遍，正常时提醒数等于窗口数加趋势周期数（`cli.expected_simulated_alerts`）。趋势参数改在 `trend/config.py`（周期子类的默认值）、`config/default.yaml` 的 `trend` 段、README。K 线周期到秒数的映射只有 `config.INTERVAL_SECONDS` 一份。
 
 ### 合约池筛选（universe.py）
 
@@ -83,7 +95,7 @@ python -m venv .venv
 
 ### 通知（notifier.py）
 
-`AlertDispatcher` 为每个通道建立独立的有界队列（`alerts.queue_size`）和后台任务：`publish` 非阻塞，队列满时丢弃并记错误日志；单个通道失败只记日志；退出时最多等待 `drain_timeout` 秒把积压发完。`build_notifiers` 按配置返回通道列表。`JsonlNotifier` 按 `jsonl_max_bytes` 整文件轮转。价格、窗口长度（整分钟显示为「N分钟」）和北京时间的格式都在 `formatting.py`，提醒与回放共用；价格按合约报价精度显示，缺失时按 8 位有效数字、不截断整数部分。提醒时间统一转为北京时间；控制台急涨绿色、急跌红色，涨跌幅用同方向亮色高亮，长窗口提醒的窗口长度用不分方向的亮青色（`LONG_WINDOW_COLOR`）高亮（短窗口保持正文色）；JSONL/Webhook 保留完整结构化字段（`PriceAlert.to_dict()`）。控制台提醒附带的交易地址由 `gate.futures_trade_url` 生成，Gate 网页地址只维护在 `gate.py`。修改提醒文本格式时注意 README 中的示例。
+提醒类型是 `detection.Alert = PriceAlert | TrendAlert`，`format_alert`/`colorize_alert` 按类型分派（趋势提醒的阶段标签用亮紫色 `TREND_LABEL_COLOR`）。`AlertDispatcher` 为每个通道建立独立的有界队列（`alerts.queue_size`）和后台任务：`publish` 非阻塞，队列满时丢弃并记错误日志；单个通道失败只记日志；退出时最多等待 `drain_timeout` 秒把积压发完。`build_notifiers` 按配置返回通道列表。`JsonlNotifier` 按 `jsonl_max_bytes` 整文件轮转。价格、窗口长度（整分钟显示为「N分钟」）和北京时间的格式都在 `formatting.py`，提醒与回放共用；价格按合约报价精度显示，缺失时按 8 位有效数字、不截断整数部分。提醒时间统一转为北京时间；控制台急涨绿色、急跌红色，涨跌幅用同方向亮色高亮，长窗口提醒的窗口长度用不分方向的亮青色（`LONG_WINDOW_COLOR`）高亮（短窗口保持正文色）；JSONL/Webhook 保留完整结构化字段（`PriceAlert.to_dict()`）。控制台提醒附带的交易地址由 `gate.futures_trade_url` 生成，Gate 网页地址只维护在 `gate.py`。修改提醒文本格式时注意 README 中的示例。
 
 ## 约定
 

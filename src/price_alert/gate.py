@@ -324,6 +324,7 @@ def parse_candle(payload: Mapping[str, Any]) -> Candle:
         low=float(payload["l"]),
         close=float(payload["c"]),
         quote_volume=float(payload.get("sum", 0.0)),
+        volume=float(payload.get("v", 0.0)),
     )
 
 

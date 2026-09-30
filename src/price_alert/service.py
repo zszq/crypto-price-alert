@@ -1,4 +1,4 @@
-"""动态交易对池、ATR 预热、实时检测与重连编排。"""
+"""动态交易对池、K 线预热、实时检测与重连编排。"""
 
 from __future__ import annotations
 
@@ -9,15 +9,19 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from price_alert.assembly import build_detector, build_rest_client
+from price_alert.assembly import build_detectors, build_rest_client
 from price_alert.config import INTERVAL_SECONDS, AppConfig
-from price_alert.detector import AtrMoveDetector
+from price_alert.detection import MonitoredDetector
 from price_alert.gate import GateRestClient, GateTradeFeed
 from price_alert.models import Candle, ContractTicker
 from price_alert.notifier import AlertDispatcher, build_notifiers
 from price_alert.universe import select_liquid_contracts
 
 LOGGER = logging.getLogger(__name__)
+
+# 预热所用的一组 K 线：已收盘的、未收盘的当前 K 线、取回时刻。
+_Warmup = tuple[list[Candle], Candle | None, datetime]
+_EMPTY_WARMUP: _Warmup = ([], None, datetime.min.replace(tzinfo=UTC))
 
 # 预热几百个合约受限速约束要数十秒，期间没有输出看起来像假死；逐个打印又会刷屏，按时间节流报告进度。
 _WARMUP_PROGRESS_SECONDS = 5.0
@@ -67,9 +71,10 @@ async def _stop_task(task: asyncio.Task[None] | None) -> None:
 
 @dataclass(slots=True)
 class _Monitor:
-    """实时监控各循环共享的一组依赖：合约池刷新、断线回补与行情循环作用于同一个检测器和订阅。"""
+    """实时监控各循环共享的一组依赖：合约池刷新、断线回补与行情循环作用于同一组检测器和订阅。"""
 
-    detector: AtrMoveDetector
+    # 各检测器的合约池始终一致；排在第一个的决定“当前监控哪些合约”。
+    detectors: tuple[MonitoredDetector, ...]
     rest: GateRestClient
     feed: GateTradeFeed
     config: AppConfig
@@ -80,64 +85,76 @@ class _Monitor:
         gate = self.config.gate
         return _Backoff(gate.reconnect_initial_seconds, gate.reconnect_max_seconds)
 
-    async def fetch_candles(self, symbol: str) -> tuple[list[Candle], Candle | None, datetime]:
-        indicator = self.config.indicator
-        async with self.semaphore:
-            fetched = await asyncio.to_thread(
-                self.rest.fetch_candles,
-                symbol,
-                indicator.candle_interval,
-                indicator.warmup_candles,
-            )
-        fetched_at = datetime.now(UTC)
-        closed, live = _split_candles(fetched, INTERVAL_SECONDS[indicator.candle_interval], fetched_at)
-        return closed, live, fetched_at
+    @property
+    def symbols(self) -> list[str]:
+        return self.detectors[0].detector.symbols
+
+    async def fetch_candles(self, symbol: str) -> list[_Warmup]:
+        """按检测器顺序返回各自的预热 K 线；同一周期只请求一次，取最多的根数再按各自需求截取。"""
+        limits: dict[str, int] = {}
+        for entry in self.detectors:
+            limits[entry.candle_interval] = max(limits.get(entry.candle_interval, 0), entry.warmup_candles)
+        fetched: dict[str, tuple[list[Candle], datetime]] = {}
+        for interval, limit in limits.items():
+            async with self.semaphore:
+                candles = await asyncio.to_thread(self.rest.fetch_candles, symbol, interval, limit)
+            fetched[interval] = (candles, datetime.now(UTC))
+        warmups: list[_Warmup] = []
+        for entry in self.detectors:
+            candles, fetched_at = fetched[entry.candle_interval]
+            # 截取到自己要求的根数，与单独请求时拿到的数据完全相同，合并请求不改变任何检测器的行为。
+            own = candles[-entry.warmup_candles :]
+            closed, live = _split_candles(own, INTERVAL_SECONDS[entry.candle_interval], fetched_at)
+            warmups.append((closed, live, fetched_at))
+        return warmups
 
     async def resync_stale_symbols(self) -> None:
-        """重连后为断线期间失效的合约回补 K 线并重建 ATR，失败的合约按退避重试直到全部完成。"""
+        """重连后为断线期间失效的合约回补 K 线并重建检测状态，失败的合约按退避重试直到全部完成。"""
         backoff = self._backoff()
         resynced = 0
 
         async def resync(symbol: str) -> bool:
             try:
-                closed, live, fetched_at = await self.fetch_candles(symbol)
+                warmups = await self.fetch_candles(symbol)
             except Exception as exc:
                 LOGGER.warning("%s 断线后 K 线回补失败：%s", symbol, exc)
                 return False
-            self.detector.resync_symbol(symbol, closed, live, fetched_at)
+            for entry, (closed, live, fetched_at) in zip(self.detectors, warmups, strict=True):
+                # 不需要回补的检测器会直接忽略。
+                entry.detector.resync_symbol(symbol, closed, live, fetched_at)
             return True
 
         while True:
             # 每轮重新读取：回补期间合约池刷新可能已移除部分合约。
-            symbols = self.detector.stale_symbols
+            symbols = sorted({symbol for entry in self.detectors for symbol in entry.detector.stale_symbols})
             if not symbols:
                 return
             results = await asyncio.gather(*(resync(symbol) for symbol in symbols))
             failed = results.count(False)
             resynced += len(symbols) - failed
             if not failed:
-                LOGGER.info("已为 %d 个合约回补 K 线并重建 ATR", resynced)
+                LOGGER.info("已为 %d 个合约回补 K 线并重建检测状态", resynced)
                 return
             LOGGER.warning("%d 个合约 K 线回补失败，暂停其异动判定，%.1f 秒后重试", failed, backoff.delay)
             await backoff.wait()
 
     async def sync_universe(self, selected: list[ContractTicker]) -> None:
-        detector = self.detector
         selected_by_symbol = {ticker.symbol: ticker for ticker in selected}
-        current = set(detector.symbols)
+        current = set(self.symbols)
         target = set(selected_by_symbol)
-        detector.remove_symbols(current - target)
-
-        for symbol in current & target:
-            ticker = selected_by_symbol[symbol]
-            detector.add_symbol(symbol, [], ticker.volume_24h_quote, price_decimals=ticker.price_decimals)
+        for entry in self.detectors:
+            entry.detector.remove_symbols(current - target)
+            for symbol in current & target:
+                ticker = selected_by_symbol[symbol]
+                entry.detector.add_symbol(symbol, [], ticker.volume_24h_quote, price_decimals=ticker.price_decimals)
 
         new_symbols = sorted(target - current)
         if not new_symbols:
             return
         LOGGER.info(
-            "开始为 %d 个新合约拉取 K 线预热 ATR（并发 %d）",
+            "开始为 %d 个新合约拉取 K 线预热（%s，并发 %d）",
             len(new_symbols),
+            "、".join(entry.name for entry in self.detectors),
             self.config.gate.warmup_concurrency,
         )
         started = last_report = time.monotonic()
@@ -145,25 +162,25 @@ class _Monitor:
 
         async def add_new_symbol(symbol: str) -> None:
             nonlocal done, failed, last_report
-            closed: list[Candle] = []
-            live: Candle | None = None
+            warmups = [_EMPTY_WARMUP] * len(self.detectors)
             try:
-                closed, live, _ = await self.fetch_candles(symbol)
+                warmups = await self.fetch_candles(symbol)
             except Exception as exc:
                 # 单个新品种预热失败时仍加入监控，它会在实时 K 线积累后自行就绪。
                 failed += 1
-                LOGGER.warning("%s ATR 预热失败：%s", symbol, exc)
+                LOGGER.warning("%s K 线预热失败：%s", symbol, exc)
             ticker = selected_by_symbol[symbol]
-            detector.add_symbol(symbol, closed, ticker.volume_24h_quote, live, ticker.price_decimals)
+            for entry, (closed, live, _) in zip(self.detectors, warmups, strict=True):
+                entry.detector.add_symbol(symbol, closed, ticker.volume_24h_quote, live, ticker.price_decimals)
             done += 1
             now = time.monotonic()
             if now - last_report >= _WARMUP_PROGRESS_SECONDS and done < len(new_symbols):
                 last_report = now
-                LOGGER.info("ATR 预热进度：%d/%d", done, len(new_symbols))
+                LOGGER.info("K 线预热进度：%d/%d", done, len(new_symbols))
 
         await asyncio.gather(*(add_new_symbol(symbol) for symbol in new_symbols))
         LOGGER.info(
-            "ATR 预热完成：%d 个合约%s，耗时 %.1f 秒",
+            "K 线预热完成：%d 个合约%s，耗时 %.1f 秒",
             len(new_symbols),
             f"（{failed} 个失败，等实时 K 线积累后就绪）" if failed else "",
             time.monotonic() - started,
@@ -179,14 +196,14 @@ class _Monitor:
             raw_tickers,
             raw_contracts,
             gate.min_volume_24h_quote,
-            retained_symbols=self.detector.symbols,
+            retained_symbols=self.symbols,
             exit_volume_ratio=gate.universe_exit_volume_ratio,
         )
         if not selected:
             raise RuntimeError("Gate.io 没有满足成交额条件的可用虚拟币合约")
         await self.sync_universe(selected)
-        # 先完成预热再订阅，新合约的第一笔实时成交到达时 ATR 已经就绪。
-        await self.feed.set_symbols(self.detector.symbols)
+        # 先完成预热再订阅，新合约的第一笔实时成交到达时检测器已经就绪。
+        await self.feed.set_symbols(self.symbols)
         LOGGER.info(
             "交易对池已刷新：%d 个虚拟币合约，24h 计价成交额门槛 %.1fM USDT",
             len(selected),
@@ -221,7 +238,7 @@ class _Monitor:
 
     async def stream_loop(self, dispatcher: AlertDispatcher) -> None:
         gate = self.config.gate
-        detector = self.detector
+        detectors = [entry.detector for entry in self.detectors]
         backoff = self._backoff()
         last_status = time.monotonic()
         tick_count = 0
@@ -260,7 +277,8 @@ class _Monitor:
                             LOGGER.info("Gate.io 实时行情连接成功，已收到 %s 成交", tick.symbol)
                             if had_stream_gap:
                                 # 断线退避期间合约池刷新新增的合约，其预热数据同样早于本次重连，需在此重新标记。
-                                detector.mark_stream_gap()
+                                for detector in detectors:
+                                    detector.mark_stream_gap()
                                 # 必须在实时成交恢复之后再拉 K 线：请求之前的缺口由 REST 覆盖，之后的成交由实时流覆盖。
                                 resync_task = asyncio.create_task(
                                     self.resync_stale_symbols(),
@@ -269,14 +287,15 @@ class _Monitor:
 
                         tick_count += 1
                         current_time = time.monotonic()
-                        for alert in detector.add_tick(tick):
-                            dispatcher.publish(alert)
+                        for detector in detectors:
+                            for alert in detector.add_tick(tick):
+                                dispatcher.publish(alert)
 
                         if current_time - last_status >= gate.status_interval_seconds:
                             rejected = len(self.feed.rejected_symbols)
                             LOGGER.info(
                                 "监控正常：%d 个合约%s，累计 %s 条成交",
-                                len(detector.symbols),
+                                len(self.symbols),
                                 f"（{rejected} 个订阅被拒绝）" if rejected else "",
                                 f"{tick_count:,}",
                             )
@@ -288,7 +307,8 @@ class _Monitor:
             finally:
                 # 断线后本轮回补出的 K 线又会与新的缺口不一致，停止回补，等下次连接恢复后重新开始。
                 await _stop_task(resync_task)
-            detector.mark_stream_gap()
+            for detector in detectors:
+                detector.mark_stream_gap()
             had_stream_gap = True
             await backoff.wait()
 
@@ -296,7 +316,7 @@ class _Monitor:
 async def run_monitor(config: AppConfig) -> None:
     gate = config.gate
     monitor = _Monitor(
-        detector=build_detector(config),
+        detectors=tuple(build_detectors(config)),
         rest=build_rest_client(config),
         feed=GateTradeFeed(gate.websocket_url, gate.subscription_chunk_size, gate.receive_timeout_seconds),
         config=config,

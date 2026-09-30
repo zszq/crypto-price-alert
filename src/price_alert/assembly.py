@@ -9,8 +9,12 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 
 from price_alert.config import INTERVAL_SECONDS, AppConfig, WindowConfig
+from price_alert.detection import MonitoredDetector
 from price_alert.detector import AtrMoveDetector
 from price_alert.gate import GateRestClient, RateLimiter
+from price_alert.trend.config import TrendConfig
+from price_alert.trend.detector import TrendDetector, TrendEvaluation
+from price_alert.trend.pattern import TrendRule
 from price_alert.windows import MoveWindow, WindowEvaluation, WindowName
 
 
@@ -52,6 +56,28 @@ def build_detector(
         windows=build_windows(config, cooldown_seconds) if windows is None else windows,
         observer=observer,
     )
+
+
+def build_trend_detector(
+    config: TrendConfig,
+    *,
+    rules: Sequence[TrendRule] | None = None,
+    observer: Callable[[TrendEvaluation], None] | None = None,
+) -> TrendDetector:
+    # rules 覆盖配置中启用的周期，供 simulate 逐个周期单独验证。
+    return TrendDetector(config.rules() if rules is None else rules, config.episode_settings(), observer)
+
+
+def build_detectors(config: AppConfig) -> list[MonitoredDetector]:
+    """实时监控运行的全部检测器；趋势提醒关闭时不创建，也就不会多拉 K 线、多占内存。"""
+    indicator = config.indicator
+    detectors = [
+        MonitoredDetector("ATR 异动", build_detector(config), indicator.candle_interval, indicator.warmup_candles)
+    ]
+    if config.trend.enabled:
+        trend = build_trend_detector(config.trend)
+        detectors.append(MonitoredDetector("K 线趋势", trend, trend.warmup_interval, trend.warmup_candles))
+    return detectors
 
 
 def build_rest_client(config: AppConfig) -> GateRestClient:

@@ -280,7 +280,7 @@ def test_receive_timeout_is_reported_as_connection_error():
 
 def test_rejects_non_finite_candle_values():
     base = {"t": 1_700_000_000, "o": "100", "h": "102", "l": "99", "c": "101", "sum": "5000"}
-    for key in ("o", "h", "l", "c", "sum"):
+    for key in ("o", "h", "l", "c", "sum", "v"):
         for value in ("nan", "inf"):
             with pytest.raises(ValueError):
                 parse_candle(base | {key: value})
@@ -643,3 +643,10 @@ def test_price_decimals_parses_gate_price_step(raw, expected):
 )
 def test_futures_trade_url_keeps_symbol_readable_but_path_safe(symbol, expected):
     assert futures_trade_url(symbol) == expected
+
+
+def test_parse_candle_reads_contract_volume():
+    candle = parse_candle({"t": 1_700_000_000, "o": "1", "h": "1", "l": "1", "c": "1", "v": 37284, "sum": "7972.9"})
+
+    assert candle.volume == 37284
+    assert parse_candle({"t": 1_700_000_000, "o": "1", "h": "1", "l": "1", "c": "1"}).volume == 0

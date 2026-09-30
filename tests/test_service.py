@@ -5,8 +5,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from price_alert import service
-from price_alert.assembly import build_detector
+from price_alert.assembly import build_detector, build_trend_detector
 from price_alert.config import AppConfig
+from price_alert.detection import MonitoredDetector
 from price_alert.gate import GateTradeFeed
 from price_alert.models import Candle, PriceTick
 
@@ -41,12 +42,21 @@ def config() -> AppConfig:
 
 
 def monitor(detector, rest=None, feed=None, app_config=None, sem=None) -> service._Monitor:
-    """各用例只触达自己关心的依赖，其余传占位对象，被误用时会直接报错而不是悄悄通过。"""
+    """各用例只触达自己关心的依赖，其余传占位对象，被误用时会直接报错而不是悄悄通过。
+
+    detector 传单个检测器时按 ATR 检测器的预热口径包装；传列表时原样使用。
+    """
+    app_config = config() if app_config is None else app_config
+    if isinstance(detector, list):
+        detectors = tuple(detector)
+    else:
+        indicator = app_config.indicator
+        detectors = (MonitoredDetector("ATR 异动", detector, indicator.candle_interval, indicator.warmup_candles),)
     return service._Monitor(
-        detector=detector,
+        detectors=detectors,
         rest=object() if rest is None else rest,
         feed=object() if feed is None else feed,
-        config=config() if app_config is None else app_config,
+        config=app_config,
         semaphore=semaphore() if sem is None else sem,
     )
 
@@ -285,11 +295,11 @@ def test_warmup_logs_progress_and_failures(monkeypatch, caplog):
     asyncio.run(monitor(detector, rest, GateTradeFeed("wss://example.test"), app_config).initial_universe())
 
     assert "正在从 Gate.io 获取合约列表" in caplog.text
-    assert "开始为 3 个新合约拉取 K 线预热 ATR（并发 8）" in caplog.text
+    assert "开始为 3 个新合约拉取 K 线预热（ATR 异动，并发 8）" in caplog.text
     # 最后一个完成时由“预热完成”收尾，不再重复报告 3/3。
-    assert "ATR 预热进度：2/3" in caplog.text
-    assert "ATR 预热进度：3/3" not in caplog.text
-    assert "ATR 预热完成：3 个合约（1 个失败" in caplog.text
+    assert "K 线预热进度：2/3" in caplog.text
+    assert "K 线预热进度：3/3" not in caplog.text
+    assert "K 线预热完成：3 个合约（1 个失败" in caplog.text
     assert detector.symbols == list(symbols)
 
 
@@ -451,3 +461,141 @@ def test_sync_universe_uses_the_shared_semaphore():
     tracker = asyncio.run(scenario())
 
     assert 0 < tracker.peak <= 2
+
+
+class RecordingDetector:
+    """记录收到的预热数据与调用，用于验证服务对多检测器的编排。"""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self._symbols: set[str] = set()
+        self.stale: set[str] = set()
+        self.warmups: dict[str, tuple[list[Candle], Candle | None]] = {}
+        self.resyncs: list[str] = []
+        self.gaps = 0
+
+    @property
+    def symbols(self) -> list[str]:
+        return sorted(self._symbols)
+
+    @property
+    def stale_symbols(self) -> list[str]:
+        return sorted(self.stale)
+
+    def add_symbol(self, symbol, candles, volume_24h_quote, live_candle=None, price_decimals=None) -> None:
+        if symbol not in self._symbols:
+            self.warmups[symbol] = (candles, live_candle)
+        self._symbols.add(symbol)
+
+    def remove_symbols(self, symbols) -> None:
+        self._symbols -= symbols
+
+    def mark_stream_gap(self) -> None:
+        self.gaps += 1
+        self.stale = set(self._symbols)
+
+    def resync_symbol(self, symbol, candles, live_candle, fetched_at) -> bool:
+        if symbol not in self.stale:
+            return False
+        self.stale.discard(symbol)
+        self.resyncs.append(symbol)
+        return True
+
+    def add_tick(self, tick: PriceTick) -> list[str]:
+        return [f"{self.name}-{tick.trade_id}"]
+
+
+class IntervalRest(FakeRest):
+    """按请求的周期与根数生成截至当前的 K 线，最后一根是未收盘的当前 K 线。"""
+
+    def __init__(self, tickers, contracts) -> None:
+        super().__init__(tickers, contracts)
+        self.requests: list[tuple[str, str, int]] = []
+
+    def fetch_candles(self, symbol, interval, limit):
+        self.requests.append((symbol, interval, limit))
+        seconds = {"1m": 60, "5m": 300}[interval]
+        current = int(datetime.now(UTC).timestamp()) // seconds * seconds
+        return [
+            Candle(datetime.fromtimestamp(current - seconds * offset, UTC), 100, 101, 99, 100)
+            for offset in range(limit - 1, -1, -1)
+        ]
+
+
+def test_detectors_sharing_an_interval_share_one_request_and_keep_their_own_depth():
+    atr, trend, other = RecordingDetector("atr"), RecordingDetector("trend"), RecordingDetector("other")
+    detectors = [
+        MonitoredDetector("ATR 异动", atr, "1m", 50),
+        MonitoredDetector("K 线趋势", trend, "1m", 331),
+        MonitoredDetector("其他", other, "5m", 20),
+    ]
+    rest = IntervalRest([ticker("BTC_USDT", 20e6)], [contract("BTC_USDT")])
+    feed = GateTradeFeed("wss://example.test")
+
+    asyncio.run(monitor(detectors, rest, feed).refresh_universe())
+
+    # 同周期取最多的根数只请求一次，不同周期各请求一次。
+    assert sorted(rest.requests) == [("BTC_USDT", "1m", 331), ("BTC_USDT", "5m", 20)]
+    # 各自截取到要求的根数（含一根未收盘），与单独请求时拿到的数据相同。
+    for detector, closed_count in ((atr, 49), (trend, 330), (other, 19)):
+        closed, live = detector.warmups["BTC_USDT"]
+        assert len(closed) == closed_count
+        assert live is not None
+    assert feed.symbols == ["BTC_USDT"]
+
+
+def test_warmup_failure_still_adds_symbol_to_every_detector():
+    atr, trend = RecordingDetector("atr"), RecordingDetector("trend")
+    detectors = [MonitoredDetector("ATR 异动", atr, "1m", 50), MonitoredDetector("K 线趋势", trend, "1m", 331)]
+
+    class DownRest(FakeRest):
+        def fetch_candles(self, symbol, interval, limit):
+            raise ConnectionError("candles down")
+
+    rest = DownRest([ticker("BTC_USDT", 20e6)], [contract("BTC_USDT")])
+    asyncio.run(monitor(detectors, rest, GateTradeFeed("wss://example.test")).refresh_universe())
+
+    assert atr.warmups["BTC_USDT"] == ([], None)
+    assert trend.warmups["BTC_USDT"] == ([], None)
+
+
+def test_resync_covers_symbols_stale_in_any_detector():
+    atr, trend = RecordingDetector("atr"), RecordingDetector("trend")
+    for detector in (atr, trend):
+        detector.add_symbol("BTC_USDT", [], 1e9)
+        detector.add_symbol("ETH_USDT", [], 1e9)
+    # 只有趋势检测器的 ETH 失效：同样要回补，且只对失效的检测器生效。
+    trend.stale = {"ETH_USDT"}
+    detectors = [MonitoredDetector("ATR 异动", atr, "1m", 50), MonitoredDetector("K 线趋势", trend, "1m", 331)]
+    rest = IntervalRest([], [])
+
+    asyncio.run(monitor(detectors, rest).resync_stale_symbols())
+
+    assert rest.requests == [("ETH_USDT", "1m", 331)]
+    assert (atr.resyncs, trend.resyncs) == ([], ["ETH_USDT"])
+
+
+def test_stream_loop_feeds_every_detector_and_marks_gaps_on_all(monkeypatch):
+    record_sleeps(monkeypatch, limit=1)
+    atr, trend = RecordingDetector("atr"), RecordingDetector("trend")
+    detectors = [MonitoredDetector("ATR 异动", atr, "1m", 50), MonitoredDetector("K 线趋势", trend, "1m", 331)]
+    dispatcher = FakeDispatcher()
+    feed = ScriptedFeed([(("1", "2"), ConnectionError("down"))])
+
+    with pytest.raises(StopLoop):
+        asyncio.run(monitor(detectors, feed=feed).stream_loop(dispatcher))
+
+    assert dispatcher.published == ["atr-1", "trend-1", "atr-2", "trend-2"]
+    assert (atr.gaps, trend.gaps) == (1, 1)
+
+
+def test_real_trend_detector_warms_up_through_monitor():
+    app_config = config()
+    trend = build_trend_detector(app_config.trend)
+    detectors = [MonitoredDetector("K 线趋势", trend, trend.warmup_interval, trend.warmup_candles)]
+    rest = IntervalRest([ticker("BTC_USDT", 20e6)], [contract("BTC_USDT")])
+
+    asyncio.run(monitor(detectors, rest, GateTradeFeed("wss://example.test"), app_config).refresh_universe())
+
+    assert trend.symbols == ["BTC_USDT"]
+    assert len(trend._states["BTC_USDT"].minutes) == trend.warmup_candles - 1

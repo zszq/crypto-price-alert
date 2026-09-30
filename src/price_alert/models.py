@@ -18,6 +18,9 @@ class Candle:
     low: float
     close: float
     quote_volume: float = 0.0
+    # 成交张数：与实时成交的 size 同单位，本地由成交聚合的 K 线才能与 REST K 线直接比较量能；
+    # 成交额则要乘合约乘数才能由成交换算，两种来源难以对齐。
+    volume: float = 0.0
 
     def __post_init__(self) -> None:
         if self.timestamp.tzinfo is None:
@@ -30,6 +33,8 @@ class Candle:
             raise ValueError("K 线最高价不能低于最低价")
         if not math.isfinite(self.quote_volume):
             raise ValueError("K 线成交额必须是有限数")
+        if not math.isfinite(self.volume) or self.volume < 0:
+            raise ValueError("K 线成交量必须是不小于 0 的有限数")
 
 
 @dataclass(frozen=True, slots=True)

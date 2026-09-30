@@ -9,6 +9,8 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from price_alert.trend.config import TrendConfig
+
 # K 线周期映射只保留这一份，避免服务编排与配置校验各自维护而出现分歧。
 INTERVAL_SECONDS: dict[str, int] = {"1m": 60, "5m": 300, "15m": 900}
 
@@ -142,6 +144,8 @@ class AppConfig(BaseModel):
 
     gate: GateConfig = Field(default_factory=GateConfig)
     indicator: IndicatorConfig = Field(default_factory=IndicatorConfig)
+    # K 线形态趋势提醒，独立于秒级 ATR 异动检测；模型定义在 trend 包内，删除该功能时只需去掉这一项。
+    trend: TrendConfig = Field(default_factory=TrendConfig)
     alerts: AlertConfig = Field(default_factory=AlertConfig)
 
 
