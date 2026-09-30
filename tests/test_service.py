@@ -266,6 +266,33 @@ def test_refresh_warms_new_symbols_keeps_hysteresis_and_updates_feed_without_rec
     assert feed.symbols == ["ETH_USDT", "SOL_USDT"]
 
 
+def test_warmup_logs_progress_and_failures(monkeypatch, caplog):
+    """预热耗时较长时要持续输出进度，否则启动阶段看起来像假死。"""
+    caplog.set_level(logging.INFO, logger="price_alert.service")
+    # 节流间隔置零，让每完成一个合约都满足报告条件，不依赖真实耗时。
+    monkeypatch.setattr(service, "_WARMUP_PROGRESS_SECONDS", 0.0)
+    symbols = ("BTC_USDT", "ETH_USDT", "SOL_USDT")
+
+    class FailingEthRest(FakeRest):
+        def fetch_candles(self, symbol, interval, limit):
+            if symbol == "ETH_USDT":
+                raise ConnectionError("candles down")
+            return super().fetch_candles(symbol, interval, limit)
+
+    rest = FailingEthRest([ticker(symbol, 20e6) for symbol in symbols], [contract(symbol) for symbol in symbols])
+    app_config = config()
+    detector = build_detector(app_config)
+    asyncio.run(monitor(detector, rest, GateTradeFeed("wss://example.test"), app_config).initial_universe())
+
+    assert "正在从 Gate.io 获取合约列表" in caplog.text
+    assert "开始为 3 个新合约拉取 K 线预热 ATR（并发 8）" in caplog.text
+    # 最后一个完成时由“预热完成”收尾，不再重复报告 3/3。
+    assert "ATR 预热进度：2/3" in caplog.text
+    assert "ATR 预热进度：3/3" not in caplog.text
+    assert "ATR 预热完成：3 个合约（1 个失败" in caplog.text
+    assert detector.symbols == list(symbols)
+
+
 def test_split_candles_separates_unclosed_candle():
     now = BASE + timedelta(minutes=5, seconds=20)
     candles = [Candle(BASE + timedelta(minutes=minute), 100, 101, 99, 100) for minute in range(3, 6)]

@@ -19,6 +19,9 @@ from price_alert.universe import select_liquid_contracts
 
 LOGGER = logging.getLogger(__name__)
 
+# 预热几百个合约受限速约束要数十秒，期间没有输出看起来像假死；逐个打印又会刷屏，按时间节流报告进度。
+_WARMUP_PROGRESS_SECONDS = 5.0
+
 
 class _Backoff:
     """指数退避：每次等待后翻倍直到上限。首次初始化、断线回补与重连共用，保证三处退避口径一致。"""
@@ -129,18 +132,42 @@ class _Monitor:
             ticker = selected_by_symbol[symbol]
             detector.add_symbol(symbol, [], ticker.volume_24h_quote, price_decimals=ticker.price_decimals)
 
+        new_symbols = sorted(target - current)
+        if not new_symbols:
+            return
+        LOGGER.info(
+            "开始为 %d 个新合约拉取 K 线预热 ATR（并发 %d）",
+            len(new_symbols),
+            self.config.gate.warmup_concurrency,
+        )
+        started = last_report = time.monotonic()
+        done = failed = 0
+
         async def add_new_symbol(symbol: str) -> None:
+            nonlocal done, failed, last_report
             closed: list[Candle] = []
             live: Candle | None = None
             try:
                 closed, live, _ = await self.fetch_candles(symbol)
             except Exception as exc:
                 # 单个新品种预热失败时仍加入监控，它会在实时 K 线积累后自行就绪。
+                failed += 1
                 LOGGER.warning("%s ATR 预热失败：%s", symbol, exc)
             ticker = selected_by_symbol[symbol]
             detector.add_symbol(symbol, closed, ticker.volume_24h_quote, live, ticker.price_decimals)
+            done += 1
+            now = time.monotonic()
+            if now - last_report >= _WARMUP_PROGRESS_SECONDS and done < len(new_symbols):
+                last_report = now
+                LOGGER.info("ATR 预热进度：%d/%d", done, len(new_symbols))
 
-        await asyncio.gather(*(add_new_symbol(symbol) for symbol in sorted(target - current)))
+        await asyncio.gather(*(add_new_symbol(symbol) for symbol in new_symbols))
+        LOGGER.info(
+            "ATR 预热完成：%d 个合约%s，耗时 %.1f 秒",
+            len(new_symbols),
+            f"（{failed} 个失败，等实时 K 线积累后就绪）" if failed else "",
+            time.monotonic() - started,
+        )
 
     async def refresh_universe(self) -> list[ContractTicker]:
         gate = self.config.gate
@@ -169,6 +196,8 @@ class _Monitor:
 
     async def initial_universe(self) -> None:
         backoff = self._backoff()
+        # 只在首次初始化时提示：此前控制台还没有任何输出；定时刷新在后台进行、不阻塞监控，无需提示。
+        LOGGER.info("正在从 Gate.io 获取合约列表并筛选交易对池…")
         while True:
             try:
                 await self.refresh_universe()
