@@ -252,41 +252,64 @@ class AtrMoveDetector:
             # 乱序旧价容易制造虚假的瞬时位移，因此不回填实时检测窗口。
             return []
         state.last_tick_time = timestamp
-        self._update_bar(state, tick.price, timestamp)
 
         second = timestamp.replace(microsecond=0)
+        alerts: list[PriceAlert] = []
         if state.buckets and state.buckets[-1].timestamp == second:
             state.buckets[-1].add(tick.price, tick.size)
-            return []
-
-        alerts: list[PriceAlert] = []
-        if state.buckets:
-            completed = state.buckets[-1]
-            missing_seconds = int((second - completed.timestamp).total_seconds()) - 1
-            # 等一秒结束后再使用整秒 VWAP，避免把新一秒的第一笔成交误当成稳定价格。
-            # 空档后才结算的秒，其 VWAP 已是几秒甚至几十秒前的旧价格，必须用当前成交价复核；
-            # 紧邻结算只迟一秒，不复核，以免新一秒的单笔离群成交否掉本该发出的提醒。
-            self._settle(symbol, state, completed, timestamp, alerts, tick.price if missing_seconds > 0 else None)
-            # 稀疏合约在快速行情中常有空秒，沿用最后成交价补齐才能完成连续确认；
-            # 空档超过（最短）观察窗口说明行情停滞，补齐已无比较意义。
-            if 0 < missing_seconds <= self._fill_limit:
-                last_price = completed.last_price
-                assert last_price is not None
-                for offset in range(1, missing_seconds + 1):
-                    filler = _SecondBucket.carried(
-                        completed.timestamp + timedelta(seconds=offset),
-                        last_price,
-                        completed.trades_through,
-                    )
-                    state.buckets.append(filler)
-                    # 补齐桶本就不能触发提醒，无需复核。
-                    self._settle(symbol, state, filler, timestamp, alerts, None)
-
-        trades_before = state.buckets[-1].trades_through if state.buckets else 0
-        current = _SecondBucket(second, trades_before=trades_before)
-        current.add(tick.price, tick.size)
-        state.buckets.append(current)
+        else:
+            self._settle_through(symbol, state, second, tick.price, timestamp, alerts)
+            trades_before = state.buckets[-1].trades_through if state.buckets else 0
+            current = _SecondBucket(second, trades_before=trades_before)
+            current.add(tick.price, tick.size)
+            state.buckets.append(current)
+        # 这笔成交必须在结算之后才计入 K 线：它可能已属于下一个周期，先计入会让被结算的旧秒提前用上
+        # 本周期收盘乃至空档平线之后的 ATR。同一秒的后续成交也走到这里，否则会漏掉该秒的高低价。
+        self._update_bar(state, tick.price, timestamp)
         return alerts
+
+    def _settle_through(
+        self,
+        symbol: str,
+        state: _SymbolState,
+        second: datetime,
+        price: float,
+        timestamp: datetime,
+        alerts: list[PriceAlert],
+    ) -> None:
+        """结算新一秒之前已结束的秒：上一个有成交的秒，以及空档中需要补齐的秒。"""
+        if not state.buckets:
+            return
+        completed = state.buckets[-1]
+        missing_seconds = int((second - completed.timestamp).total_seconds()) - 1
+        # 等一秒结束后再使用整秒 VWAP，避免把新一秒的第一笔成交误当成稳定价格。
+        # 空档后才结算的秒，其 VWAP 已是几秒甚至几十秒前的旧价格，必须用当前成交价复核；
+        # 紧邻结算只迟一秒，不复核，以免新一秒的单笔离群成交否掉本该发出的提醒。
+        projections: dict[datetime, WilderAtr] = {}
+        self._settle(
+            symbol,
+            state,
+            completed,
+            timestamp,
+            alerts,
+            price if missing_seconds > 0 else None,
+            self._atr_before(state, completed.timestamp, projections),
+        )
+        # 稀疏合约在快速行情中常有空秒，沿用最后成交价补齐才能完成连续确认；
+        # 空档超过（最短）观察窗口说明行情停滞，补齐已无比较意义。
+        if 0 < missing_seconds <= self._fill_limit:
+            last_price = completed.last_price
+            assert last_price is not None
+            for offset in range(1, missing_seconds + 1):
+                filler = _SecondBucket.carried(
+                    completed.timestamp + timedelta(seconds=offset),
+                    last_price,
+                    completed.trades_through,
+                )
+                state.buckets.append(filler)
+                # 补齐桶本就不能触发提醒，无需复核。
+                atr = self._atr_before(state, filler.timestamp, projections)
+                self._settle(symbol, state, filler, timestamp, alerts, None, atr)
 
     def _settle(
         self,
@@ -296,14 +319,44 @@ class AtrMoveDetector:
         timestamp: datetime,
         alerts: list[PriceAlert],
         latest_price: float | None,
+        atr: WilderAtr | None,
     ) -> None:
         # 保留最长窗口所需的全部秒，另留一个不晚于窗口起点的桶，空档中的基准价要靠它确定。
         oldest_required = bucket.timestamp - self._retention
         while len(state.buckets) > 2 and state.buckets[1].timestamp <= oldest_required:
             state.buckets.popleft()
-        alert = self._evaluate(symbol, state, bucket, timestamp, latest_price)
+        alert = self._evaluate(symbol, state, bucket, timestamp, latest_price, atr)
         if alert is not None:
             alerts.append(alert)
+
+    def _atr_before(
+        self,
+        state: _SymbolState,
+        second: datetime,
+        projections: dict[datetime, WilderAtr],
+    ) -> WilderAtr | None:
+        """评估 second 时应使用的 ATR：只含 second 所在周期之前已收盘的 K 线；没有这样的 ATR 时返回 None。"""
+        bar_timestamp = self._floor_time(second)
+        live_bar = state.live_bar
+        if state.atr_stale or live_bar is None or bar_timestamp <= live_bar.timestamp:
+            last_timestamp = state.atr.last_timestamp
+            if not state.atr_stale and last_timestamp is not None and last_timestamp >= bar_timestamp:
+                # 回补会用交易所 K 线整体重建 ATR，却留着回补前还没结算的秒：若这些秒早于重建后的
+                # 实时 K 线，ATR 已含它们所在乃至之后的周期，空档中的平线会把倍数成倍放大。
+                # 旧的 ATR 已被替换无从恢复，只能放弃判定这几秒。正常逐笔推进时 ATR 总早于实时 K 线，不会走到这里。
+                return None
+            return state.atr
+        # 补齐秒跨入了实时 K 线之后的周期：实时 K 线和其后的空周期对它而言都已收盘。
+        # 只在副本上推演，真正计入仍由触发结算的成交一次完成，处理完每笔成交后的状态因此与
+        # 跨了几个周期、分几段评估都无关；同一周期的补齐秒共用一份推演结果。
+        projected = projections.get(bar_timestamp)
+        if projected is None:
+            projected = state.atr.copy()
+            previous = live_bar.to_candle()
+            projected.update(previous)
+            self._fill_flat_bars(projected, previous, bar_timestamp)
+            projections[bar_timestamp] = projected
+        return projected
 
     def _update_bar(self, state: _SymbolState, price: float, timestamp: datetime) -> None:
         bar_timestamp = self._floor_time(timestamp)
@@ -318,10 +371,10 @@ class AtrMoveDetector:
                 # 断线期间 ATR 等待 REST 重建，此时喂入缺口两侧的 K 线只会引入错误数据。
                 previous = state.live_bar.to_candle()
                 state.atr.update(previous)
-                self._fill_flat_bars(state, previous, bar_timestamp)
+                self._fill_flat_bars(state.atr, previous, bar_timestamp)
             state.live_bar = _LiveBar(bar_timestamp, price, price, price, price)
 
-    def _fill_flat_bars(self, state: _SymbolState, previous: Candle, next_bar: datetime) -> None:
+    def _fill_flat_bars(self, atr: WilderAtr, previous: Candle, next_bar: datetime) -> None:
         # 连接正常时跨过的周期确实无人成交；Gate 对这类周期返回开高低收都等于上一收盘价的平线 K 线，
         # 实时计算保持同样口径，ATR 才与预热数据一致，且冷门合约停摆后 ATR 时间戳不会被误判为过期。
         missing = int((next_bar - previous.timestamp) / self._candle_interval) - 1
@@ -331,7 +384,7 @@ class AtrMoveDetector:
         count = min(missing, self.atr_period * 4)
         for offset in range(count, 0, -1):
             flat_time = next_bar - self._candle_interval * offset
-            state.atr.update(Candle(flat_time, previous.close, previous.close, previous.close, previous.close))
+            atr.update(Candle(flat_time, previous.close, previous.close, previous.close, previous.close))
 
     def _floor_time(self, timestamp: datetime) -> datetime:
         epoch = int(timestamp.timestamp())
@@ -345,10 +398,11 @@ class AtrMoveDetector:
         current: _SecondBucket,
         timestamp: datetime,
         latest_price: float | None,
+        atr_state: WilderAtr | None,
     ) -> PriceAlert | None:
         """在所有窗口上评估一个已结束的秒，再统一裁决冷却与多窗口同时满足的情况。"""
         evaluations = [
-            self._evaluate_window(symbol, state, window, candidate, current, latest_price)
+            self._evaluate_window(symbol, state, window, candidate, current, latest_price, atr_state)
             for window, candidate in zip(self.windows, state.candidates, strict=True)
         ]
 
@@ -384,9 +438,12 @@ class AtrMoveDetector:
         candidate: _Candidate,
         current: _SecondBucket,
         latest_price: float | None,
+        atr_state: WilderAtr | None,
     ) -> WindowEvaluation:
         """评估一个窗口；latest_price 非空时还需该价格仍满足门槛才允许提醒。
 
+        atr_state 由调用方按这一秒所在周期选定，不能直接用 state.atr：结算可能晚于下一周期开始；
+        为 None 表示这一秒没有对应周期的 ATR 可用。
         返回 ALERT 只表示窗口本身的条件全部满足，冷却与多窗口裁决由调用方处理。
         """
 
@@ -395,8 +452,8 @@ class AtrMoveDetector:
                 symbol, window.name, current.timestamp, outcome, current.price, not current.has_trades, atr
             )
 
-        atr = state.atr.value
-        atr_timestamp = state.atr.last_timestamp
+        atr = atr_state.value if atr_state is not None else None
+        atr_timestamp = atr_state.last_timestamp if atr_state is not None else None
         if state.atr_stale or atr is None or atr <= 0 or atr_timestamp is None:
             candidate.reset()
             return result(Outcome.ATR_UNAVAILABLE)

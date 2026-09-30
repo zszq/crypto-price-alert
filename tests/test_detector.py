@@ -369,6 +369,100 @@ def test_flat_fill_is_capped_and_skipped_while_stale():
     assert atr_of(stale, "BTC_USDT").last_timestamp == BASE + timedelta(minutes=2)
 
 
+def evaluated_atr(evaluations, second) -> float | None:
+    matched = [evaluation.atr for evaluation in evaluations if evaluation.second == second]
+    assert matched, f"{second} 没有被评估"
+    return matched[0]
+
+
+def test_second_settled_after_long_silence_ignores_flat_bars_that_came_later():
+    evaluations = []
+    instance = detector(observer=evaluations.append)
+    instance.add_symbol("BTC_USDT", history(1.0), 1_000_000_000)
+    bar = BASE + timedelta(minutes=3)
+    instance.add_tick(PriceTick("BTC_USDT", 100.0, 1.0, bar + timedelta(seconds=5)))
+    # 沉默到 08:00 才有下一笔，03:05 这一秒此时才被结算。
+    instance.add_tick(PriceTick("BTC_USDT", 100.0, 1.0, bar + timedelta(minutes=5)))
+
+    # 评估 03:05 只能用 03:00 之前收盘的 K 线；若先计入 03:00 与之后的平线，ATR 会衰减到 (2/3)^5。
+    assert evaluated_atr(evaluations, bar + timedelta(seconds=5)) == pytest.approx(1.0)
+    # 处理完这笔成交后，03:00 的 K 线与 04:00~07:00 的平线照常计入。
+    atr = atr_of(instance, "BTC_USDT")
+    assert atr.last_timestamp == BASE + timedelta(minutes=7)
+    assert atr.value == pytest.approx((2 / 3) ** 5)
+
+
+def test_last_second_of_a_bar_is_judged_without_its_own_bar_even_when_settled_next_second():
+    evaluations = []
+    instance = detector(observer=evaluations.append)
+    instance.add_symbol("BTC_USDT", history(1.0), 1_000_000_000)
+    bar = BASE + timedelta(minutes=3)
+    instance.add_tick(PriceTick("BTC_USDT", 100.0, 1.0, bar + timedelta(seconds=58)))
+    # 同一秒的后续成交同样要计入实时 K 线，否则 03:00 这根会漏掉 104 与 96 两个极值。
+    for millis, price in ((0, 100.0), (100, 104.0), (200, 96.0)):
+        instance.add_tick(PriceTick("BTC_USDT", price, 1.0, bar + timedelta(seconds=59, milliseconds=millis)))
+    instance.add_tick(PriceTick("BTC_USDT", 100.0, 1.0, bar + timedelta(minutes=1)))
+
+    # 03:59 与 03:58 同属 03:00 这根 K 线，判定口径应一致：都不含本根 K 线。
+    assert evaluated_atr(evaluations, bar + timedelta(seconds=58)) == pytest.approx(1.0)
+    assert evaluated_atr(evaluations, bar + timedelta(seconds=59)) == pytest.approx(1.0)
+    atr = atr_of(instance, "BTC_USDT")
+    # 03:00 这根高 104、低 96，TR=8，ATR=(1×2+8)/3。
+    assert atr.last_timestamp == bar
+    assert atr.value == pytest.approx(10 / 3)
+
+
+def test_carried_seconds_use_the_bars_closed_before_their_own_bar():
+    evaluations = []
+    instance = detector(observer=evaluations.append)
+    instance.add_symbol("BTC_USDT", history(1.0), 1_000_000_000)
+    bar = BASE + timedelta(minutes=3)
+    instance.add_tick(PriceTick("BTC_USDT", 100.0, 1.0, bar + timedelta(seconds=55)))
+    # 03:56~04:02 由补齐桶覆盖，跨过了 04:00 的 K 线边界。
+    instance.add_tick(PriceTick("BTC_USDT", 101.0, 1.0, bar + timedelta(minutes=1, seconds=3)))
+
+    carried = {evaluation.second: evaluation.atr for evaluation in evaluations if evaluation.carried}
+    # 03:00 这根只有 100 一个价格，TR=0，收盘后 ATR 衰减为 2/3；只有 04:00 之后的补齐秒才能用上它。
+    assert carried == {
+        **{bar + timedelta(seconds=second): pytest.approx(1.0) for second in range(56, 60)},
+        **{bar + timedelta(minutes=1, seconds=second): pytest.approx(2 / 3) for second in range(3)},
+    }
+    # 为补齐秒推演的 ATR 只是副本：实时状态与逐笔处理时一致，03:00 只计入一次，新 K 线由成交开出。
+    atr = atr_of(instance, "BTC_USDT")
+    assert atr.last_timestamp == bar
+    assert atr.value == pytest.approx(2 / 3)
+    live_bar = instance._states["BTC_USDT"].live_bar
+    assert live_bar is not None
+    assert live_bar.timestamp == bar + timedelta(minutes=1)
+    assert (live_bar.open, live_bar.high, live_bar.low) == (101, 101, 101)
+
+
+def test_second_left_pending_across_a_late_resync_is_not_judged_with_the_rebuilt_atr():
+    evaluations = []
+    instance = detector(observer=evaluations.append)
+    instance.add_symbol("BTC_USDT", history(1.0), 1_000_000_000)
+    instance.mark_stream_gap()
+    bar = BASE + timedelta(minutes=3)
+    instance.add_tick(PriceTick("BTC_USDT", 100.0, 1.0, bar + timedelta(seconds=5)))
+    # 03:06 在回补完成前还没等到下一笔成交，一直留着待结算。
+    instance.add_tick(PriceTick("BTC_USDT", 102.0, 1.0, bar + timedelta(seconds=6)))
+
+    # 回补拖到 08:00 之后才成功，重建的 ATR 已含 03:00 之后的 K 线。
+    late = BASE + timedelta(minutes=8)
+    closed = [Candle(late - timedelta(minutes=offset), 102.0, 102.5, 101.5, 102.0) for offset in range(3, 0, -1)]
+    live_candle = Candle(late, 102.0, 102.0, 102.0, 102.0)
+    assert instance.resync_symbol("BTC_USDT", closed, live_candle, late + timedelta(seconds=5))
+    instance.add_tick(PriceTick("BTC_USDT", 102.0, 1.0, late + timedelta(seconds=6)))
+    instance.add_tick(PriceTick("BTC_USDT", 102.0, 1.0, late + timedelta(seconds=7)))
+
+    # 03:06 对应周期的 ATR 已被替换，只能放弃判定，不能拿之后的 ATR 充数。
+    pending = [evaluation for evaluation in evaluations if evaluation.second == bar + timedelta(seconds=6)]
+    assert [evaluation.outcome for evaluation in pending] == [Outcome.ATR_UNAVAILABLE]
+    # 回补之后产生的秒照常使用重建的 ATR。
+    after = [evaluation for evaluation in evaluations if evaluation.second == late + timedelta(seconds=6)]
+    assert [evaluation.atr for evaluation in after] == [pytest.approx(1.0)]
+
+
 def long_window(**overrides) -> MoveWindow:
     values = {
         "name": "long",

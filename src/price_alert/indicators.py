@@ -22,6 +22,15 @@ class WilderAtr:
     def ready(self) -> bool:
         return self.value is not None
 
+    def copy(self) -> WilderAtr:
+        # 推演用的副本不能与原对象共享预热列表，否则在副本上计入 K 线会改动实时状态。
+        clone = WilderAtr(self.period)
+        clone.value = self.value
+        clone.last_timestamp = self.last_timestamp
+        clone._previous_close = self._previous_close
+        clone._warmup = list(self._warmup)
+        return clone
+
     def seed(self, candles: Iterable[Candle]) -> None:
         for candle in sorted(candles, key=lambda item: item.timestamp):
             self.update(candle)
