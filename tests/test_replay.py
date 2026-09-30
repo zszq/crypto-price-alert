@@ -7,6 +7,7 @@ from price_alert.formatting import BEIJING_TIME
 from price_alert.models import Candle, PriceTick
 from price_alert.replay import (
     SETTLE_MARGIN,
+    SETTLE_SEARCH_LIMIT,
     ReplayData,
     fetch_replay_data,
     normalize_symbol,
@@ -116,9 +117,52 @@ def test_render_explains_quiet_market_without_alerts():
     assert len(render_replay(result, show_all=True)) > len(lines)
 
 
+def tail_jump_trades(plan) -> list[PriceTick]:
+    # 区间最后三秒跳到 103，最后一秒正好完成短窗口的 3 秒确认，但它要等下一笔成交才会结算。
+    return trades_per_second(
+        plan.feed_start, END, lambda moment: 103.0 if moment >= END - timedelta(seconds=2) else 100.0
+    )
+
+
+def test_run_replay_flags_unsettled_last_second():
+    plan = plan_replay("QNT_USDT", START, END, AppConfig())
+
+    result = run_replay(AppConfig(), plan, ReplayData(flat_candles(plan), tail_jump_trades(plan)))
+    lines = render_replay(result)
+
+    assert result.alerts == []
+    assert result.unsettled_second == END
+    assert max(item.second for item in result.evaluations) == END - timedelta(seconds=1)
+    notice = next(index for index, line in enumerate(lines) if line.startswith("注意：结果不完整"))
+    assert lines[notice - 1] == "区间内没有提醒。"
+    assert "09:30:00" in lines[notice]
+
+
+def test_run_replay_settles_last_second_with_late_trade():
+    plan = plan_replay("QNT_USDT", START, END, AppConfig())
+    late = PriceTick("QNT_USDT", 103.0, 1.0, END + timedelta(seconds=12), "late")
+
+    result = run_replay(AppConfig(), plan, ReplayData(flat_candles(plan), [*tail_jump_trades(plan), late]))
+
+    assert [alert.window for alert in result.alerts] == ["short"]
+    assert result.unsettled_second is None
+    assert not any(line.startswith("注意：结果不完整") for line in render_replay(result))
+
+
+def test_last_second_outside_range_is_not_flagged():
+    plan, data = jump_scenario()
+    # 成交一直延续到区间之后，区间内的秒全部由后续成交结算，最后那一秒在区间外无关紧要。
+    assert run_replay(AppConfig(), plan, data).unsettled_second is None
+
+
 class FakeReplayRest:
-    def __init__(self, contract_error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        contract_error: Exception | None = None,
+        trades: list[PriceTick] | None = None,
+    ) -> None:
         self.contract_error = contract_error
+        self.trades = trades or []
         self.calls: list[tuple] = []
 
     def fetch_contract(self, symbol):
@@ -132,7 +176,7 @@ class FakeReplayRest:
 
     def fetch_trades(self, symbol, start, end):
         self.calls.append(("trades", symbol, start, end))
-        return []
+        return [tick for tick in self.trades if start <= tick.timestamp < end]
 
 
 def test_fetch_replay_data_requests_warmup_candles_and_settling_margin():
@@ -146,6 +190,52 @@ def test_fetch_replay_data_requests_warmup_candles_and_settling_margin():
         ("candles", "QNT_USDT", "1m", plan.warmup_start, plan.feed_start - timedelta(minutes=1)),
         ("trades", "QNT_USDT", plan.feed_start, END + SETTLE_MARGIN),
     ]
+
+
+def test_fetch_replay_data_searches_settling_trade_beyond_margin():
+    plan = plan_replay("QNT_USDT", START, END, AppConfig())
+    late = PriceTick("QNT_USDT", 103.0, 1.0, END + timedelta(seconds=45), "late")
+    later = PriceTick("QNT_USDT", 90.0, 1.0, END + timedelta(seconds=46), "later")
+    rest = FakeReplayRest(trades=[*tail_jump_trades(plan), late, later])
+
+    data = fetch_replay_data(rest, plan, AppConfig())
+
+    # 只补第一笔：结算只看新一秒的第一笔成交。
+    assert data.trades[-1] is late
+    search = [call[2:] for call in rest.calls if call[0] == "trades"][1:]
+    first = END + SETTLE_MARGIN
+    assert search == [
+        (first, first + timedelta(seconds=10)),
+        (first + timedelta(seconds=10), first + timedelta(seconds=30)),
+        (first + timedelta(seconds=30), first + timedelta(seconds=70)),
+    ]
+    assert run_replay(AppConfig(), plan, data).unsettled_second is None
+
+
+def test_fetch_replay_data_skips_search_when_trades_continue_past_end():
+    plan, data = jump_scenario()
+    rest = FakeReplayRest(trades=data.trades)
+
+    fetch_replay_data(rest, plan, AppConfig())
+
+    assert [call[0] for call in rest.calls] == ["candles", "trades"]
+
+
+def test_fetch_replay_data_gives_up_after_search_limit():
+    plan = plan_replay("QNT_USDT", START, END, AppConfig())
+    trades = tail_jump_trades(plan)
+    rest = FakeReplayRest(trades=trades)
+
+    data = fetch_replay_data(rest, plan, AppConfig())
+
+    assert data.trades == trades
+    search = [call[2:] for call in rest.calls if call[0] == "trades"][1:]
+    # 逐段翻倍、首尾相接，恰好覆盖到查找上限为止。
+    assert search[0][0] == END + SETTLE_MARGIN
+    assert all(prev[1] == nxt[0] for prev, nxt in zip(search, search[1:], strict=False))
+    assert search[-1][1] == END + SETTLE_MARGIN + SETTLE_SEARCH_LIMIT
+    assert len(search) < 10
+    assert run_replay(AppConfig(), plan, data).unsettled_second == END
 
 
 def test_fetch_replay_data_tolerates_missing_contract_precision():

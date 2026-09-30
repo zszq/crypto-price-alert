@@ -32,6 +32,9 @@ LOGGER = logging.getLogger(__name__)
 
 # 一秒要等下一秒的第一笔成交才会结算，多取一点成交，区间最后几秒才不会因为没人“结算”而漏评。
 SETTLE_MARGIN = timedelta(seconds=10)
+# 余量内仍没有成交时，继续向后找结算用的那一笔，最远找这么久。实时监控里多晚的成交都会结算，
+# 但冷门合约停摆几小时也没必要一直翻下去，超过后如实标注结果不完整。
+SETTLE_SEARCH_LIMIT = timedelta(hours=1)
 # 这些结果说明窗口已经进入或越过门槛判定，默认输出只列它们，其余秒只计入统计。
 _NOTABLE_OUTCOMES = frozenset(
     {Outcome.CONFIRMING, Outcome.CARRIED, Outcome.MOVE_FADED, Outcome.COOLDOWN, Outcome.SUPERSEDED, Outcome.ALERT}
@@ -65,6 +68,8 @@ class ReplayResult:
     trades_fed: int
     warmup_candles: int
     price_decimals: int | None = None
+    # 区间内最后一个有成交的秒，没有后续成交来结算、因而缺少判定时才有值。
+    unsettled_second: datetime | None = None
 
 
 def normalize_symbol(text: str) -> str:
@@ -119,8 +124,38 @@ def fetch_replay_data(rest: GateRestClient, plan: ReplayPlan, config: AppConfig)
         beijing_time(plan.feed_start),
     )
     trades = rest.fetch_trades(plan.symbol, plan.feed_start, plan.end + SETTLE_MARGIN)
+    if trades and _second_of(trades[-1]) <= plan.end:
+        settling = _find_settling_trade(rest, plan)
+        if settling is not None:
+            trades = [*trades, settling]
     LOGGER.info("共获取 %s 笔成交、%d 根预热 K 线", f"{len(trades):,}", len(candles))
     return ReplayData(candles, trades, decimals)
+
+
+def _second_of(tick: PriceTick) -> datetime:
+    # 与检测器按秒分桶的口径一致。
+    return tick.timestamp.replace(microsecond=0)
+
+
+def _find_settling_trade(rest: GateRestClient, plan: ReplayPlan) -> PriceTick | None:
+    """余量内没有成交时，向后找第一笔成交来结算区间内最后一个有成交的秒；找不到返回 None。
+
+    必须用真实的下一笔成交而不是人为补一笔：空档后结算时要用它的价格复核异动是否仍在，
+    只有它才能还原实时监控当时的判定。查找区间逐段翻倍，停摆不久时只需一两次小请求。
+    """
+    start = plan.end + SETTLE_MARGIN
+    limit = start + SETTLE_SEARCH_LIMIT
+    span = SETTLE_MARGIN
+    margin = int(SETTLE_MARGIN.total_seconds())
+    LOGGER.info("%s 区间结束后 %d 秒内没有成交，继续向后查找用于结算最后一秒的成交", plan.symbol, margin)
+    while start < limit:
+        end = min(start + span, limit)
+        found = rest.fetch_trades(plan.symbol, start, end)
+        if found:
+            return found[0]
+        start = end
+        span *= 2
+    return None
 
 
 def run_replay(config: AppConfig, plan: ReplayPlan, data: ReplayData) -> ReplayResult:
@@ -134,14 +169,20 @@ def run_replay(config: AppConfig, plan: ReplayPlan, data: ReplayData) -> ReplayR
 
     alerts: list[PriceAlert] = []
     fed = 0
+    last_tick: PriceTick | None = None
     for tick in data.trades:
         if tick.symbol.upper() != plan.symbol or tick.timestamp < plan.feed_start:
             continue
         fed += 1
+        last_tick = tick
         alerts.extend(detector.add_tick(tick))
 
     def in_range(second: datetime) -> bool:
         return plan.start <= second <= plan.end
+
+    # 最后一笔成交所在的秒要等下一笔成交才会结算：它落在区间内，说明这一秒没有判定，
+    # 恰好完成确认的提醒会被漏掉，不能让结果看起来像“没有提醒”。
+    unsettled = _second_of(last_tick) if last_tick is not None else None
 
     # 提醒与 ALERT 判定一一对应且顺序相同；按判定所属的秒筛选，而不是按结算它的那笔成交的时间，
     # 否则区间末尾之后才结算的秒会被算进来，区间开头之前的秒也可能漏掉。
@@ -154,6 +195,7 @@ def run_replay(config: AppConfig, plan: ReplayPlan, data: ReplayData) -> ReplayR
         trades_fed=fed,
         warmup_candles=len(seed),
         price_decimals=data.price_decimals,
+        unsettled_second=unsettled if unsettled is not None and in_range(unsettled) else None,
     )
 
 
@@ -235,6 +277,12 @@ def render_replay(result: ReplayResult, show_all: bool = False) -> list[str]:
         lines.extend(f"  {format_alert(alert)}" for alert in result.alerts)
     else:
         lines.append("区间内没有提醒。")
+    if result.unsettled_second is not None:
+        # 紧跟在提醒结论之后，避免“没有提醒”被当成完整结论。
+        lines.append(
+            f"注意：结果不完整。最后一笔成交在 {beijing_time(result.unsettled_second, '%H:%M:%S')}，"
+            "之后取不到用于结算的成交，这一秒没有判定；它若恰好完成确认，提醒会被漏掉。"
+        )
     lines.append("")
 
     by_window: dict[str, list[WindowEvaluation]] = {window.name: [] for window in result.windows}
