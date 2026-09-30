@@ -4,15 +4,17 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime
 
-from colorama import Fore, Style
+from colorama import Style
 
 from price_alert.models import PriceAlert
 from price_alert.notifier import (
     DROP_CHANGE_COLOR,
+    DROP_COLOR,
     LONG_WINDOW_COLOR,
     MACOS_ALERT_SOUND,
     MACOS_SOUND_PLAYER,
     SURGE_CHANGE_COLOR,
+    SURGE_COLOR,
     SYMBOL_COLOR,
     TRADE_URL_COLOR,
     AlertDispatcher,
@@ -51,7 +53,7 @@ def test_jsonl_notifier_writes_atr_alert(tmp_path):
     assert "异动强度 1.25 ATR" in text
     assert "ATR(14)=" not in text
     assert "24h成交额" not in text
-    assert colorize_alert(alert, "surge") == f"{Fore.GREEN}surge{Style.RESET_ALL}"
+    assert colorize_alert(alert, "surge") == f"{SURGE_COLOR}surge{Style.RESET_ALL}"
 
 
 def test_drop_alert_is_red():
@@ -72,7 +74,7 @@ def test_drop_alert_is_red():
 
     assert alert.to_dict()["color"] == "red"
     assert "价格下跌 1.00%" in format_alert(alert)
-    assert colorize_alert(alert, "drop") == f"{Fore.RED}drop{Style.RESET_ALL}"
+    assert colorize_alert(alert, "drop") == f"{DROP_COLOR}drop{Style.RESET_ALL}"
 
 
 def test_colorize_highlights_symbol():
@@ -80,22 +82,22 @@ def test_colorize_highlights_symbol():
 
     text = colorize_alert(alert, "[急涨提醒] | ETH_USDT | 价格上涨")
 
-    symbol = f"{SYMBOL_COLOR}ETH_USDT{Style.RESET_ALL}{Fore.GREEN}"
-    assert text == f"{Fore.GREEN}[急涨提醒] | {symbol} | 价格上涨{Style.RESET_ALL}"
+    symbol = f"{SYMBOL_COLOR}ETH_USDT{Style.RESET_ALL}{SURGE_COLOR}"
+    assert text == f"{SURGE_COLOR}[急涨提醒] | {symbol} | 价格上涨{Style.RESET_ALL}"
     assert colorize_alert(alert, "ETH_USDT", enabled=False) == "ETH_USDT"
 
 
 def test_colorize_highlights_change_percent():
     surge = make_alert()
     text = colorize_alert(surge, "价格上涨 1.00% | 100 → 101")
-    change = f"{SURGE_CHANGE_COLOR}1.00%{Style.RESET_ALL}{Fore.GREEN}"
-    assert text == f"{Fore.GREEN}价格上涨 {change} | 100 → 101{Style.RESET_ALL}"
+    change = f"{SURGE_CHANGE_COLOR}1.00%{Style.RESET_ALL}{SURGE_COLOR}"
+    assert text == f"{SURGE_COLOR}价格上涨 {change} | 100 → 101{Style.RESET_ALL}"
 
     # 急跌时 change_percent 为负，文本中显示绝对值，着色也要匹配到绝对值。
     drop = replace(make_alert(), direction="drop", price=99.0, change_percent=-1.0)
     text = colorize_alert(drop, "价格下跌 1.00% | 100 → 99")
-    change = f"{DROP_CHANGE_COLOR}1.00%{Style.RESET_ALL}{Fore.RED}"
-    assert text == f"{Fore.RED}价格下跌 {change} | 100 → 99{Style.RESET_ALL}"
+    change = f"{DROP_CHANGE_COLOR}1.00%{Style.RESET_ALL}{DROP_COLOR}"
+    assert text == f"{DROP_COLOR}价格下跌 {change} | 100 → 99{Style.RESET_ALL}"
 
 
 def make_alert(symbol: str = "BTC_USDT") -> PriceAlert:
@@ -382,15 +384,15 @@ def test_long_window_alert_is_described_in_minutes():
 def test_only_long_window_length_is_highlighted_in_one_color_for_both_directions():
     # 短窗口的「30秒」沿用正文方向色，前面不插入任何颜色码。
     short = make_alert()
-    assert f"{Style.RESET_ALL}{Fore.GREEN} | 30秒内价格上涨" in colorize_alert(short, format_alert(short))
+    assert f"{Style.RESET_ALL}{SURGE_COLOR} | 30秒内价格上涨" in colorize_alert(short, format_alert(short))
 
     # 长窗口的「3分钟」急涨急跌都用同一个颜色，之后恢复各自的正文色。
     surge = replace(make_alert(), lookback_seconds=180, window="long")
     surge_text = colorize_alert(surge, format_alert(surge))
-    assert f"{LONG_WINDOW_COLOR}3分钟{Style.RESET_ALL}{Fore.GREEN}内价格上涨" in surge_text
+    assert f"{LONG_WINDOW_COLOR}3分钟{Style.RESET_ALL}{SURGE_COLOR}内价格上涨" in surge_text
     drop = replace(surge, direction="drop", change_percent=-2.5)
     drop_text = colorize_alert(drop, format_alert(drop))
-    assert f"{LONG_WINDOW_COLOR}3分钟{Style.RESET_ALL}{Fore.RED}内价格下跌" in drop_text
+    assert f"{LONG_WINDOW_COLOR}3分钟{Style.RESET_ALL}{DROP_COLOR}内价格下跌" in drop_text
     # 不能与正文、交易对、涨跌幅、地址撞色，否则起不到区分作用。
-    used = {Fore.GREEN, Fore.RED, SYMBOL_COLOR, SURGE_CHANGE_COLOR, DROP_CHANGE_COLOR, TRADE_URL_COLOR}
+    used = {SURGE_COLOR, DROP_COLOR, SYMBOL_COLOR, SURGE_CHANGE_COLOR, DROP_CHANGE_COLOR, TRADE_URL_COLOR}
     assert LONG_WINDOW_COLOR not in used

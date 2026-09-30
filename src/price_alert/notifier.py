@@ -23,15 +23,18 @@ from price_alert.models import PriceAlert
 LOGGER = logging.getLogger(__name__)
 MACOS_SOUND_PLAYER = "/usr/bin/afplay"
 MACOS_ALERT_SOUND = "/System/Library/Sounds/Glass.aiff"
-# 交易对用与涨跌红绿都不冲突的亮黄色（非加粗）突出，便于在连续提醒中快速定位币种。
+# 控制台颜色只用标准 16 色，各终端都能显示。
+# 正文：急涨绿色、急跌红色。
+SURGE_COLOR = Fore.GREEN
+DROP_COLOR = Fore.RED
+# 交易对：亮黄色。
 SYMBOL_COLOR = Fore.LIGHTYELLOW_EX
-# 涨跌幅高亮只用终端标准 16 色，保证各终端都能显示；取正文方向色的亮色版本。
+# 涨跌幅：同方向的亮绿/亮红。
 SURGE_CHANGE_COLOR = Fore.LIGHTGREEN_EX
 DROP_CHANGE_COLOR = Fore.LIGHTRED_EX
-# 交易地址是辅助信息，置灰以免抢走提醒正文的注意力；同样只用标准 16 色中的亮黑（灰）。
+# 交易地址：灰色，辅助信息不抢眼。
 TRADE_URL_COLOR = Fore.LIGHTBLACK_EX
-# 长窗口的窗口长度要在绿、红两种正文里都醒目又协调：亮青色与红绿都不冲突，也不带涨跌含义，
-# 且与交易对的亮黄色明显不同；同样只用标准 16 色。
+# 长窗口的窗口长度（3分钟）：亮青色。
 LONG_WINDOW_COLOR = Fore.LIGHTCYAN_EX
 
 
@@ -65,7 +68,7 @@ def format_window(alert: PriceAlert) -> str:
 def colorize_alert(alert: PriceAlert, text: str, enabled: bool = True) -> str:
     if not enabled:
         return text
-    color = Fore.GREEN if alert.direction == "surge" else Fore.RED
+    color = SURGE_COLOR if alert.direction == "surge" else DROP_COLOR
     bright = SURGE_CHANGE_COLOR if alert.direction == "surge" else DROP_CHANGE_COLOR
     # 标记结束后重新套上方向色，保证后半段文本颜色不丢。
     symbol = f"{SYMBOL_COLOR}{alert.symbol}{Style.RESET_ALL}{color}"
@@ -73,8 +76,7 @@ def colorize_alert(alert: PriceAlert, text: str, enabled: bool = True) -> str:
     highlighted_change = f"{bright}{change}{Style.RESET_ALL}{color}"
     text = text.replace(alert.symbol, symbol, 1).replace(change, highlighted_change, 1)
     if alert.window == "long":
-        # 短窗口是常态，保持正文色；只有长窗口的窗口长度高亮，一眼认出这是慢速单边行情。
-        # 窗口字样必带“秒”或“分钟”，其他字段里不会出现，按首次出现替换不会误伤。
+        # 只高亮长窗口，短窗口保持正文色。窗口字样带“秒”或“分钟”，按首次出现替换不会误伤。
         window = format_window(alert)
         text = text.replace(window, f"{LONG_WINDOW_COLOR}{window}{Style.RESET_ALL}{color}", 1)
     return f"{color}{text}{Style.RESET_ALL}"
