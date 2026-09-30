@@ -105,8 +105,6 @@ def _format_row(evaluation: TrendEvaluation, decimals: int | None) -> str:
         )
         if metrics.volume_ratio is not None:
             detail += f" 量能 {format_multiple(metrics.volume_ratio)}倍"
-        if metrics.change_atr is not None:
-            detail += f" {format_multiple(metrics.change_atr)}ATR"
         parts.append(detail)
     label = OUTCOME_LABELS[evaluation.outcome]
     if evaluation.outcome is TrendOutcome.FAILED and metrics is not None:

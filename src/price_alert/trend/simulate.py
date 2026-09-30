@@ -53,7 +53,7 @@ def _simulate_rule(detector: TrendDetector, rule: TrendRule) -> list[TrendAlert]
     detector.add_symbol(SYMBOL, flat, 1_000_000_000)
 
     # 按门槛的 1.5 倍单边下跌，每分钟等幅走低且无影线：各项比例都取到最理想的值。
-    target = max(rule.min_change_percent, (rule.min_change_atr or 0) * _FLAT_RANGE / _PRICE * 100) * 1.5
+    target = rule.min_change_percent * 1.5
     step = _PRICE * target / 100 / trend_minutes
     volume = _FLAT_VOLUME * max(2.0, (rule.min_volume_ratio or 1) * 2)
     alerts: list[TrendAlert] = []

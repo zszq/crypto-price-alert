@@ -4,7 +4,7 @@
 - 最大反弹比例：从滚动极值算起的最大反向回撤不超过累计位移的一定比例，容忍小阳线和十字星，排除真正的反转；
 - 顺势 K 线与收盘递进比例：方向一致；
 - 实体占比：整体上影线/下影线不长，允许个别长影线；
-- 累计幅度：百分比门槛，另可要求不低于趋势前基准 ATR 的若干倍。
+- 累计幅度：百分比门槛。
 附加的量能条件要求窗口平均成交量高于趋势前基准；长影线不参与开始判定，由检测器用作衰竭提示。
 
 本模块只有纯函数，实时检测、回放与参数调研共用同一份判定。
@@ -33,7 +33,6 @@ class TrendRule:
     period: PeriodName
     candles: int
     min_change_percent: float
-    min_change_atr: float | None
     max_rebound_ratio: float
     min_trend_candle_ratio: float
     min_step_ratio: float
@@ -53,10 +52,6 @@ class TrendRule:
         return PERIOD_MINUTES[self.period]
 
     @property
-    def needs_baseline(self) -> bool:
-        return self.min_change_atr is not None or self.min_volume_ratio is not None
-
-    @property
     def history_minutes(self) -> int:
         """判定一次所需的 1 分钟 K 线数：窗口加基准。"""
         return (self.candles + self.baseline_candles) * self.minutes
@@ -66,7 +61,6 @@ class Condition(StrEnum):
     """未满足的条件，按判定展示顺序排列。"""
 
     CHANGE = "change"
-    CHANGE_ATR = "change_atr"
     REBOUND = "rebound"
     TREND_CANDLES = "trend_candles"
     STEPS = "steps"
@@ -77,7 +71,6 @@ class Condition(StrEnum):
 
 CONDITION_LABELS: dict[Condition, str] = {
     Condition.CHANGE: "累计幅度不足",
-    Condition.CHANGE_ATR: "累计幅度不足基准 ATR 倍数",
     Condition.REBOUND: "反弹过大",
     Condition.TREND_CANDLES: "顺势 K 线占比不足",
     Condition.STEPS: "收盘递进占比不足",
@@ -101,7 +94,6 @@ class PatternMetrics:
     step_ratio: float
     body_ratio: float
     volume_ratio: float | None
-    change_atr: float | None
     failures: tuple[Condition, ...]
 
     @property
@@ -116,8 +108,8 @@ def evaluate_pattern(
 ) -> PatternMetrics | None:
     """按规则评估窗口 K 线；窗口根数不对或首尾价格相同（没有方向）时返回 None。
 
-    baseline 是紧邻窗口之前的 K 线，用来衡量“趋势开始前”的波动与量能：
-    趋势本身会抬高近期波动率和成交量，拿含趋势的数据当基准会让门槛随行情水涨船高。
+    baseline 是紧邻窗口之前的 K 线，用来衡量“趋势开始前”的量能：
+    趋势本身会放量，拿含趋势的数据当基准会让门槛随行情水涨船高。
     """
     if len(window) != rule.candles:
         return None
@@ -151,13 +143,8 @@ def evaluate_pattern(
     failures: list[Condition] = []
     if abs(change_percent) < rule.min_change_percent:
         failures.append(Condition.CHANGE)
-    change_atr: float | None = None
     volume_ratio: float | None = None
     baseline_ready = len(baseline) >= rule.baseline_candles
-    if rule.min_change_atr is not None and baseline_ready:
-        change_atr = _ratio(net_move, _mean_true_range(baseline))
-        if change_atr < rule.min_change_atr:
-            failures.append(Condition.CHANGE_ATR)
     rebound_ratio = max_rebound / net_move
     if rebound_ratio > rule.max_rebound_ratio:
         failures.append(Condition.REBOUND)
@@ -173,7 +160,7 @@ def evaluate_pattern(
         volume_ratio = _ratio(_mean(candle.volume for candle in window), _volume_baseline(baseline))
         if volume_ratio < rule.min_volume_ratio:
             failures.append(Condition.VOLUME)
-    if rule.needs_baseline and not baseline_ready:
+    if rule.min_volume_ratio is not None and not baseline_ready:
         # 新上市或刚恢复数据的合约没有足够的趋势前数据，宁可不报，也不拿不完整的基准放宽门槛。
         failures.append(Condition.BASELINE)
 
@@ -188,7 +175,6 @@ def evaluate_pattern(
         step_ratio=step_ratio,
         body_ratio=body_ratio,
         volume_ratio=volume_ratio,
-        change_atr=change_atr,
         failures=tuple(failures),
     )
 
@@ -248,18 +234,6 @@ def _median(values: Iterable[float]) -> float:
     return items[middle] if len(items) % 2 else (items[middle - 1] + items[middle]) / 2
 
 
-def _mean_true_range(candles: Sequence[Candle]) -> float:
-    total = 0.0
-    previous_close: float | None = None
-    for candle in candles:
-        true_range = candle.high - candle.low
-        if previous_close is not None:
-            true_range = max(true_range, abs(candle.high - previous_close), abs(candle.low - previous_close))
-        total += true_range
-        previous_close = candle.close
-    return total / len(candles) if candles else 0.0
-
-
 def _ratio(value: float, base: float) -> float:
-    # 基准为 0（长期无成交、价格不动）时任何变化都是相对无穷大，按通过处理。
+    # 基准成交量为 0（长期无成交）时任何成交都是相对无穷大，按通过处理。
     return value / base if base > 0 else math.inf

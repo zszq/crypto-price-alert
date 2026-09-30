@@ -50,8 +50,8 @@ def test_simulate_produces_one_alert_per_enabled_window(indicator, expected_aler
     [
         ({}, 4),
         ({"1m": {"enabled": False}, "3m": {"enabled": False}}, 2),
-        # 启用可选的 ATR 倍数条件、放宽量能到很高的门槛，合成行情仍应满足。
-        ({"5m": {"min_change_atr": 50, "min_volume_ratio": 5}, "15m": {"candles": 12, "baseline_candles": 40}}, 4),
+        # 量能门槛很高、窗口很长时，合成行情仍应满足。
+        ({"5m": {"min_volume_ratio": 5}, "15m": {"candles": 12, "baseline_candles": 40}}, 4),
     ],
 )
 def test_simulate_produces_one_start_alert_per_enabled_trend_period(periods, expected_trend_alerts, capsys):

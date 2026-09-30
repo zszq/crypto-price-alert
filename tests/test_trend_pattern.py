@@ -20,7 +20,6 @@ def rule(**overrides) -> TrendRule:
         "period": "1m",
         "candles": 5,
         "min_change_percent": 4.0,
-        "min_change_atr": None,
         "max_rebound_ratio": 0.3,
         "min_trend_candle_ratio": 0.7,
         "min_step_ratio": 0.7,
@@ -149,19 +148,7 @@ def test_low_volume_fails_volume_condition():
     assert metrics.failures == (Condition.VOLUME,)
 
 
-def test_change_atr_uses_pre_trend_baseline():
-    wide = flat_baseline(range_size=2.0)
-    narrow = flat_baseline(range_size=0.5)
-
-    wide_metrics = evaluate_pattern(falling(), wide, rule(min_change_atr=4))
-    narrow_metrics = evaluate_pattern(falling(), narrow, rule(min_change_atr=4))
-
-    assert wide_metrics is not None and wide_metrics.change_atr == pytest.approx(2.5)
-    assert Condition.CHANGE_ATR in wide_metrics.failures
-    assert narrow_metrics is not None and narrow_metrics.passed
-
-
-def test_missing_baseline_fails_only_when_baseline_conditions_are_enabled():
+def test_missing_baseline_fails_only_when_volume_condition_is_enabled():
     short_baseline = flat_baseline(count=3)
 
     assert evaluate_pattern(falling(), short_baseline, rule()).passed  # type: ignore[union-attr]

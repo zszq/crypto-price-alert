@@ -17,7 +17,6 @@ def rule(period="1m", **overrides) -> TrendRule:
         "period": period,
         "candles": 5,
         "min_change_percent": 4.0,
-        "min_change_atr": None,
         "max_rebound_ratio": 0.3,
         "min_trend_candle_ratio": 0.7,
         "min_step_ratio": 0.7,

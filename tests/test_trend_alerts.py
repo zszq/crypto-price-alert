@@ -30,7 +30,6 @@ METRICS = PatternMetrics(
     step_ratio=0.875,
     body_ratio=0.58,
     volume_ratio=1.8,
-    change_atr=None,
     failures=(),
 )
 START = TrendAlert(
@@ -91,7 +90,6 @@ def test_to_dict_is_json_ready_and_tagged_as_trend():
         "step_ratio": 0.875,
         "body_ratio": 0.58,
         "volume_ratio": 1.8,
-        "change_atr": None,
     }
     json.dumps(payload)
     assert "metrics" not in replace(START, metrics=None).to_dict()
@@ -117,12 +115,11 @@ def test_jsonl_writes_trend_alert(tmp_path):
 
 
 def test_describe_rule_mentions_optional_conditions_only_when_enabled():
-    rule = TrendRule("5m", 6, 6.0, None, 0.3, 0.7, 0.7, 0.5, None, 20)
+    rule = TrendRule("5m", 6, 6.0, 0.3, 0.7, 0.7, 0.5, None, 20)
 
     plain = describe_trend_rule(rule)
-    full = describe_trend_rule(replace(rule, min_volume_ratio=1.5, min_change_atr=3.0))
+    full = describe_trend_rule(replace(rule, min_volume_ratio=1.5))
 
     assert plain.startswith("趋势 5分钟K线：最近 6 根累计涨跌 ≥ 6%")
-    assert "量能" not in plain and "平均真实波幅" not in plain
+    assert "量能" not in plain
     assert "量能 ≥ 前 20 根中位数的 1.5 倍" in full
-    assert "位移 ≥ 前 20 根平均真实波幅的 3 倍" in full

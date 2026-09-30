@@ -100,7 +100,6 @@ class TrendAlert:
                 "step_ratio": metrics.step_ratio,
                 "body_ratio": metrics.body_ratio,
                 "volume_ratio": metrics.volume_ratio,
-                "change_atr": metrics.change_atr,
             }
         return payload
 
@@ -119,8 +118,6 @@ def describe_trend_rule(rule: TrendRule) -> str:
     ]
     if rule.min_volume_ratio is not None:
         parts.append(f"量能 ≥ 前 {rule.baseline_candles} 根中位数的 {rule.min_volume_ratio:g} 倍")
-    if rule.min_change_atr is not None:
-        parts.append(f"位移 ≥ 前 {rule.baseline_candles} 根平均真实波幅的 {rule.min_change_atr:g} 倍")
     return f"趋势 {describe_period(rule.period)}：{'，'.join(parts)}"
 
 
@@ -147,8 +144,6 @@ def format_trend_alert(alert: TrendAlert) -> str:
         ]
         if metrics.volume_ratio is not None:
             details.append(f"量能 {format_multiple(metrics.volume_ratio)} 倍")
-        if metrics.change_atr is not None:
-            details.append(f"{format_multiple(metrics.change_atr)} ATR")
         return (
             f"{head}{describe_period(alert.period)} {alert.candles} 根持续{move}，累计{move} {format_change(alert)}"
             f" | {anchor} → {price} | {' · '.join(details)}"

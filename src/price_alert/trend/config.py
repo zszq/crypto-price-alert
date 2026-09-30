@@ -20,8 +20,6 @@ class TrendPeriodConfig(BaseModel):
     enabled: bool = True
     candles: int = Field(ge=3, le=60)
     min_change_percent: float = Field(gt=0, le=100)
-    # 可选：累计位移不低于趋势前基准 ATR（平均真实波幅）的倍数，null 关闭。与百分比门槛是“且”的关系。
-    min_change_atr: float | None = Field(default=None, gt=0, le=100)
     max_rebound_ratio: float = Field(default=0.3, ge=0, le=1)
     min_trend_candle_ratio: float = Field(default=0.7, gt=0, le=1)
     min_step_ratio: float = Field(default=0.7, gt=0, le=1)
@@ -35,7 +33,6 @@ class TrendPeriodConfig(BaseModel):
             period=period,
             candles=self.candles,
             min_change_percent=self.min_change_percent,
-            min_change_atr=self.min_change_atr,
             max_rebound_ratio=self.max_rebound_ratio,
             min_trend_candle_ratio=self.min_trend_candle_ratio,
             min_step_ratio=self.min_step_ratio,

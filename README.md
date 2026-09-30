@@ -45,7 +45,7 @@ ATR 异动强度 = |当前完整秒 VWAP - N 秒前完整秒 VWAP| / Wilder ATR
 
 - 由实时成交聚合 1 分钟 K 线，再合成 1m / 3m / 5m / 15m 四个周期，各周期并行判定、参数独立；
 - 每个周期对最近 `candles` 根已收盘 K 线整体打分，而不是要求每根都是阴线。以下条件全部满足才算趋势成立：
-  - **累计涨跌幅**：第一根开盘到最后一根收盘，默认 1m 8 根 ≥ 4%、3m 6 根 ≥ 5%、5m 6 根 ≥ 6%、15m 6 根 ≥ 8%；可选再要求不低于趋势前基准 K 线平均真实波幅的若干倍（`min_change_atr`，默认关闭）；
+  - **累计涨跌幅**：第一根开盘到最后一根收盘，默认 1m 8 根 ≥ 4%、3m 6 根 ≥ 5%、5m 6 根 ≥ 6%、15m 6 根 ≥ 8%；
   - **最大反弹比例**：窗口内从滚动极值算起的最大反向回撤（按收盘价）不超过累计位移的 30%。小阳线、十字星可以容忍，真正的反转会被排除，这是区分趋势与震荡的关键；
   - **顺势 K 线占比**与**收盘递进占比**：都不低于 70%（下跌时阴线、收盘比上一根低）；
   - **实体占比**：各根实体之和 ÷ 各根振幅之和不低于 50%，即整体影线不长，允许个别长影线；
@@ -215,7 +215,7 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 - `trend.periods.1m` / `3m` / `5m` / `15m`：各周期的形态门槛，结构相同、默认值不同（只写部分字段时其余取该周期自己的默认值）：
   - `enabled`、`candles`（参与判定的 K 线根数）、`min_change_percent`（累计涨跌幅下限）；
   - `max_rebound_ratio`（最大反弹比例上限，默认 0.3）、`min_trend_candle_ratio` / `min_step_ratio`（顺势 K 线与收盘递进占比下限，默认 0.7）、`min_body_ratio`（实体占比下限，默认 0.5）；
-  - `min_volume_ratio`（放量倍数下限，默认 1.5，null 关闭）、`min_change_atr`（位移不低于基准平均真实波幅的倍数，默认 null 关闭）、`baseline_candles`（量能与波幅基准的 K 线根数）；
+  - `min_volume_ratio`（放量倍数下限，默认 1.5，null 关闭）、`baseline_candles`（量能基准的 K 线根数）；
   - 预热需要 `(candles + baseline_candles) × 周期分钟数` 根 1 分钟 K 线，最长周期不能超过 1999 根（Gate 单次请求上限）；
 - `trend.cooldown_minutes`：同方向两次「开始」提醒的最短间隔，默认 30 分钟；
 - `trend.escalation_step_percent`：「延续」提醒的档位，默认每 5%；

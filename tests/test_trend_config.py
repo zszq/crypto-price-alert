@@ -11,7 +11,7 @@ def test_defaults_enable_four_periods_with_period_specific_thresholds():
     rules = trend.rules()
     assert [rule.period for rule in rules] == ["1m", "3m", "5m", "15m"]
     assert [rule.min_change_percent for rule in rules] == [4.0, 5.0, 6.0, 8.0]
-    assert all(rule.min_volume_ratio == 1.5 and rule.min_change_atr is None for rule in rules)
+    assert all(rule.min_volume_ratio == 1.5 for rule in rules)
     assert trend.episode_settings().exhaustion_periods == frozenset({"5m", "15m"})
 
 
