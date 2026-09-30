@@ -13,6 +13,7 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
+from price_alert.assembly import build_detector, build_rest_client, build_windows
 from price_alert.config import INTERVAL_SECONDS, AppConfig, load_config
 from price_alert.formatting import BEIJING_TIME
 from price_alert.instance import AlreadyRunningError, ProcessLock
@@ -26,7 +27,7 @@ from price_alert.replay import (
     render_replay,
     run_replay,
 )
-from price_alert.service import build_detector, build_rest_client, build_windows, run_monitor
+from price_alert.service import run_monitor
 from price_alert.universe import select_liquid_contracts
 from price_alert.windows import MoveWindow, describe_rule
 

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Mapping
-from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from price_alert.gate import price_decimals
 from price_alert.models import ContractTicker
 
 
@@ -17,18 +17,6 @@ def _number(value: Any) -> float:
         return 0.0
     # inf 会让 "> 门槛" 恒为真而把异常合约放进合约池，统一按无效值处理。
     return number if math.isfinite(number) else 0.0
-
-
-def price_decimals(order_price_round: Any) -> int | None:
-    """把 Gate 的报价步长（如 "0.01"）换算成展示用的小数位数，无法识别时返回 None。"""
-    try:
-        step = Decimal(str(order_price_round))
-    except (InvalidOperation, ValueError):
-        return None
-    if not step.is_finite() or step <= 0:
-        return None
-    # normalize 去掉尾随零（"0.010" 与 "0.01" 同为两位）；步长为整数时指数非负，按 0 位小数显示。
-    return max(0, -step.normalize().as_tuple().exponent)
 
 
 def select_liquid_contracts(

@@ -12,14 +12,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 
+from price_alert.assembly import build_detector, build_windows
 from price_alert.config import INTERVAL_SECONDS, AppConfig
 from price_alert.detector import BASELINE_TOLERANCE_SECONDS
 from price_alert.formatting import BEIJING_TIME, beijing_time, format_price
-from price_alert.gate import GateRestClient
+from price_alert.gate import GateRestClient, price_decimals
 from price_alert.models import Candle, PriceAlert, PriceTick
 from price_alert.notifier import format_alert
-from price_alert.service import build_detector, build_windows
-from price_alert.universe import price_decimals
 from price_alert.windows import (
     OUTCOME_LABELS,
     WINDOW_LABELS,

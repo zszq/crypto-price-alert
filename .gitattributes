@@ -1,0 +1,4 @@
+# 仓库内统一 LF：不依赖各机器的 core.autocrlf，避免检出后换行符混杂、产生整文件无意义的 diff。
+* text=auto eol=lf
+# cmd 对 LF 换行的批处理解析有缺陷，检出时必须是 CRLF。
+*.bat text eol=crlf

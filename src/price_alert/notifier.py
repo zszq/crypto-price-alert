@@ -12,12 +12,12 @@ from collections.abc import Iterable
 from pathlib import Path
 from types import TracebackType
 from typing import Protocol
-from urllib.parse import quote
 
 from colorama import Fore, Style, just_fix_windows_console
 
 from price_alert.config import AlertConfig
 from price_alert.formatting import beijing_time, describe_window, format_price
+from price_alert.gate import futures_trade_url
 from price_alert.models import PriceAlert
 
 LOGGER = logging.getLogger(__name__)
@@ -82,15 +82,6 @@ def colorize_alert(alert: PriceAlert, text: str, enabled: bool = True) -> str:
     return f"{color}{text}{Style.RESET_ALL}"
 
 
-def _url_path_segment(symbol: str) -> str:
-    # 中文等非 ASCII 字符原样保留，否则地址显示成一串 %XX 难以辨认；浏览器打开时会自行编码。
-    # ASCII 保留字符（/、?、# 等）会破坏路径结构，非 ASCII 的空白和不可见字符会截断终端的链接识别，仍需编码。
-    return "".join(
-        char if not char.isascii() and char.isprintable() and not char.isspace() else quote(char, safe="")
-        for char in symbol
-    )
-
-
 class ConsoleNotifier:
     def __init__(self, beep: bool = True, colors: bool = True) -> None:
         self.beep = beep
@@ -107,8 +98,7 @@ class ConsoleNotifier:
         text = colorize_alert(alert, format_alert(alert), self.colors)
         # 完整网址独占一行，便于终端自动识别链接，不支持点击时也能直接复制。
         # 颜色转义只包在整行首尾、不插入网址中间，终端按显示文本识别链接，不受影响。
-        trade_url = f"https://www.gate.com/zh/futures/USDT/{_url_path_segment(alert.symbol)}"
-        url_line = f"交易地址：{trade_url}"
+        url_line = f"交易地址：{futures_trade_url(alert.symbol)}"
         if self.colors:
             url_line = f"{TRADE_URL_COLOR}{url_line}{Style.RESET_ALL}"
         terminal_bell = "\a" if self.beep and not self._system_sound else ""

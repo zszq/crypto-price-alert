@@ -7,5 +7,13 @@ insert_final_newline = true
 indent_style = space
 indent_size = 2
 
+# 全局 2 格只适合 YAML 等配置文件，Python 按 PEP 8 用 4 格，否则编辑器会与现有代码缩进冲突。
+[*.py]
+indent_size = 4
+
+# cmd 对 LF 换行的批处理解析有缺陷，与 .gitattributes 保持一致。
+[*.bat]
+end_of_line = crlf
+
 [*.md]
 trim_trailing_whitespace = false

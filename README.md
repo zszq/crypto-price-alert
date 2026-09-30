@@ -185,7 +185,7 @@ src/price_alert/
 ├── config.py                配置模型与严格校验
 ├── models.py                领域模型
 ├── universe.py              动态高成交额合约池
-├── gate.py                  Gate REST / WebSocket 适配器
+├── gate.py                  Gate REST / WebSocket 适配器、报价精度与交易地址
 ├── indicators.py            Wilder ATR
 ├── windows.py               观察窗口规则与逐秒判定记录
 ├── detector.py              ATR 标准化异动检测（多窗口）
@@ -193,6 +193,7 @@ src/price_alert/
 ├── replay.py                历史成交回放与逐秒判定解释
 ├── instance.py              防止重复提醒的跨平台进程锁
 ├── notifier.py              控制台、JSONL、Webhook 与独立队列分发
+├── assembly.py              按配置组装检测器与 REST 客户端（各入口共用）
 ├── service.py               预热、增量刷新、重连和服务编排
 └── cli.py                   run/universe/check-config/simulate/replay
 tests/                       指标、筛选、解析、检测、通知、服务编排和命令行测试

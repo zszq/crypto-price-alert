@@ -1,6 +1,8 @@
 pydantic>=2.10,<3
 PyYAML>=6.0,<7
 websockets>=14,<17
+# websockets 会自动使用系统代理且优先选 SOCKS，缺少此依赖时连接直接失败。
+python-socks[asyncio]>=2.4,<3
 colorama>=0.4.6,<1
 
 # 开发与测试

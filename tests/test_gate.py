@@ -14,9 +14,11 @@ from price_alert.gate import (
     GateRestClient,
     GateTradeFeed,
     build_subscription,
+    futures_trade_url,
     parse_candle,
     parse_trade_message,
     parse_trade_payload,
+    price_decimals,
 )
 
 
@@ -618,3 +620,26 @@ def test_fetch_contract_quotes_symbol_and_requires_object(monkeypatch):
     monkeypatch.setattr(client, "_get", lambda path, params=None: [])
     with pytest.raises(TypeError, match="合约响应不是对象"):
         client.fetch_contract("BTC_USDT")
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("0.01", 2), ("0.010", 2), ("0.1", 1), ("1", 0), ("5", 0), ("1e-8", 8), (None, None), ("abc", None),
+     ("0", None), ("-0.1", None), ("nan", None), ("inf", None)],
+)
+def test_price_decimals_parses_gate_price_step(raw, expected):
+    assert price_decimals(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("symbol", "expected"),
+    [
+        ("BTC_USDT", "https://www.gate.com/zh/futures/USDT/BTC_USDT"),
+        # 中文原样保留便于辨认；ASCII 保留字符与非 ASCII 空白、不可见字符仍需编码。
+        ("龙虾_USDT", "https://www.gate.com/zh/futures/USDT/龙虾_USDT"),
+        ("A/B?_USDT", "https://www.gate.com/zh/futures/USDT/A%2FB%3F_USDT"),
+        ("龙\u3000虾\u200b_USDT", "https://www.gate.com/zh/futures/USDT/龙%E3%80%80虾%E2%80%8B_USDT"),
+    ],
+)
+def test_futures_trade_url_keeps_symbol_readable_but_path_safe(symbol, expected):
+    assert futures_trade_url(symbol) == expected

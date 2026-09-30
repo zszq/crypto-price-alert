@@ -16,6 +16,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import websockets
@@ -37,6 +38,31 @@ RATE_LIMIT_RESET_HEADER = "X-Gate-RateLimit-Reset-Timestamp"
 # 历史成交接口单页上限；offset 翻页在十万级就会被拒绝（offset too big），所以翻页主要靠收缩 to。
 TRADES_PAGE_SIZE = 1000
 TRADES_PROGRESS_PAGES = 20
+# 提醒里附带的合约交易页，末尾拼接合约名。
+TRADE_PAGE_URL = "https://www.gate.com/zh/futures/USDT/"
+
+
+def price_decimals(order_price_round: Any) -> int | None:
+    """把 Gate 的报价步长（如 "0.01"）换算成展示用的小数位数，无法识别时返回 None。"""
+    try:
+        step = Decimal(str(order_price_round))
+    except (InvalidOperation, ValueError):
+        return None
+    if not step.is_finite() or step <= 0:
+        return None
+    # normalize 去掉尾随零（"0.010" 与 "0.01" 同为两位）；步长为整数时指数非负，按 0 位小数显示。
+    return max(0, -step.normalize().as_tuple().exponent)
+
+
+def futures_trade_url(symbol: str) -> str:
+    """合约在 Gate 网页上的交易地址。"""
+    # 中文等非 ASCII 字符原样保留，否则地址显示成一串 %XX 难以辨认；浏览器打开时会自行编码。
+    # ASCII 保留字符（/、?、# 等）会破坏路径结构，非 ASCII 的空白和不可见字符会截断终端的链接识别，仍需编码。
+    segment = "".join(
+        char if not char.isascii() and char.isprintable() and not char.isspace() else urllib.parse.quote(char, safe="")
+        for char in symbol
+    )
+    return f"{TRADE_PAGE_URL}{segment}"
 
 
 class RateLimiter:
@@ -443,7 +469,7 @@ class GateTradeFeed:
             self.url,
             ping_interval=20,
             # pong 与成交推送共用一条 TCP 流，链路拥塞时会被积压数据队头阻塞，RTT 可从
-            # 200 毫秒涨到二十几秒。超时放宽到 30 秒，把断线判定让给 _stream_loop 里按
+            # 200 毫秒涨到二十几秒。超时放宽到 30 秒，把断线判定让给 service 的 stream_loop 里按
             # 成交时间戳做的滞后熔断（阈值更低、语义明确），keepalive 只兜底真正的死连接。
             ping_timeout=30,
             close_timeout=5,
