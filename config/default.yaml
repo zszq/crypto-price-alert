@@ -16,7 +16,7 @@ gate:
   settle: usdt
   # 合约池准入门槛：24 小时 USDT 计价成交额须严格大于该值。调低纳入更多小币，异动更频繁但假信号也多。
   # 默认：10000000
-  min_volume_24h_quote: 10000000
+  min_volume_24h_quote: 8000000
   # 退出门槛比例 (0, 1]：已监控合约的成交额低于或等于 min_volume_24h_quote × 该比例才移除。
   # 这段缓冲避免门槛附近的合约每轮刷新反复订阅/退订；越小越黏，等于 1 表示进出同一条线。
   # 默认：0.8
@@ -96,7 +96,7 @@ indicator:
     lookback_seconds: 30
     # 触发所需的 ATR 倍数（(0, 20]）：窗口内位移 ÷ ATR ≥ 该值，随波动率自适应。调低提醒变多。
     # 默认：1.5
-    trigger_atr_multiple: 1.3
+    trigger_atr_multiple: 1.5
     # 触发所需的最低实际涨跌幅（百分比，(0, 100]），与 ATR 倍数是「且」的关系。
     # 用于兜底：某些合约 ATR 极小，仅靠倍数会把微小波动放大成提醒。
     # 默认：1
@@ -129,7 +129,7 @@ indicator:
     trigger_atr_multiple: 2.0
     # 长窗口的最低涨跌幅（百分比，(0, 100]），与 ATR 倍数是「且」的关系。
     # 默认：2
-    min_change_percent: 2.0
+    min_change_percent: 1.6
     # 长窗口需连续满足门槛的相邻秒数（1~10），不能大于长窗口长度。
     # 默认：3
     confirmation_seconds: 3
