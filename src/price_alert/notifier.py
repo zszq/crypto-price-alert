@@ -39,7 +39,7 @@ DROP_CHANGE_COLOR = Fore.LIGHTRED_EX
 TRADE_URL_COLOR = Fore.LIGHTBLACK_EX
 # 长窗口的窗口长度（3分钟）：亮青色。
 LONG_WINDOW_COLOR = Fore.LIGHTCYAN_EX
-# 趋势提醒的阶段标签（[趋势下跌] 等）：亮紫色，与秒级异动提醒一眼区分。
+# 趋势提醒的标签（[趋势下跌] 等）：亮紫色，与秒级异动提醒一眼区分。
 TREND_LABEL_COLOR = Fore.LIGHTMAGENTA_EX
 
 

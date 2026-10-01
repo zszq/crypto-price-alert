@@ -17,9 +17,9 @@ START = datetime(2026, 9, 30, 22, 0, tzinfo=BEIJING_TIME)
 
 
 def trend_config():
-    # 只开 1 分钟周期、关闭量能，构造数据简单直接。
-    periods = {"1m": {"candles": 5, "baseline_candles": 5, "min_volume_ratio": None}}
-    periods |= {name: {"enabled": False} for name in ("3m", "5m", "15m")}
+    # 只开 3 分钟周期，构造数据简单直接。
+    periods = {"3m": {"candles": 3, "min_change_percent": 4.0, "max_counter_candles": 0}}
+    periods |= {name: {"enabled": False} for name in ("5m", "15m")}
     return AppConfig.model_validate({"trend": {"periods": periods}}).trend
 
 
@@ -28,7 +28,7 @@ def minute_candles(start: datetime, closes: list[float]) -> list[Candle]:
     previous = closes[0]
     for index, close in enumerate(closes):
         high, low = max(previous, close) + 0.01, min(previous, close) - 0.01
-        candles.append(Candle(start + timedelta(minutes=index), previous, high, low, close, volume=10))
+        candles.append(Candle(start + timedelta(minutes=index), previous, high, low, close))
         previous = close
     return candles
 
@@ -72,22 +72,23 @@ def test_run_and_render_explain_alerts_and_failures():
     detector = build_trend_detector(config)
     end = START + timedelta(minutes=20)
     plan = plan_trend_replay("ARK_USDT", START, end, detector)
-    # 预热段平稳，区间开始后逐分钟下跌 1%，再横盘。
-    history = minute_candles(plan.warmup_start, [100.0] * 10)
-    trend = minute_candles(START, [100.0 - i for i in range(1, 8)] + [93.0] * 13)
+    # 预热段平稳，区间开始后逐分钟下跌 1% 共 13 分钟，再横盘。
+    history = minute_candles(plan.warmup_start, [100.0] * (detector.warmup_candles - 1))
+    trend = minute_candles(START, [100.0 - i for i in range(1, 14)] + [87.0] * 7)
 
     result = run_trend_replay(config, plan, history + trend, price_decimals=2)
     lines = render_trend_replay(result)
     text = "\n".join(lines)
 
-    assert result.warmup_candles == 10
+    assert result.warmup_candles == 9
     assert result.candles_fed == 20
-    assert [alert.stage for alert in result.alerts] == ["start", "extend"]
-    assert "提醒 2 条：" in text
-    assert "[趋势下跌] 2026-09-30 22:05:00 | ARK_USDT | 1分钟K线 5 根持续下跌" in text
-    assert "各周期判定统计：" in text and "未满足的条件：" in text
-    assert "形态成立的时刻" in text
-    assert "22:05 | 1m | 99.00 → 95.00 -4.04% | 顺势 80%" in text
+    # 下跌形态在 22:09～22:15 持续成立只提醒一次，之后的判定记为延续。
+    assert [alert.timestamp for alert in result.alerts] == [START + timedelta(minutes=9)]
+    assert "提醒 1 条：" in text
+    assert "[趋势下跌] 2026-09-30 22:09:00 | ARK_USDT | 3分钟K线 3 根持续下跌" in text
+    assert "各周期判定统计：" in text and "未满足的条件：反向 K 线过多" in text
+    assert "22:09 | 3m | 99.00 → 91.00 -8.08% | 反向 0 根 反弹 0% 实体 99% | 提醒" in text
+    assert "22:12 | 3m | 97.00 → 88.00 -9.28% | 反向 0 根 反弹 0% 实体 99% | 形态延续，本段已提醒" in text
     all_lines = render_trend_replay(result, show_all=True)
     assert len(all_lines) > len(lines)
     assert "逐根判定：" in all_lines

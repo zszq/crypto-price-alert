@@ -48,13 +48,13 @@ def test_simulate_produces_one_alert_per_enabled_window(indicator, expected_aler
 @pytest.mark.parametrize(
     ("periods", "expected_trend_alerts"),
     [
-        ({}, 4),
-        ({"1m": {"enabled": False}, "3m": {"enabled": False}}, 2),
-        # 量能门槛很高、窗口很长时，合成行情仍应满足。
-        ({"5m": {"min_volume_ratio": 5}, "15m": {"candles": 12, "baseline_candles": 40}}, 4),
+        ({}, 3),
+        ({"3m": {"enabled": False}}, 2),
+        # 门槛很严、窗口很长时，合成行情仍应满足。
+        ({"5m": {"max_counter_candles": 0, "min_body_ratio": 0.9}, "15m": {"candles": 12}}, 3),
     ],
 )
-def test_simulate_produces_one_start_alert_per_enabled_trend_period(periods, expected_trend_alerts, capsys):
+def test_simulate_produces_one_alert_per_enabled_trend_period(periods, expected_trend_alerts, capsys):
     config = AppConfig.model_validate({"trend": {"periods": periods}, "alerts": {"console_colors": False}})
     windows = 2
 
@@ -146,7 +146,7 @@ def test_trend_replay_survives_missing_contract_precision(monkeypatch, capsys):
 
 
 def test_trend_replay_without_enabled_periods_exits_readably():
-    periods = {name: {"enabled": False} for name in ("1m", "3m", "5m", "15m")}
+    periods = {name: {"enabled": False} for name in ("3m", "5m", "15m")}
     config = AppConfig.model_validate({"trend": {"enabled": False, "periods": periods}})
     args = cli.build_parser().parse_args(["trend-replay", "ARK", "--start", "09:30"])
 

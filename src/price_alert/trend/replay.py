@@ -18,7 +18,7 @@ from price_alert.models import Candle
 from price_alert.trend.alerts import TrendAlert, describe_trend_rule, format_trend_alert
 from price_alert.trend.config import TrendConfig
 from price_alert.trend.detector import OUTCOME_LABELS, TrendDetector, TrendEvaluation, TrendOutcome
-from price_alert.trend.pattern import CONDITION_LABELS, TrendRule, format_multiple
+from price_alert.trend.pattern import CONDITION_LABELS, TrendRule
 
 MINUTE = timedelta(minutes=1)
 # 单次请求的 K 线根数，低于 Gate 的 2000 上限并留出余量。
@@ -74,7 +74,7 @@ def run_trend_replay(
     candles: Sequence[Candle],
     price_decimals: int | None = None,
 ) -> TrendReplayResult:
-    """离线驱动趋势检测器；冷却与跟踪状态从空白开始，与实时进程当时的状态可能不同。"""
+    """离线驱动趋势检测器；从空白状态开始：区间开始时已在延续的走势，会在第一次判定时当作新的一段提醒。"""
     evaluations: list[TrendEvaluation] = []
     detector = build_trend_detector(config, observer=evaluations.append)
     start = datetime.fromtimestamp(int(plan.start.timestamp()) // 60 * 60, tz=plan.start.tzinfo)
@@ -99,13 +99,9 @@ def _format_row(evaluation: TrendEvaluation, decimals: int | None) -> str:
             f"{format_price(metrics.start_price, decimals)} → {format_price(metrics.end_price, decimals)} "
             f"{metrics.change_percent:+.2f}%"
         )
-        detail = (
-            f"顺势 {metrics.trend_candle_ratio:.0%} 递进 {metrics.step_ratio:.0%} "
-            f"反弹 {metrics.rebound_ratio:.0%} 实体 {metrics.body_ratio:.0%}"
+        parts.append(
+            f"反向 {metrics.counter_candles} 根 反弹 {metrics.rebound_ratio:.0%} 实体 {metrics.body_ratio:.0%}"
         )
-        if metrics.volume_ratio is not None:
-            detail += f" 量能 {format_multiple(metrics.volume_ratio)}倍"
-        parts.append(detail)
     label = OUTCOME_LABELS[evaluation.outcome]
     if evaluation.outcome is TrendOutcome.FAILED and metrics is not None:
         label += "：" + "、".join(CONDITION_LABELS[condition] for condition in metrics.failures)
@@ -150,7 +146,8 @@ def render_trend_replay(result: TrendReplayResult, show_all: bool = False) -> li
         f"趋势回放 {plan.symbol}：{beijing_time(plan.start)} ～ {beijing_time(plan.end)}（北京时间）",
         f"数据：预热 1 分钟 K 线 {result.warmup_candles} 根，回放 {result.candles_fed} 根",
         *(describe_trend_rule(rule) for rule in result.rules),
-        "说明：回放从空白的冷却与跟踪状态开始；实时监控由成交聚合 K 线，与交易所 K 线可能有细微差别。",
+        "说明：回放从空白状态开始，区间开始时已在延续的走势也会提醒；"
+        "实时监控由成交聚合 K 线，与交易所 K 线可能有细微差别。",
         "",
     ]
     if result.alerts:

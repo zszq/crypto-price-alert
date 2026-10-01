@@ -63,13 +63,13 @@ python -m venv .venv
 
 ### K 线形态趋势（trend/）
 
-独立子包，只经 `assembly.build_trend_detector` / `build_detectors` 接入，删除时去掉这两处、`config.AppConfig.trend`、`notifier` 中的 `TrendAlert` 分派与 `cli` 的 `trend-replay`/`simulate` 调用即可。
+独立子包，只经 `assembly.build_trend_detector` / `build_detectors` 接入，删除时去掉这两处、`config.AppConfig.trend`、`notifier` 中的 `TrendAlert` 分派与 `cli` 的 `trend-replay`/`simulate` 调用即可。只描述已形成的健康单边走势，不跟踪、不预测后续。
 
-- `pattern.py`：纯函数。`TrendRule` 描述一个周期的门槛；`evaluate_pattern(window, baseline, rule)` 对最近 `candles` 根周期 K 线整体打分，返回 `PatternMetrics`（含未满足的 `Condition`）。条件：累计涨跌幅（第一根开盘到最后一根收盘）、最大反弹比例（按收盘价从滚动极值算，起点之后先反向走也算反弹）、顺势 K 线占比（十字星不算）、收盘递进占比（第一根与其开盘价比）、实体占比（实体和 ÷ 振幅和）、可选量能（窗口均量 ÷ 基准**中位数**，中位数为 0 时退回均值）。量能基准取窗口**之前**的 `baseline_candles` 根，不足且启用量能条件时记 `BASELINE` 失败；趋势提醒不使用 ATR；`PERIOD_MINUTES` 是趋势周期到分钟数的唯一映射。`aggregate_candles` 把对齐的 1 分钟 K 线合成周期 K 线。
-- `detector.py::TrendDetector`：由成交聚合 1 分钟 K 线（成交量用张数，与 REST K 线的 `v` 同单位，所以 `Candle` 有 `volume` 字段），**下一分钟第一笔成交到达时**才结算上一分钟；空分钟按上一收盘价补平线。保留最长周期所需的 1 分钟 K 线（`(candles + baseline_candles) × 分钟数`，预热请求 `warmup_candles` 为其 + 1，配置层限制 ≤ 2000）。每结算一分钟：先用 1 分钟收盘价推进进行中的趋势（更新极值 → 回撤达 `end_rebound_ratio` 或 `stall_minutes` 无新极值则结束 → 否则跨档报 `extend`，一根跨多档只报一次），再对收盘时刻落在周期边界的各周期判定，最后裁决：同一分钟多个周期成立只发最短周期（其余 `SUPERSEDED`，此判断先于「已在跟踪」），同方向趋势进行中记 `EPISODE_ACTIVE`，同方向 `cooldown_minutes` 内记 `COOLDOWN`，反向成立先以 `reversed` 结束原趋势再开始。每个合约同时只跟踪一段趋势，趋势起点（`started_at`）是发现它的窗口第一根 K 线。`add_candle` 直接喂已收盘 1 分钟 K 线（回放、模拟、调研用），不能与 `add_tick` 混用。断线：`mark_stream_gap` 后只维护当前分钟、不结算不判定；`resync_symbol` 用 REST 1 分钟 K 线重建历史（当前分钟与交易所同一分钟时高低点取并集、成交量取较大者；本地已跨入新分钟则交易所当前 K 线按已收盘计入），趋势跟踪与冷却保留。`remove_symbols` 不清冷却。
-- `alerts.py`：`TrendAlert`（`stage`：start / extend / end）与文本格式；`to_dict()` 带 `kind: "trend"`。
-- `config.py`：`TrendConfig`；各周期是 `TrendPeriodConfig` 的子类（`Trend1mConfig` 等），只改默认值，YAML 键为 `1m`/`3m`/`5m`/`15m`（alias），部分覆盖时其余字段仍取该周期默认值。
-- `replay.py`：`cli trend-replay` 用 REST 1 分钟 K 线（分段请求，每段 ≤ 1000 根）驱动同一个检测器；`simulate.py` 为每个启用周期各跑一段合成单边行情，只统计「开始」提醒。
+- `pattern.py`：纯函数。`TrendRule` 描述一个周期的门槛；`evaluate_pattern(window, rule)` 对最近 `candles` 根周期 K 线判定，返回 `PatternMetrics`（含未满足的 `Condition`）。四个条件：累计涨跌幅（第一根开盘到最后一根收盘）、反向 K 线根数（十字星也算反向，≤ `max_counter_candles`）、最大反弹比例（按收盘价从滚动极值算，起点之后先反向走也算反弹）、实体占比（实体和 ÷ 振幅和）。`PERIOD_MINUTES` 是趋势周期到分钟数的唯一映射；`aggregate_candles` 把对齐的 1 分钟 K 线合成周期 K 线。
+- `detector.py::TrendDetector`：由成交聚合 1 分钟 K 线，**下一分钟第一笔成交到达时**才结算上一分钟；空分钟按上一收盘价补平线。保留最长周期所需的 `candles × 分钟数` 根 1 分钟 K 线（预热请求 `warmup_candles` 为其 + 1）。每结算一分钟，对收盘时刻落在周期边界的各周期判定。**每个周期各自独立**：`_holding` 记录各周期上一次判定时成立的方向，形态从不成立（或反向）变为成立时提醒，持续成立记 `CONTINUING`，形态被破坏（判定不成立、K 线不足或没有方向）即清空，再次成立就是新的一段；不同周期互不影响，同一分钟多个周期新成立会各报一条（短周期在前）。`_holding` 不随合约移出清除。`add_candle` 直接喂已收盘 1 分钟 K 线（回放、模拟用），不能与 `add_tick` 混用。断线：`mark_stream_gap` 后只维护当前分钟、不结算不判定；`resync_symbol` 用 REST 1 分钟 K 线重建历史（当前分钟与交易所同一分钟时高低点取并集；本地已跨入新分钟则交易所当前 K 线按已收盘计入），`_holding` 保留。
+- `alerts.py`：`TrendAlert`（方向、周期、根数、起止时间与 `PatternMetrics`）与文本格式；`to_dict()` 带 `kind: "trend"`。
+- `config.py`：`TrendConfig`（`enabled` 与 `periods`）；各周期是 `TrendPeriodConfig` 的子类（`Trend3mConfig` 等），只改默认值，YAML 键为 `3m`/`5m`/`15m`（alias；1 分钟周期不提供，`pattern.PeriodName` 仍保留 `1m` 供检测器与测试直接使用），部分覆盖时其余字段仍取该周期默认值；校验 `max_counter_candles < candles`。
+- `replay.py`：`cli trend-replay` 用 REST 1 分钟 K 线（分段请求，每段 ≤ 1000 根）驱动同一个检测器；`simulate.py` 为每个启用周期各跑一段合成单边行情，每个周期应恰好提醒一次。
 
 ### 回放（replay.py）
 
@@ -95,7 +95,7 @@ python -m venv .venv
 
 ### 通知（notifier.py）
 
-提醒类型是 `detection.Alert = PriceAlert | TrendAlert`，`format_alert`/`colorize_alert` 按类型分派（趋势提醒的阶段标签用亮紫色 `TREND_LABEL_COLOR`）。`AlertDispatcher` 为每个通道建立独立的有界队列（`alerts.queue_size`）和后台任务：`publish` 非阻塞，队列满时丢弃并记错误日志；单个通道失败只记日志；退出时最多等待 `drain_timeout` 秒把积压发完。`build_notifiers` 按配置返回通道列表。`JsonlNotifier` 按 `jsonl_max_bytes` 整文件轮转。价格、窗口长度（整分钟显示为「N分钟」）和北京时间的格式都在 `formatting.py`，提醒与回放共用；价格按合约报价精度显示，缺失时按 8 位有效数字、不截断整数部分。提醒时间统一转为北京时间；控制台急涨绿色、急跌红色，涨跌幅用同方向亮色高亮，长窗口提醒的窗口长度用不分方向的亮青色（`LONG_WINDOW_COLOR`）高亮（短窗口保持正文色）；JSONL/Webhook 保留完整结构化字段（`PriceAlert.to_dict()`）。控制台提醒附带的交易地址由 `gate.futures_trade_url` 生成，Gate 网页地址只维护在 `gate.py`。修改提醒文本格式时注意 README 中的示例。
+提醒类型是 `detection.Alert = PriceAlert | TrendAlert`，`format_alert`/`colorize_alert` 按类型分派（趋势提醒的标签用亮紫色 `TREND_LABEL_COLOR`）。`AlertDispatcher` 为每个通道建立独立的有界队列（`alerts.queue_size`）和后台任务：`publish` 非阻塞，队列满时丢弃并记错误日志；单个通道失败只记日志；退出时最多等待 `drain_timeout` 秒把积压发完。`build_notifiers` 按配置返回通道列表。`JsonlNotifier` 按 `jsonl_max_bytes` 整文件轮转。价格、窗口长度（整分钟显示为「N分钟」）和北京时间的格式都在 `formatting.py`，提醒与回放共用；价格按合约报价精度显示，缺失时按 8 位有效数字、不截断整数部分。提醒时间统一转为北京时间；控制台急涨绿色、急跌红色，涨跌幅用同方向亮色高亮，长窗口提醒的窗口长度用不分方向的亮青色（`LONG_WINDOW_COLOR`）高亮（短窗口保持正文色）；JSONL/Webhook 保留完整结构化字段（`PriceAlert.to_dict()`）。控制台提醒附带的交易地址由 `gate.futures_trade_url` 生成，Gate 网页地址只维护在 `gate.py`。修改提醒文本格式时注意 README 中的示例。
 
 ## 约定
 

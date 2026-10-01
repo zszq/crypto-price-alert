@@ -23,101 +23,70 @@ METRICS = PatternMetrics(
     direction="drop",
     start_price=0.4129,
     end_price=0.3797,
-    extreme_price=0.3797,
     change_percent=-8.04,
+    counter_candles=1,
     rebound_ratio=0.08,
-    trend_candle_ratio=0.875,
-    step_ratio=0.875,
     body_ratio=0.58,
-    volume_ratio=1.8,
     failures=(),
 )
-START = TrendAlert(
+ALERT = TrendAlert(
     symbol="ARK_USDT",
-    stage="start",
     direction="drop",
     period="1m",
+    candles=8,
     timestamp=DETECTED,
-    price=0.3797,
-    anchor_price=0.4129,
-    change_percent=-8.04,
     started_at=DETECTED - timedelta(minutes=8),
-    extreme_price=0.3797,
+    metrics=METRICS,
     volume_24h_quote=1e7,
     price_decimals=4,
-    metrics=METRICS,
-    candles=8,
 )
 
 
-def test_start_alert_text_lists_every_condition():
-    text = format_trend_alert(START)
-
-    assert text == (
-        "[趋势下跌] 2026-09-30 22:17:00 | ARK_USDT | 1分钟K线 8 根持续下跌，累计下跌 8.04% | 0.4129 → 0.3797"
-        " | 阴线 88% · 收盘递进 88% · 最大反弹 8% · 实体占比 58% · 量能 1.8 倍"
+def test_alert_text_lists_every_condition():
+    assert format_trend_alert(ALERT) == (
+        "[趋势下跌] 2026-09-30 22:17:00 | ARK_USDT | 1分钟K线 8 根持续下跌，累计下跌 8.04%（自 22:09 起）"
+        " | 0.4129 → 0.3797 | 阴线 7/8 · 最大反弹 8% · 实体占比 58%"
     )
-    surge = replace(START, direction="surge", metrics=replace(METRICS, direction="surge", volume_ratio=None))
-    assert "15分钟K线" in format_trend_alert(replace(surge, period="15m"))
-    assert "[趋势上涨]" in format_trend_alert(surge) and "阳线 88%" in format_trend_alert(surge)
-    assert "量能" not in format_trend_alert(surge)
-
-
-def test_extend_and_end_texts():
-    later = DETECTED + timedelta(minutes=18)
-    extend = replace(START, stage="extend", timestamp=later, price=0.3706, change_percent=-10.24, metrics=None)
-    end = replace(extend, stage="end", extreme_price=0.3305, end_reason="rebound")
-
-    assert format_trend_alert(extend) == (
-        "[下跌延续] 2026-09-30 22:35:00 | ARK_USDT | 累计下跌 10.24%（自 22:09 起 26 分钟） | 0.4129 → 0.3706"
-    )
-    assert format_trend_alert(end).endswith("0.4129 → 最低 0.3305（最大下跌 19.96%），当前 0.3706")
-    assert "反向回撤过大，自 22:09 起 26 分钟" in format_trend_alert(end)
+    surge = replace(ALERT, direction="surge", period="15m", metrics=replace(METRICS, direction="surge"))
+    text = format_trend_alert(surge)
+    assert text.startswith("[趋势上涨]")
+    assert "15分钟K线 8 根持续上涨" in text and "阳线 7/8" in text
 
 
 def test_to_dict_is_json_ready_and_tagged_as_trend():
-    payload = START.to_dict()
+    payload = ALERT.to_dict()
 
     assert payload["kind"] == "trend"
-    assert payload["stage"] == "start"
     assert payload["timestamp"] == "2026-09-30T14:17:00+00:00"
+    assert payload["started_at"] == "2026-09-30T14:09:00+00:00"
+    assert (payload["start_price"], payload["price"], payload["change_percent"]) == (0.4129, 0.3797, -8.04)
+    assert (payload["counter_candles"], payload["rebound_ratio"], payload["body_ratio"]) == (1, 0.08, 0.58)
     assert payload["color"] == "red"
-    assert payload["metrics"] == {
-        "rebound_ratio": 0.08,
-        "trend_candle_ratio": 0.875,
-        "step_ratio": 0.875,
-        "body_ratio": 0.58,
-        "volume_ratio": 1.8,
-    }
     json.dumps(payload)
-    assert "metrics" not in replace(START, metrics=None).to_dict()
 
 
 def test_notifier_dispatches_trend_format_and_colors_label():
-    assert format_alert(START) == format_trend_alert(START)
+    assert format_alert(ALERT) == format_trend_alert(ALERT)
 
-    colored = colorize_alert(START, format_alert(START))
+    colored = colorize_alert(ALERT, format_alert(ALERT))
 
     assert colored.startswith(f"{DROP_COLOR}{TREND_LABEL_COLOR}[趋势下跌]{Style.RESET_ALL}{DROP_COLOR}")
     assert f"{SYMBOL_COLOR}ARK_USDT{Style.RESET_ALL}{DROP_COLOR}" in colored
     assert f"{DROP_CHANGE_COLOR}8.04%{Style.RESET_ALL}{DROP_COLOR}" in colored
-    assert colorize_alert(START, "plain", enabled=False) == "plain"
+    assert colorize_alert(ALERT, "plain", enabled=False) == "plain"
 
 
 def test_jsonl_writes_trend_alert(tmp_path):
     path = tmp_path / "alerts.jsonl"
-    asyncio.run(JsonlNotifier(path).send(START))
+    asyncio.run(JsonlNotifier(path).send(ALERT))
 
     record = json.loads(path.read_text(encoding="utf-8"))
     assert (record["kind"], record["symbol"], record["period"]) == ("trend", "ARK_USDT", "1m")
 
 
-def test_describe_rule_mentions_optional_conditions_only_when_enabled():
-    rule = TrendRule("5m", 6, 6.0, 0.3, 0.7, 0.7, 0.5, None, 20)
+def test_describe_rule():
+    rule = TrendRule("5m", 6, 6.0, 1, 0.3, 0.5)
 
-    plain = describe_trend_rule(rule)
-    full = describe_trend_rule(replace(rule, min_volume_ratio=1.5))
-
-    assert plain.startswith("趋势 5分钟K线：最近 6 根累计涨跌 ≥ 6%")
-    assert "量能" not in plain
-    assert "量能 ≥ 前 20 根中位数的 1.5 倍" in full
+    assert describe_trend_rule(rule) == (
+        "趋势 5分钟K线：最近 6 根累计涨跌 ≥ 6%，反向 K 线 ≤ 1 根，最大反弹 ≤ 30%，实体占比 ≥ 50%"
+    )
