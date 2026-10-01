@@ -599,3 +599,26 @@ def test_real_trend_detector_warms_up_through_monitor():
 
     assert trend.symbols == ["BTC_USDT"]
     assert len(trend._states["BTC_USDT"].minutes) == trend.warmup_candles - 1
+
+
+def test_failing_detector_is_skipped_without_breaking_the_stream(monkeypatch, caplog):
+    """一个检测器出错只跳过这笔成交并限流记日志，其他检测器照常提醒，也不能因此断线重连。"""
+    delays = record_sleeps(monkeypatch, limit=1)
+
+    class BrokenDetector(RecordingDetector):
+        def add_tick(self, tick: PriceTick) -> list[str]:
+            raise ValueError("boom")
+
+    atr, broken = RecordingDetector("atr"), BrokenDetector("trend")
+    detectors = [MonitoredDetector("ATR 异动", atr, "1m", 50), MonitoredDetector("K 线趋势", broken, "1m", 46)]
+    dispatcher = FakeDispatcher()
+    feed = ScriptedFeed([(("1", "2", "3"), ConnectionError("down"))])
+
+    with pytest.raises(StopLoop):
+        asyncio.run(monitor(detectors, feed=feed).stream_loop(dispatcher))
+
+    assert dispatcher.published == ["atr-1", "atr-2", "atr-3"]
+    # 三笔都出错，但只记一次带堆栈的日志；随后的断线来自脚本里的 ConnectionError，而不是检测器异常。
+    assert caplog.text.count("K 线趋势检测器处理 BTC_USDT 成交出错") == 1
+    assert "boom" in caplog.text
+    assert "down" in caplog.text and delays == [1]

@@ -137,6 +137,10 @@ def test_trend_replay_survives_missing_contract_precision(monkeypatch, capsys):
             raise ConnectionError("contract down")
 
     monkeypatch.setattr(cli, "build_rest_client", lambda config: FakeRest())
+    # 固定“当前时间”，回放的保留范围检查不随真实时钟变化。
+    original_plan = cli.plan_trend_replay
+    now = datetime(2026, 10, 1, tzinfo=UTC)
+    monkeypatch.setattr(cli, "plan_trend_replay", lambda *items: original_plan(*items, now=now))
     start = datetime(2026, 9, 30, 13, 30, tzinfo=UTC).isoformat()
     args = cli.build_parser().parse_args(["trend-replay", "ARK", "--start", start, "--end", "2026-09-30 21:40"])
 

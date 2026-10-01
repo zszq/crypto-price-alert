@@ -23,6 +23,9 @@ LOGGER = logging.getLogger(__name__)
 _Warmup = tuple[list[Candle], Candle | None, datetime]
 _EMPTY_WARMUP: _Warmup = ([], None, datetime.min.replace(tzinfo=UTC))
 
+# 同一检测器出错时，带堆栈的错误日志最多每隔这么久记一次：数据格式变化可能让每笔成交都出错。
+_DETECTOR_ERROR_LOG_SECONDS = 60.0
+
 # 预热几百个合约受限速约束要数十秒，期间没有输出看起来像假死；逐个打印又会刷屏，按时间节流报告进度。
 _WARMUP_PROGRESS_SECONDS = 5.0
 
@@ -240,6 +243,7 @@ class _Monitor:
         gate = self.config.gate
         detectors = [entry.detector for entry in self.detectors]
         backoff = self._backoff()
+        last_error_log: dict[str, float] = {}
         last_status = time.monotonic()
         tick_count = 0
         had_stream_gap = False
@@ -287,8 +291,19 @@ class _Monitor:
 
                         tick_count += 1
                         current_time = time.monotonic()
-                        for detector in detectors:
-                            for alert in detector.add_tick(tick):
+                        for entry in self.detectors:
+                            try:
+                                alerts = entry.detector.add_tick(tick)
+                            except Exception:
+                                # 与坏成交的处理一致：只跳过这笔成交，不能因为一个检测器出错就断开全市场行情，
+                                # 让其他检测器也跟着停摆。
+                                if current_time - last_error_log.get(entry.name, float("-inf")) >= (
+                                    _DETECTOR_ERROR_LOG_SECONDS
+                                ):
+                                    last_error_log[entry.name] = current_time
+                                    LOGGER.exception("%s检测器处理 %s 成交出错，已跳过", entry.name, tick.symbol)
+                                continue
+                            for alert in alerts:
                                 dispatcher.publish(alert)
 
                         if current_time - last_status >= gate.status_interval_seconds:

@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from price_alert.assembly import build_trend_detector
 from price_alert.formatting import beijing_time, format_price
@@ -21,6 +21,8 @@ from price_alert.trend.detector import OUTCOME_LABELS, TrendDetector, TrendEvalu
 from price_alert.trend.pattern import CONDITION_LABELS, TrendRule
 
 MINUTE = timedelta(minutes=1)
+# Gate 只保留最近 10000 根 1 分钟 K 线（约 6.9 天），更早的请求会直接返回 400。
+GATE_MINUTE_HISTORY = 10_000
 # 单次请求的 K 线根数，低于 Gate 的 2000 上限并留出余量。
 _CHUNK_CANDLES = 1000
 # 默认输出只列形态成立的判定，其余只计入统计。
@@ -47,12 +49,28 @@ class TrendReplayResult:
     price_decimals: int | None = None
 
 
-def plan_trend_replay(symbol: str, start: datetime, end: datetime, detector: TrendDetector) -> TrendReplayPlan:
+def plan_trend_replay(
+    symbol: str,
+    start: datetime,
+    end: datetime,
+    detector: TrendDetector,
+    now: datetime | None = None,
+) -> TrendReplayPlan:
     if end <= start:
         raise ValueError("结束时间必须晚于开始时间")
     aligned = datetime.fromtimestamp(int(start.timestamp()) // 60 * 60, tz=start.tzinfo)
     # warmup_candles 含一根未收盘 K 线，回放只需已收盘的部分。
-    return TrendReplayPlan(symbol, start, end, aligned - MINUTE * (detector.warmup_candles - 1))
+    warmup = MINUTE * (detector.warmup_candles - 1)
+    warmup_start = aligned - warmup
+    # 预先检查而不是等交易所返回含义不明的 400。10000 根含当前未收盘的一根，再留一分钟余量：
+    # 检查之后、请求发出之前跨过一分钟时，边界上的开始时间仍可能被拒绝。
+    earliest = (now or datetime.now(UTC)) - MINUTE * (GATE_MINUTE_HISTORY - 2)
+    if warmup_start < earliest:
+        raise ValueError(
+            f"Gate 只保留最近 {GATE_MINUTE_HISTORY} 根 1 分钟 K 线（约 6.9 天），"
+            f"开始时间最早为 {beijing_time(earliest + warmup + MINUTE, '%Y-%m-%d %H:%M')}（北京时间）"
+        )
+    return TrendReplayPlan(symbol, start, end, warmup_start)
 
 
 def fetch_minute_candles(rest: GateRestClient, symbol: str, start: datetime, end: datetime) -> list[Candle]:

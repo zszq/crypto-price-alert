@@ -14,6 +14,8 @@ from price_alert.trend.replay import (
 )
 
 START = datetime(2026, 9, 30, 22, 0, tzinfo=BEIJING_TIME)
+# 固定“当前时间”：回放会检查区间是否超出 Gate 的保留范围，不能依赖真实时钟。
+NOW = START + timedelta(days=1)
 
 
 def trend_config():
@@ -36,11 +38,25 @@ def minute_candles(start: datetime, closes: list[float]) -> list[Candle]:
 def test_plan_starts_warmup_from_longest_history():
     detector = build_trend_detector(AppConfig().trend)
 
-    plan = plan_trend_replay("ARK_USDT", START + timedelta(seconds=20), START + timedelta(hours=1), detector)
+    plan = plan_trend_replay("ARK_USDT", START + timedelta(seconds=20), START + timedelta(hours=1), detector, NOW)
 
     assert plan.warmup_start == START - timedelta(minutes=detector.warmup_candles - 1)
     with pytest.raises(ValueError, match="结束时间必须晚于开始时间"):
-        plan_trend_replay("ARK_USDT", START, START, detector)
+        plan_trend_replay("ARK_USDT", START, START, detector, NOW)
+
+
+def test_plan_rejects_range_beyond_gate_history_with_readable_message():
+    detector = build_trend_detector(AppConfig().trend)
+    now = START + timedelta(days=10)
+
+    with pytest.raises(ValueError, match="Gate 只保留最近 10000 根 1 分钟 K 线"):
+        plan_trend_replay("ARK_USDT", START, START + timedelta(hours=1), detector, now)
+    # 预热也要落在保留范围内（10000 根含当前一根，另留一分钟余量）：恰好在边界上的开始时间可以回放。
+    earliest = now - timedelta(minutes=9998) + timedelta(minutes=detector.warmup_candles - 1)
+    plan = plan_trend_replay("ARK_USDT", earliest, earliest + timedelta(hours=1), detector, now)
+    assert plan.warmup_start == now - timedelta(minutes=9998)
+    with pytest.raises(ValueError):
+        plan_trend_replay("ARK_USDT", earliest - timedelta(minutes=1), earliest, detector, now)
 
 
 class ChunkRest:
@@ -71,7 +87,7 @@ def test_run_and_render_explain_alerts_and_failures():
     config = trend_config()
     detector = build_trend_detector(config)
     end = START + timedelta(minutes=20)
-    plan = plan_trend_replay("ARK_USDT", START, end, detector)
+    plan = plan_trend_replay("ARK_USDT", START, end, detector, NOW)
     # 预热段平稳，区间开始后逐分钟下跌 1% 共 13 分钟，再横盘。
     history = minute_candles(plan.warmup_start, [100.0] * (detector.warmup_candles - 1))
     trend = minute_candles(START, [100.0 - i for i in range(1, 14)] + [87.0] * 7)
@@ -97,7 +113,7 @@ def test_run_and_render_explain_alerts_and_failures():
 def test_render_without_alerts():
     config = trend_config()
     detector = build_trend_detector(config)
-    plan = plan_trend_replay("ARK_USDT", START, START + timedelta(minutes=10), detector)
+    plan = plan_trend_replay("ARK_USDT", START, START + timedelta(minutes=10), detector, NOW)
 
     result = run_trend_replay(config, plan, minute_candles(plan.warmup_start, [100.0, 100.2] * 10))
     text = "\n".join(render_trend_replay(result))

@@ -168,7 +168,7 @@ class TrendDetector:
         live_candle: Candle | None,
         fetched_at: datetime,
     ) -> bool:
-        """用 REST 1 分钟 K 线重建历史；合约已移除或已不需要回补时返回 False。冷却记录保留。"""
+        """用 REST 1 分钟 K 线重建历史；合约已移除或已不需要回补时返回 False。各周期的形态状态保留。"""
         state = self._states.get(symbol.upper())
         if state is None or not state.stale:
             return False

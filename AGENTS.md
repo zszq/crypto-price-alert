@@ -36,7 +36,7 @@ python -m venv .venv
 
 ### 服务主循环（service.py）
 
-- 服务同时驱动多个检测器，只依赖 `detection.Detector` 约定（`symbols`、`stale_symbols`、`add_symbol`、`remove_symbols`、`mark_stream_gap`、`resync_symbol`、`add_tick`），检测器列表由 `assembly.build_detectors` 给出，每个包装成 `MonitoredDetector`（名称、预热 K 线周期与根数）。同一周期的检测器共用一次 REST 请求（取最多的根数，再各自截取尾部，与单独请求结果相同）；合约池以第一个检测器为准，所有检测器同步增删；每笔成交依次交给所有检测器，断线时全部 `mark_stream_gap`，回补覆盖任一检测器失效的合约。新增/删除一种检测器只改 `build_detectors`，不改服务。
+- 服务同时驱动多个检测器，只依赖 `detection.Detector` 约定（`symbols`、`stale_symbols`、`add_symbol`、`remove_symbols`、`mark_stream_gap`、`resync_symbol`、`add_tick`），检测器列表由 `assembly.build_detectors` 给出，每个包装成 `MonitoredDetector`（名称、预热 K 线周期与根数）。同一周期的检测器共用一次 REST 请求（取最多的根数，再各自截取尾部，与单独请求结果相同）；合约池以第一个检测器为准，所有检测器同步增删；每笔成交依次交给所有检测器，单个检测器抛出异常只跳过这笔成交（每个检测器每 60 秒最多记一次带堆栈的错误），不断线、不影响其他检测器；断线时全部 `mark_stream_gap`，回补覆盖任一检测器失效的合约。新增/删除一种检测器只改 `build_detectors`，不改服务。
 - 检测器、REST 客户端、订阅、配置和预热信号量这组共享依赖装在 `_Monitor` 里，各循环是它的方法；首次初始化、断线回补与重连三处的指数退避共用 `_Backoff`。
 - `run_monitor` 先用 `initial_universe` 带退避地完成首次合约池初始化，然后在 `TaskGroup` 中并行跑两个互相独立的循环：`universe_loop` 定期刷新合约池，`stream_loop` 维持 WebSocket 长连接。合约池变化通过 `GateTradeFeed.set_symbols` 增量订阅/退订，**不会断线**。
 - `stream_loop` 中任何异常（包括握手/TCP 超时抛出的 `TimeoutError`）都按故障处理：先 `detector.mark_stream_gap()` 清空秒级窗口并把全部合约的 ATR 标记为失效，再按指数退避重连；收到第一笔成交后退避重置；若此前断过线，会再次 `mark_stream_gap()`（覆盖断线退避期间合约池刷新新增的合约），并在后台启动 `resync_stale_symbols` 为失效合约回补 K 线（失败按退避重试，断线时取消）。回补必须在实时成交恢复后发起，这样请求前的缺口由 REST 覆盖、请求后的成交由实时流覆盖。`GateTradeFeed` 的接收超时被转换成 `ConnectionError`。
@@ -69,7 +69,7 @@ python -m venv .venv
 - `detector.py::TrendDetector`：由成交聚合 1 分钟 K 线，**下一分钟第一笔成交到达时**才结算上一分钟；空分钟按上一收盘价补平线。保留最长周期所需的 `candles × 分钟数` 根 1 分钟 K 线（预热请求 `warmup_candles` 为其 + 1）。每结算一分钟，对收盘时刻落在周期边界的各周期判定。**每个周期各自独立**：`_holding` 记录各周期上一次判定时成立的方向，形态从不成立（或反向）变为成立时提醒，持续成立记 `CONTINUING`，形态被破坏（判定不成立、K 线不足或没有方向）即清空，再次成立就是新的一段；不同周期互不影响，同一分钟多个周期新成立会各报一条（短周期在前）。`_holding` 不随合约移出清除。`add_candle` 直接喂已收盘 1 分钟 K 线（回放、模拟用），不能与 `add_tick` 混用。断线：`mark_stream_gap` 后只维护当前分钟、不结算不判定；`resync_symbol` 用 REST 1 分钟 K 线重建历史（当前分钟与交易所同一分钟时高低点取并集；本地已跨入新分钟则交易所当前 K 线按已收盘计入），`_holding` 保留。
 - `alerts.py`：`TrendAlert`（方向、周期、根数、起止时间与 `PatternMetrics`）与文本格式；`to_dict()` 带 `kind: "trend"`。
 - `config.py`：`TrendConfig`（`enabled` 与 `periods`）；各周期是 `TrendPeriodConfig` 的子类（`Trend3mConfig` 等），只改默认值，YAML 键为 `3m`/`5m`/`15m`（alias；1 分钟周期不提供，`pattern.PeriodName` 仍保留 `1m` 供检测器与测试直接使用），部分覆盖时其余字段仍取该周期默认值；校验 `max_counter_candles < candles`。
-- `replay.py`：`cli trend-replay` 用 REST 1 分钟 K 线（分段请求，每段 ≤ 1000 根）驱动同一个检测器；`simulate.py` 为每个启用周期各跑一段合成单边行情，每个周期应恰好提醒一次。
+- `replay.py`：`cli trend-replay` 用 REST 1 分钟 K 线（分段请求，每段 ≤ 1000 根）驱动同一个检测器，`plan_trend_replay` 预先检查预热起点是否超出 Gate 只保留的最近 10000 根 1 分钟 K 线（测试须传入固定的 `now`）；`simulate.py` 为每个启用周期各跑一段合成单边行情，每个周期应恰好提醒一次。
 
 ### 回放（replay.py）
 
