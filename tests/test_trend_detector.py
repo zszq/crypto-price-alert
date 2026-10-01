@@ -33,10 +33,6 @@ SETTINGS = EpisodeSettings(
     end_rebound_ratio=0.5,
     stall_minutes=30,
     notify_end=True,
-    exhaustion_enabled=False,
-    exhaustion_shadow_ratio=0.6,
-    exhaustion_candles=1,
-    exhaustion_periods=frozenset({"1m"}),
 )
 
 
@@ -206,34 +202,6 @@ def test_insufficient_history_is_reported():
     detector.add_candle(SYMBOL, bar(2, 100, 99))
 
     assert evaluations[-1].outcome is TrendOutcome.INSUFFICIENT_DATA
-
-
-def test_exhaustion_hint_needs_long_shadow_at_new_extreme_and_rearms_after_extend():
-    settings = replace(SETTINGS, exhaustion_enabled=True)
-    detector = make(settings=settings)
-    fall(detector, 10, 5, 0.9)
-
-    # 探到新低后收回大半：下影线占振幅 88%。
-    hint = detector.add_candle(SYMBOL, bar(15, 95.5, 95.2, low=93.0))
-    repeated = detector.add_candle(SYMBOL, bar(16, 95.2, 95.1, low=93.0))
-    extended = detector.add_candle(SYMBOL, bar(17, 95.1, 94.8))
-    rearmed = detector.add_candle(SYMBOL, bar(18, 94.8, 94.7, low=93.0))
-
-    assert [(a.stage, a.period, round(a.shadow_ratio, 2)) for a in hint] == [("exhaustion", "1m", 0.88)]
-    assert repeated == []
-    assert [a.stage for a in extended] == ["extend"]
-    assert [a.stage for a in rearmed] == ["exhaustion"]
-
-
-def test_exhaustion_ignores_shadow_away_from_extreme_and_unconfigured_periods():
-    detector = make(settings=replace(SETTINGS, exhaustion_enabled=True))
-    fall(detector, 10, 5, 0.9)
-    # 长下影线但最低价没到趋势极值附近：只是途中的十字星。
-    assert detector.add_candle(SYMBOL, bar(15, 97.0, 96.9, low=96.0)) == []
-
-    other = make(settings=replace(SETTINGS, exhaustion_enabled=True, exhaustion_periods=frozenset({"5m"})))
-    fall(other, 10, 5, 0.9)
-    assert other.add_candle(SYMBOL, bar(15, 95.5, 95.2, low=93.0)) == []
 
 
 def tick(second: float, price: float, size: float = 1.0) -> PriceTick:

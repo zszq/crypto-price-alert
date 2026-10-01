@@ -12,7 +12,6 @@ def test_defaults_enable_four_periods_with_period_specific_thresholds():
     assert [rule.period for rule in rules] == ["1m", "3m", "5m", "15m"]
     assert [rule.min_change_percent for rule in rules] == [4.0, 5.0, 6.0, 8.0]
     assert all(rule.min_volume_ratio == 1.5 for rule in rules)
-    assert trend.episode_settings().exhaustion_periods == frozenset({"5m", "15m"})
 
 
 def test_partial_period_override_keeps_that_periods_own_defaults(tmp_path):
@@ -41,8 +40,9 @@ def test_unknown_keys_and_periods_are_rejected():
         AppConfig.model_validate({"trend": {"periods": {"2m": {}}}})
     with pytest.raises(ValidationError):
         AppConfig.model_validate({"trend": {"periods": {"1m": {"lookback": 5}}}})
+    # 衰竭提示已移除，旧配置里残留的 exhaustion 段也要报错，而不是被静默忽略。
     with pytest.raises(ValidationError):
-        AppConfig.model_validate({"trend": {"exhaustion": {"periods": ["2m"]}}})
+        AppConfig.model_validate({"trend": {"exhaustion": {"enabled": False}}})
 
 
 def test_enabled_trend_needs_at_least_one_period():
@@ -63,10 +63,3 @@ def test_disabled_trend_is_not_built_into_monitor():
     assert [entry.name for entry in build_detectors(AppConfig())] == ["ATR 异动", "K 线趋势"]
     disabled = AppConfig.model_validate({"trend": {"enabled": False}})
     assert [entry.name for entry in build_detectors(disabled)] == ["ATR 异动"]
-
-
-def test_exhaustion_periods_must_be_enabled():
-    with pytest.raises(ValidationError, match="exhaustion.periods 中的周期 15m 未启用"):
-        AppConfig.model_validate({"trend": {"periods": {"15m": {"enabled": False}}}})
-    # 关闭衰竭提示时不受约束。
-    AppConfig.model_validate({"trend": {"periods": {"15m": {"enabled": False}}, "exhaustion": {"enabled": False}}})

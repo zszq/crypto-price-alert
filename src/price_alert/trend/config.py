@@ -79,17 +79,6 @@ class TrendPeriodsConfig(BaseModel):
         return [("1m", self.m1), ("3m", self.m3), ("5m", self.m5), ("15m", self.m15)]
 
 
-class ExhaustionConfig(BaseModel):
-    """趋势进行中出现逆向长影线（下跌看下影线）时发出“可能放缓”提示，不参与开始判定。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = True
-    periods: list[PeriodName] = Field(default_factory=lambda: ["5m", "15m"], min_length=1)
-    shadow_ratio: float = Field(default=0.6, gt=0, le=1)
-    lookback_candles: int = Field(default=2, ge=1, le=5)
-
-
 class TrendConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -100,7 +89,6 @@ class TrendConfig(BaseModel):
     end_rebound_ratio: float = Field(default=0.5, gt=0, le=1)
     stall_minutes: int = Field(default=30, ge=1, le=1440)
     notify_end: bool = True
-    exhaustion: ExhaustionConfig = Field(default_factory=ExhaustionConfig)
     periods: TrendPeriodsConfig = Field(default_factory=TrendPeriodsConfig)
 
     @model_validator(mode="after")
@@ -110,11 +98,6 @@ class TrendConfig(BaseModel):
         rules = self.rules()
         if not rules:
             raise ValueError("启用趋势提醒时至少要启用一个周期")
-        enabled = {rule.period for rule in rules}
-        if self.exhaustion.enabled and not set(self.exhaustion.periods) <= enabled:
-            # 未启用的周期不会合成 K 线，写在这里只会让衰竭提示悄悄失效。
-            missing = "、".join(period for period in self.exhaustion.periods if period not in enabled)
-            raise ValueError(f"exhaustion.periods 中的周期 {missing} 未启用")
         needed = max(rule.history_minutes for rule in rules) + 1
         if needed > MAX_WARMUP_CANDLES:
             # 预热一次请求拿不到这么多 1 分钟 K 线，最长周期启动后很久都无法判定。
@@ -128,15 +111,10 @@ class TrendConfig(BaseModel):
         return [period.to_rule(name) for name, period in self.periods.items() if period.enabled]
 
     def episode_settings(self) -> EpisodeSettings:
-        exhaustion = self.exhaustion
         return EpisodeSettings(
             cooldown_minutes=self.cooldown_minutes,
             escalation_step_percent=self.escalation_step_percent,
             end_rebound_ratio=self.end_rebound_ratio,
             stall_minutes=self.stall_minutes,
             notify_end=self.notify_end,
-            exhaustion_enabled=exhaustion.enabled,
-            exhaustion_shadow_ratio=exhaustion.shadow_ratio,
-            exhaustion_candles=exhaustion.lookback_candles,
-            exhaustion_periods=frozenset(exhaustion.periods),
         )

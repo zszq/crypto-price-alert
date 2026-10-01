@@ -63,16 +63,14 @@ def test_start_alert_text_lists_every_condition():
     assert "量能" not in format_trend_alert(surge)
 
 
-def test_extend_exhaustion_and_end_texts():
+def test_extend_and_end_texts():
     later = DETECTED + timedelta(minutes=18)
     extend = replace(START, stage="extend", timestamp=later, price=0.3706, change_percent=-10.24, metrics=None)
-    exhaustion = replace(extend, stage="exhaustion", period="5m", shadow_ratio=0.68)
     end = replace(extend, stage="end", extreme_price=0.3305, end_reason="rebound")
 
     assert format_trend_alert(extend) == (
         "[下跌延续] 2026-09-30 22:35:00 | ARK_USDT | 累计下跌 10.24%（自 22:09 起 26 分钟） | 0.4129 → 0.3706"
     )
-    assert "5分钟K线出现长下影线（占振幅 68%），下跌可能放缓" in format_trend_alert(exhaustion)
     assert format_trend_alert(end).endswith("0.4129 → 最低 0.3305（最大下跌 19.96%），当前 0.3706")
     assert "反向回撤过大，自 22:09 起 26 分钟" in format_trend_alert(end)
 

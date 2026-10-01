@@ -20,7 +20,7 @@ def trend_config():
     # 只开 1 分钟周期、关闭量能，构造数据简单直接。
     periods = {"1m": {"candles": 5, "baseline_candles": 5, "min_volume_ratio": None}}
     periods |= {name: {"enabled": False} for name in ("3m", "5m", "15m")}
-    return AppConfig.model_validate({"trend": {"periods": periods, "exhaustion": {"periods": ["1m"]}}}).trend
+    return AppConfig.model_validate({"trend": {"periods": periods}}).trend
 
 
 def minute_candles(start: datetime, closes: list[float]) -> list[Candle]:

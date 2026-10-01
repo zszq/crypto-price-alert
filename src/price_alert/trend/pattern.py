@@ -5,7 +5,7 @@
 - 顺势 K 线与收盘递进比例：方向一致；
 - 实体占比：整体上影线/下影线不长，允许个别长影线；
 - 累计幅度：百分比门槛。
-附加的量能条件要求窗口平均成交量高于趋势前基准；长影线不参与开始判定，由检测器用作衰竭提示。
+附加的量能条件要求窗口平均成交量高于趋势前基准。
 
 本模块只有纯函数，实时检测、回放与参数调研共用同一份判定。
 """
@@ -182,16 +182,6 @@ def evaluate_pattern(
 def format_multiple(value: float) -> str:
     # 基准全为 0 时比值为无穷大，显示成“inf”不直观。
     return "∞" if math.isinf(value) else f"{value:.1f}"
-
-
-def adverse_shadow_ratio(candle: Candle, direction: Direction) -> float:
-    """逆趋势一侧的影线占振幅比例：下跌看下影线（买盘承接），上涨看上影线（卖压）。"""
-    total = candle.high - candle.low
-    if total <= 0:
-        return 0.0
-    if direction == "drop":
-        return (min(candle.open, candle.close) - candle.low) / total
-    return (candle.high - max(candle.open, candle.close)) / total
 
 
 def aggregate_candles(minutes: Sequence[Candle], period_minutes: int) -> list[Candle]:

@@ -6,7 +6,6 @@ from price_alert.models import Candle
 from price_alert.trend.pattern import (
     Condition,
     TrendRule,
-    adverse_shadow_ratio,
     aggregate_candles,
     evaluate_pattern,
     format_multiple,
@@ -177,14 +176,6 @@ def test_sparse_baseline_falls_back_to_mean_volume():
     # 基准成交量 [0, 0, 500, 0, 0]：中位数 0，均值 100。
     assert metrics is not None
     assert metrics.volume_ratio == pytest.approx(1.5)
-
-
-def test_adverse_shadow_ratio_by_direction():
-    candle = Candle(BASE, 100, 101, 95, 99)
-
-    assert adverse_shadow_ratio(candle, "drop") == pytest.approx(4 / 6)
-    assert adverse_shadow_ratio(candle, "surge") == pytest.approx(1 / 6)
-    assert adverse_shadow_ratio(Candle(BASE, 100, 100, 100, 100), "drop") == 0
 
 
 def test_aggregate_candles_merges_aligned_groups():

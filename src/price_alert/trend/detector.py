@@ -21,7 +21,6 @@ from price_alert.trend.pattern import (
     PatternMetrics,
     PeriodName,
     TrendRule,
-    adverse_shadow_ratio,
     aggregate_candles,
     evaluate_pattern,
 )
@@ -40,11 +39,6 @@ class EpisodeSettings:
     end_rebound_ratio: float
     stall_minutes: int
     notify_end: bool
-    exhaustion_enabled: bool
-    exhaustion_shadow_ratio: float
-    exhaustion_candles: int
-    # 检查长影线的周期。调研显示 1 分钟 K 线的长影线对趋势放缓几乎没有预示作用，默认只看较长周期。
-    exhaustion_periods: frozenset[PeriodName]
 
 
 class TrendOutcome(StrEnum):
@@ -106,16 +100,13 @@ class _LiveMinute:
 class _Episode:
     direction: Direction
     period: PeriodName
-    # 趋势起点（发现它的窗口第一根 K 线开盘时间）与被发现的时刻；持续时长从起点算才符合直觉。
+    # 趋势起点：发现它的窗口第一根 K 线开盘时间，持续时长从这里算才符合直觉。
     started_at: datetime
-    detected_at: datetime
     anchor: float
     extreme: float
     extreme_at: datetime
     # 下一档升级的累计幅度（百分比，取绝对值）。
     next_level: float
-    # 衰竭提示每档只发一次，升级后重新允许：趋势创出新一档后再出现长影线才有新的含义。
-    exhaustion_armed: bool = True
 
     @property
     def sign(self) -> float:
@@ -346,7 +337,6 @@ class TrendDetector:
                 result.evaluations.append(insufficient)
                 continue
             window = candles[-rule.candles :]
-            self._check_exhaustion(symbol, state, rule, window, closed_at, result)
             metrics = evaluate_pattern(window, candles[: -rule.candles], rule)
             if metrics is None:
                 result.evaluations.append(TrendEvaluation(symbol, rule.period, closed_at, TrendOutcome.NO_DIRECTION))
@@ -413,7 +403,6 @@ class TrendDetector:
             direction=metrics.direction,
             period=item.rule.period,
             started_at=item.window_start,
-            detected_at=closed_at,
             anchor=metrics.start_price,
             extreme=metrics.extreme_price,
             extreme_at=closed_at,
@@ -470,40 +459,7 @@ class TrendDetector:
         step = self.settings.escalation_step_percent
         # 一根 K 线跨过多档时只报一次，下一档从当前幅度往上数。
         episode.next_level = (math.floor(sign * change / step) + 1) * step
-        episode.exhaustion_armed = True
         result.alerts.append(self._episode_alert(symbol, state, episode, "extend", closed_at, close))
-
-    def _check_exhaustion(
-        self,
-        symbol: str,
-        state: _SymbolState,
-        rule: TrendRule,
-        window: Sequence[Candle],
-        closed_at: datetime,
-        result: _MinuteResult,
-    ) -> None:
-        """检查最近几根 K 线是否出现逆向长影线，作为趋势可能放缓的提示；只在配置的周期上检查。"""
-        settings = self.settings
-        episode = state.episode
-        if not settings.exhaustion_enabled or episode is None or rule.period not in settings.exhaustion_periods:
-            return
-        if not episode.exhaustion_armed:
-            return
-        period = timedelta(minutes=rule.minutes)
-        for candle in window[-settings.exhaustion_candles :]:
-            # 只看趋势被发现之后收盘的 K 线：发现时就带着的影线已经被形态条件接受过了。
-            if candle.timestamp + period <= episode.detected_at:
-                continue
-            ratio = adverse_shadow_ratio(candle, episode.direction)
-            # 影线必须探到新的极值附近才算“探底回升/冲高回落”，趋势中途的小十字星不算。
-            probe = candle.low if episode.direction == "drop" else candle.high
-            reached_extreme = episode.sign * (probe - episode.extreme) >= 0
-            if ratio >= settings.exhaustion_shadow_ratio and reached_extreme:
-                episode.exhaustion_armed = False
-                alert = self._episode_alert(symbol, state, episode, "exhaustion", closed_at, window[-1].close)
-                # 提醒标注出现长影线的周期，而不是发现趋势的周期。
-                result.alerts.append(replace(alert, period=rule.period, shadow_ratio=ratio))
-                return
 
     def _end_episode(
         self,

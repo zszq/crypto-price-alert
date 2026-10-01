@@ -1,6 +1,6 @@
 """趋势提醒的数据模型与文本格式。
 
-一段趋势按状态机输出：开始 → 每累计一档升级 →（可选）衰竭提示 → 结束，
+一段趋势按状态机输出：开始 → 每累计一档升级 → 结束，
 整段行情只报几条，而不是在趋势途中每隔几分钟重复刷屏。
 """
 
@@ -20,13 +20,12 @@ from price_alert.trend.pattern import (
     format_multiple,
 )
 
-TrendStage = Literal["start", "extend", "exhaustion", "end"]
+TrendStage = Literal["start", "extend", "end"]
 EndReason = Literal["rebound", "stall", "reversed"]
 
 STAGE_LABELS: dict[TrendStage, dict[Direction, str]] = {
     "start": {"surge": "趋势上涨", "drop": "趋势下跌"},
     "extend": {"surge": "上涨延续", "drop": "下跌延续"},
-    "exhaustion": {"surge": "上涨衰竭提示", "drop": "下跌衰竭提示"},
     "end": {"surge": "上涨趋势结束", "drop": "下跌趋势结束"},
 }
 END_REASON_LABELS: dict[EndReason, str] = {
@@ -41,7 +40,7 @@ class TrendAlert:
     symbol: str
     stage: TrendStage
     direction: Direction
-    # 发现这段趋势的周期；升级与结束沿用它，便于把同一段行情的提醒串起来；衰竭提示为出现长影线的周期。
+    # 发现这段趋势的周期；升级与结束沿用它，便于把同一段行情的提醒串起来。
     period: PeriodName
     # 依据的 K 线收盘时间。
     timestamp: datetime
@@ -56,7 +55,6 @@ class TrendAlert:
     # 以下字段只在对应阶段有值。
     metrics: PatternMetrics | None = None
     candles: int | None = None
-    shadow_ratio: float | None = None
     end_reason: EndReason | None = None
 
     @property
@@ -88,7 +86,6 @@ class TrendAlert:
             "volume_24h_quote": self.volume_24h_quote,
             "price_decimals": self.price_decimals,
             "candles": self.candles,
-            "shadow_ratio": self.shadow_ratio,
             "end_reason": self.end_reason,
             "color": self.color,
         }
@@ -150,13 +147,6 @@ def format_trend_alert(alert: TrendAlert) -> str:
         )
     if alert.stage == "extend":
         return f"{head}累计{move} {format_change(alert)}（{since}） | {anchor} → {price}"
-    if alert.stage == "exhaustion":
-        assert alert.shadow_ratio is not None
-        shadow = "下影线" if alert.direction == "drop" else "上影线"
-        return (
-            f"{head}{describe_period(alert.period)}出现长{shadow}（占振幅 {alert.shadow_ratio:.0%}），{move}可能放缓"
-            f" | 累计{move} {format_change(alert)}（{since}） | {anchor} → {price}"
-        )
     assert alert.end_reason is not None
     extreme = format_price(alert.extreme_price, alert.price_decimals)
     extreme_change = abs(alert.extreme_price - alert.anchor_price) / alert.anchor_price * 100.0
