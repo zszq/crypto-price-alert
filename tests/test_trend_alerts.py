@@ -27,6 +27,7 @@ METRICS = PatternMetrics(
     counter_candles=1,
     rebound_ratio=0.08,
     body_ratio=0.58,
+    single_candle_ratio=0.31,
     failures=(),
 )
 ALERT = TrendAlert(
@@ -45,7 +46,7 @@ ALERT = TrendAlert(
 def test_alert_text_lists_every_condition():
     assert format_trend_alert(ALERT) == (
         "[趋势下跌] 2026-09-30 22:17:00 | ARK_USDT | 1分钟K线 8 根持续下跌，累计下跌 8.04%（自 22:09 起）"
-        " | 0.4129 → 0.3797 | 阴线 7/8 · 最大反弹 8% · 实体占比 58%"
+        " | 0.4129 → 0.3797 | 阴线 7/8 · 最大反弹 8% · 实体占比 58% · 单根占比 31%"
     )
     surge = replace(ALERT, direction="surge", period="15m", metrics=replace(METRICS, direction="surge"))
     text = format_trend_alert(surge)
@@ -61,6 +62,7 @@ def test_to_dict_is_json_ready_and_tagged_as_trend():
     assert payload["started_at"] == "2026-09-30T14:09:00+00:00"
     assert (payload["start_price"], payload["price"], payload["change_percent"]) == (0.4129, 0.3797, -8.04)
     assert (payload["counter_candles"], payload["rebound_ratio"], payload["body_ratio"]) == (1, 0.08, 0.58)
+    assert payload["single_candle_ratio"] == 0.31
     assert payload["color"] == "red"
     json.dumps(payload)
 
@@ -85,8 +87,8 @@ def test_jsonl_writes_trend_alert(tmp_path):
 
 
 def test_describe_rule():
-    rule = TrendRule("5m", 6, 6.0, 1, 0.3, 0.5)
+    rule = TrendRule("5m", 4, 6.0, 1, 0.3, 0.5, 0.5)
 
     assert describe_trend_rule(rule) == (
-        "趋势 5分钟K线：最近 6 根累计涨跌 ≥ 6%，反向 K 线 ≤ 1 根，最大反弹 ≤ 30%，实体占比 ≥ 50%"
+        "趋势 5分钟K线：最近 4 根累计涨跌 ≥ 6%，反向 K 线 ≤ 1 根，最大反弹 ≤ 30%，实体占比 ≥ 50%，单根占比 ≤ 50%"
     )

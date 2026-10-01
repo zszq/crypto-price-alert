@@ -101,6 +101,7 @@ def _format_row(evaluation: TrendEvaluation, decimals: int | None) -> str:
         )
         parts.append(
             f"反向 {metrics.counter_candles} 根 反弹 {metrics.rebound_ratio:.0%} 实体 {metrics.body_ratio:.0%}"
+            f" 单根 {metrics.single_candle_ratio:.0%}"
         )
     label = OUTCOME_LABELS[evaluation.outcome]
     if evaluation.outcome is TrendOutcome.FAILED and metrics is not None:

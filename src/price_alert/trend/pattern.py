@@ -1,10 +1,11 @@
 """K 线形态趋势判定：某个周期最近 N 根已收盘 K 线是否构成一段“健康”的单边走势。
 
-四个条件全部满足才算趋势：
+五个条件全部满足才算趋势：
 - 累计涨跌幅：第一根开盘到最后一根收盘达到门槛，过滤横盘里幅度很小的连阴连阳；
 - 反向 K 线根数：允许夹杂一两根反向 K 线（十字星也算），其余都要顺着趋势方向；
 - 最大反弹比例：夹杂的反向 K 线只能是小幅回调，从滚动极值算起的反向回撤不能超过累计位移的一定比例；
-- 实体占比：整体上下影线不长，价格是一路推进而不是来回拉扯。
+- 实体占比：整体上下影线不长，价格是一路推进而不是来回拉扯；
+- 单根占比：最大的一根顺势 K 线实体不能占累计位移太多，涨跌是几根 K 线共同推出来的，而不是一根急拉急砸。
 
 本模块只有纯函数，实时检测、回放与模拟共用同一份判定。
 """
@@ -34,6 +35,7 @@ class TrendRule:
     max_counter_candles: int
     max_rebound_ratio: float
     min_body_ratio: float
+    max_single_candle_ratio: float
 
     def __post_init__(self) -> None:
         # 检测器直接信任这些值，非法组合在构造时拦下，比运行中静默不提醒更容易发现。
@@ -61,6 +63,7 @@ class Condition(StrEnum):
     COUNTER_CANDLES = "counter_candles"
     REBOUND = "rebound"
     BODY = "body"
+    SINGLE_CANDLE = "single_candle"
 
 
 CONDITION_LABELS: dict[Condition, str] = {
@@ -68,6 +71,7 @@ CONDITION_LABELS: dict[Condition, str] = {
     Condition.COUNTER_CANDLES: "反向 K 线过多",
     Condition.REBOUND: "反弹过大",
     Condition.BODY: "实体占比不足（影线过长）",
+    Condition.SINGLE_CANDLE: "单根 K 线占比过大",
 }
 
 
@@ -82,6 +86,7 @@ class PatternMetrics:
     counter_candles: int
     rebound_ratio: float
     body_ratio: float
+    single_candle_ratio: float
     failures: tuple[Condition, ...]
 
     @property
@@ -110,7 +115,9 @@ def evaluate_pattern(window: Sequence[Candle], rule: TrendRule) -> PatternMetric
         max_rebound = max(max_rebound, sign * (extreme - candle.close))
         if sign * (candle.close - extreme) > 0:
             extreme = candle.close
-    rebound_ratio = max_rebound / abs(end - start)
+    net_move = abs(end - start)
+    rebound_ratio = max_rebound / net_move
+    single_candle_ratio = max(max(sign * (candle.close - candle.open) for candle in window), 0.0) / net_move
     total_range = sum(candle.high - candle.low for candle in window)
     body_ratio = sum(abs(candle.close - candle.open) for candle in window) / total_range if total_range > 0 else 0.0
     change_percent = (end - start) / start * 100.0
@@ -124,6 +131,8 @@ def evaluate_pattern(window: Sequence[Candle], rule: TrendRule) -> PatternMetric
         failures.append(Condition.REBOUND)
     if body_ratio < rule.min_body_ratio:
         failures.append(Condition.BODY)
+    if single_candle_ratio > rule.max_single_candle_ratio:
+        failures.append(Condition.SINGLE_CANDLE)
 
     return PatternMetrics(
         direction=direction,
@@ -133,6 +142,7 @@ def evaluate_pattern(window: Sequence[Candle], rule: TrendRule) -> PatternMetric
         counter_candles=counter_candles,
         rebound_ratio=rebound_ratio,
         body_ratio=body_ratio,
+        single_candle_ratio=single_candle_ratio,
         failures=tuple(failures),
     )
 

@@ -14,6 +14,7 @@ def test_defaults_enable_three_periods_with_period_specific_thresholds():
     assert [rule.min_change_percent for rule in rules] == [5.0, 6.0, 8.0]
     assert [rule.max_counter_candles for rule in rules] == [1, 1, 0]
     assert all(rule.max_rebound_ratio == 0.3 and rule.min_body_ratio == 0.5 for rule in rules)
+    assert all(rule.max_single_candle_ratio == 0.5 for rule in rules)
 
 
 def test_partial_period_override_keeps_that_periods_own_defaults(tmp_path):

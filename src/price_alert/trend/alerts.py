@@ -54,6 +54,7 @@ class TrendAlert:
             "counter_candles": metrics.counter_candles,
             "rebound_ratio": metrics.rebound_ratio,
             "body_ratio": metrics.body_ratio,
+            "single_candle_ratio": metrics.single_candle_ratio,
             "volume_24h_quote": self.volume_24h_quote,
             "price_decimals": self.price_decimals,
             "color": self.color,
@@ -68,7 +69,7 @@ def describe_trend_rule(rule: TrendRule) -> str:
     return (
         f"趋势 {describe_period(rule.period)}：最近 {rule.candles} 根累计涨跌 ≥ {rule.min_change_percent:g}%，"
         f"反向 K 线 ≤ {rule.max_counter_candles} 根，最大反弹 ≤ {rule.max_rebound_ratio:.0%}，"
-        f"实体占比 ≥ {rule.min_body_ratio:.0%}"
+        f"实体占比 ≥ {rule.min_body_ratio:.0%}，单根占比 ≤ {rule.max_single_candle_ratio:.0%}"
     )
 
 
@@ -86,6 +87,7 @@ def format_trend_alert(alert: TrendAlert) -> str:
     details = (
         f"{candle_word} {alert.candles - metrics.counter_candles}/{alert.candles}"
         f" · 最大反弹 {metrics.rebound_ratio:.0%} · 实体占比 {metrics.body_ratio:.0%}"
+        f" · 单根占比 {metrics.single_candle_ratio:.0%}"
     )
     return (
         f"[{alert.label}] {beijing_time(alert.timestamp)} | {alert.symbol} | "

@@ -87,8 +87,8 @@ def test_run_and_render_explain_alerts_and_failures():
     assert "提醒 1 条：" in text
     assert "[趋势下跌] 2026-09-30 22:09:00 | ARK_USDT | 3分钟K线 3 根持续下跌" in text
     assert "各周期判定统计：" in text and "未满足的条件：反向 K 线过多" in text
-    assert "22:09 | 3m | 99.00 → 91.00 -8.08% | 反向 0 根 反弹 0% 实体 99% | 提醒" in text
-    assert "22:12 | 3m | 97.00 → 88.00 -9.28% | 反向 0 根 反弹 0% 实体 99% | 形态延续，本段已提醒" in text
+    assert "22:09 | 3m | 99.00 → 91.00 -8.08% | 反向 0 根 反弹 0% 实体 99% 单根 38% | 提醒" in text
+    assert "22:12 | 3m | 97.00 → 88.00 -9.28% | 反向 0 根 反弹 0% 实体 99% 单根 33% | 形态延续，本段已提醒" in text
     all_lines = render_trend_replay(result, show_all=True)
     assert len(all_lines) > len(lines)
     assert "逐根判定：" in all_lines

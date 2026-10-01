@@ -22,6 +22,8 @@ class TrendPeriodConfig(BaseModel):
     max_counter_candles: int = Field(ge=0, le=59)
     max_rebound_ratio: float = Field(default=0.3, ge=0, le=1)
     min_body_ratio: float = Field(default=0.5, ge=0, le=1)
+    # 最大一根顺势 K 线实体 ÷ 累计位移的上限：排除一根急拉急砸加几根小 K 线凑出来的“趋势”。
+    max_single_candle_ratio: float = Field(default=0.5, gt=0, le=1)
 
     @model_validator(mode="after")
     def validate_counter_candles(self) -> TrendPeriodConfig:
@@ -37,6 +39,7 @@ class TrendPeriodConfig(BaseModel):
             max_counter_candles=self.max_counter_candles,
             max_rebound_ratio=self.max_rebound_ratio,
             min_body_ratio=self.min_body_ratio,
+            max_single_candle_ratio=self.max_single_candle_ratio,
         )
 
 

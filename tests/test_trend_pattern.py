@@ -16,6 +16,8 @@ def rule(**overrides) -> TrendRule:
         "max_counter_candles": 1,
         "max_rebound_ratio": 0.3,
         "min_body_ratio": 0.5,
+        # 默认不限制单根占比，各用例只验证自己关心的条件；单根占比由专门的用例覆盖。
+        "max_single_candle_ratio": 1.0,
     }
     return TrendRule(**(values | overrides))
 
@@ -39,6 +41,7 @@ def test_clean_drop_passes():
     assert metrics.direction == "drop"
     assert metrics.change_percent == pytest.approx(-5.0)
     assert (metrics.counter_candles, metrics.rebound_ratio, metrics.body_ratio) == (0, 0, 1)
+    assert metrics.single_candle_ratio == pytest.approx(0.2)
     assert (metrics.start_price, metrics.end_price) == (100.0, 95.0)
 
 
@@ -106,6 +109,26 @@ def test_long_shadows_fail_body_ratio():
     assert metrics is not None
     assert metrics.body_ratio == pytest.approx(1 / 5)
     assert metrics.failures == (Condition.BODY,)
+
+
+def test_one_dominant_candle_fails_single_candle_ratio():
+    # 四根小阴线加一根大阴线：累计跌 6%，最后一根就占了 4 个点。
+    bars = [(100, 100, 99.5, 99.5), (99.5, 99.5, 99, 99), (99, 99, 98.5, 98.5), (98.5, 98.5, 98, 98), (98, 98, 94, 94)]
+    metrics = evaluate_pattern(candles(*bars), rule(max_single_candle_ratio=0.5))
+
+    assert metrics is not None
+    assert metrics.single_candle_ratio == pytest.approx(4 / 6)
+    assert metrics.failures == (Condition.SINGLE_CANDLE,)
+    assert evaluate_pattern(falling(), rule(max_single_candle_ratio=0.5)).passed  # type: ignore[union-attr]
+
+
+def test_single_candle_ratio_ignores_counter_candles():
+    # 反向 K 线不算“顺势推动”，只看顺势 K 线里最大的一根。
+    bars = [(100, 100, 98, 98), (98, 98, 96, 96), (96, 96.8, 96, 96.6), (96.6, 96.6, 94, 94), (94, 94, 92, 92)]
+    metrics = evaluate_pattern(candles(*bars), rule(max_single_candle_ratio=0.5))
+
+    assert metrics is not None and metrics.passed
+    assert metrics.single_candle_ratio == pytest.approx(2.6 / 8)
 
 
 def test_small_move_fails_change_threshold():
