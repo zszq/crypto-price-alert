@@ -37,6 +37,8 @@ class Detector(Protocol):
 
     def mark_stream_gap(self) -> None: ...
 
+    def mark_symbol_gap(self, symbol: str) -> None: ...
+
     def resync_symbol(
         self,
         symbol: str,

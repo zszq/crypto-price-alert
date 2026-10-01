@@ -36,7 +36,7 @@ python -m venv .venv
 
 ### 服务主循环（service.py）
 
-- 服务同时驱动多个检测器，只依赖 `detection.Detector` 约定（`symbols`、`stale_symbols`、`add_symbol`、`remove_symbols`、`mark_stream_gap`、`resync_symbol`、`add_tick`），检测器列表由 `assembly.build_detectors` 给出，每个包装成 `MonitoredDetector`（名称、预热 K 线周期与根数）。同一周期的检测器共用一次 REST 请求（取最多的根数，再各自截取尾部，与单独请求结果相同）；合约池以第一个检测器为准，所有检测器同步增删；每笔成交依次交给所有检测器，单个检测器抛出异常只跳过这笔成交（每个检测器每 60 秒最多记一次带堆栈的错误），不断线、不影响其他检测器；断线时全部 `mark_stream_gap`，回补覆盖任一检测器失效的合约。新增/删除一种检测器只改 `build_detectors`，不改服务。
+- 服务同时驱动多个检测器，只依赖 `detection.Detector` 约定（`symbols`、`stale_symbols`、`add_symbol`、`remove_symbols`、`mark_stream_gap`、`mark_symbol_gap`、`resync_symbol`、`add_tick`），检测器列表由 `assembly.build_detectors` 给出，每个包装成 `MonitoredDetector`（名称、预热 K 线周期与根数）。同一周期的检测器共用一次 REST 请求（取最多的根数，再各自截取尾部，与单独请求结果相同）；合约池以第一个检测器为准，所有检测器同步增删；每笔成交依次交给所有检测器，单个检测器抛出异常只跳过这笔成交，不断线、不影响其他检测器：出错可能发生在更新状态的中途，所以由 `_DetectorFaults` 记账后调用该检测器的 `mark_symbol_gap` 把这个合约标记失效、并在没有回补任务时启动 `resync_stale_symbols` 用 REST K 线重建（同一检测器同一合约 60 秒内最多修复一次；带堆栈的错误日志每个检测器 60 秒最多一次；出错次数附在「监控正常」状态日志里，汇报后清零）；断线时全部 `mark_stream_gap`，回补覆盖任一检测器失效的合约。新增/删除一种检测器只改 `build_detectors`，不改服务。
 - 检测器、REST 客户端、订阅、配置和预热信号量这组共享依赖装在 `_Monitor` 里，各循环是它的方法；首次初始化、断线回补与重连三处的指数退避共用 `_Backoff`。
 - `run_monitor` 先用 `initial_universe` 带退避地完成首次合约池初始化，然后在 `TaskGroup` 中并行跑两个互相独立的循环：`universe_loop` 定期刷新合约池，`stream_loop` 维持 WebSocket 长连接。合约池变化通过 `GateTradeFeed.set_symbols` 增量订阅/退订，**不会断线**。
 - `stream_loop` 中任何异常（包括握手/TCP 超时抛出的 `TimeoutError`）都按故障处理：先 `detector.mark_stream_gap()` 清空秒级窗口并把全部合约的 ATR 标记为失效，再按指数退避重连；收到第一笔成交后退避重置；若此前断过线，会再次 `mark_stream_gap()`（覆盖断线退避期间合约池刷新新增的合约），并在后台启动 `resync_stale_symbols` 为失效合约回补 K 线（失败按退避重试，断线时取消）。回补必须在实时成交恢复后发起，这样请求前的缺口由 REST 覆盖、请求后的成交由实时流覆盖。`GateTradeFeed` 的接收超时被转换成 `ConnectionError`。

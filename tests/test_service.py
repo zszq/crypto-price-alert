@@ -472,6 +472,7 @@ class RecordingDetector:
         self.stale: set[str] = set()
         self.warmups: dict[str, tuple[list[Candle], Candle | None]] = {}
         self.resyncs: list[str] = []
+        self.symbol_gaps: list[str] = []
         self.gaps = 0
 
     @property
@@ -493,6 +494,10 @@ class RecordingDetector:
     def mark_stream_gap(self) -> None:
         self.gaps += 1
         self.stale = set(self._symbols)
+
+    def mark_symbol_gap(self, symbol: str) -> None:
+        self.symbol_gaps.append(symbol)
+        self.stale.add(symbol)
 
     def resync_symbol(self, symbol, candles, live_candle, fetched_at) -> bool:
         if symbol not in self.stale:
@@ -601,9 +606,15 @@ def test_real_trend_detector_warms_up_through_monitor():
     assert len(trend._states["BTC_USDT"].minutes) == trend.warmup_candles - 1
 
 
-def test_failing_detector_is_skipped_without_breaking_the_stream(monkeypatch, caplog):
-    """一个检测器出错只跳过这笔成交并限流记日志，其他检测器照常提醒，也不能因此断线重连。"""
+def test_failing_detector_is_skipped_and_its_symbol_repaired_without_breaking_the_stream(monkeypatch, caplog):
+    """一个检测器出错只跳过这笔成交，其他检测器照常提醒，不断线；出错的合约标记失效并启动回补重建。"""
     delays = record_sleeps(monkeypatch, limit=1)
+    resync_started: list[list[str]] = []
+
+    async def fake_resync(_monitor):
+        resync_started.append(broken.stale_symbols)
+
+    monkeypatch.setattr(service._Monitor, "resync_stale_symbols", fake_resync)
 
     class BrokenDetector(RecordingDetector):
         def add_tick(self, tick: PriceTick) -> list[str]:
@@ -618,7 +629,32 @@ def test_failing_detector_is_skipped_without_breaking_the_stream(monkeypatch, ca
         asyncio.run(monitor(detectors, feed=feed).stream_loop(dispatcher))
 
     assert dispatcher.published == ["atr-1", "atr-2", "atr-3"]
-    # 三笔都出错，但只记一次带堆栈的日志；随后的断线来自脚本里的 ConnectionError，而不是检测器异常。
-    assert caplog.text.count("K 线趋势检测器处理 BTC_USDT 成交出错") == 1
+    # 三笔都出错：只记一次带堆栈的日志、只修复一次（同一合约限频），只修复出错的那个检测器。
+    assert caplog.text.count("K 线趋势检测器处理 BTC_USDT 成交出错，已跳过，标记该合约待回补重建") == 1
     assert "boom" in caplog.text
+    assert broken.symbol_gaps == ["BTC_USDT"] and atr.symbol_gaps == []
+    assert resync_started == [["BTC_USDT"]]
+    # 随后的断线来自脚本里的 ConnectionError，而不是检测器异常。
     assert "down" in caplog.text and delays == [1]
+
+
+def test_detector_faults_throttle_logs_and_repairs_and_report_counts(caplog):
+    faults = service._DetectorFaults()
+
+    def fail(detector: str, symbol: str, now: float) -> bool:
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            return faults.record(detector, symbol, now)
+
+    # 同一检测器同一合约 60 秒内只修复一次；不同合约、不同检测器各自计时。
+    assert [fail("K 线趋势", "BTC_USDT", t) for t in (0, 10, 59)] == [True, False, False]
+    assert fail("K 线趋势", "ETH_USDT", 20) is True
+    assert fail("ATR 异动", "BTC_USDT", 30) is True
+    assert fail("K 线趋势", "BTC_USDT", 60) is True
+    # 日志按检测器限流：K 线趋势在 0、60 秒各一次，ATR 异动一次。
+    assert caplog.text.count("K 线趋势检测器处理") == 2
+    assert caplog.text.count("ATR 异动检测器处理") == 1
+
+    assert faults.summary() == "，K 线趋势检测器出错 5 次，ATR 异动检测器出错 1 次"
+    assert faults.summary() == ""

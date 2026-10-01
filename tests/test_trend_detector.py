@@ -265,3 +265,15 @@ def test_warmup_covers_longest_period_and_constructor_validation():
         TrendDetector([])
     with pytest.raises(ValueError):
         TrendDetector([rule("1m"), rule("1m")])
+
+
+def test_mark_symbol_gap_only_invalidates_that_symbol():
+    detector = make()
+    detector.add_symbol("OTHER_USDT", flat(10), 1e9)
+
+    detector.mark_symbol_gap(SYMBOL.lower())
+    detector.mark_symbol_gap("MISSING_USDT")
+
+    assert detector.stale_symbols == [SYMBOL]
+    assert detector.resync_symbol(SYMBOL, flat(10), None, minute(10))
+    assert detector.stale_symbols == []

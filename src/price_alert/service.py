@@ -6,7 +6,8 @@ import asyncio
 import contextlib
 import logging
 import time
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from price_alert.assembly import build_detectors, build_rest_client
@@ -25,6 +26,8 @@ _EMPTY_WARMUP: _Warmup = ([], None, datetime.min.replace(tzinfo=UTC))
 
 # 同一检测器出错时，带堆栈的错误日志最多每隔这么久记一次：数据格式变化可能让每笔成交都出错。
 _DETECTOR_ERROR_LOG_SECONDS = 60.0
+# 同一检测器的同一合约，出错后触发 REST 回补修复的最小间隔：持续出错时不至于每笔成交都回补一次。
+_DETECTOR_REPAIR_SECONDS = 60.0
 
 # 预热几百个合约受限速约束要数十秒，期间没有输出看起来像假死；逐个打印又会刷屏，按时间节流报告进度。
 _WARMUP_PROGRESS_SECONDS = 5.0
@@ -55,6 +58,37 @@ def _split_candles(
     closed = [candle for candle in candles if candle.timestamp.timestamp() < current_interval_start]
     current = next((candle for candle in candles if candle.timestamp.timestamp() == current_interval_start), None)
     return closed, current
+
+
+@dataclass(slots=True)
+class _DetectorFaults:
+    """检测器处理成交出错时的记账：限流打日志、按合约限频修复，并累计次数供状态日志汇报。"""
+
+    _last_log: dict[str, float] = field(default_factory=dict)
+    _last_repair: dict[tuple[str, str], float] = field(default_factory=dict)
+    _counts: Counter[str] = field(default_factory=Counter)
+
+    def record(self, detector: str, symbol: str, now: float) -> bool:
+        """记录一次出错，返回这次是否需要修复该合约。"""
+        self._counts[detector] += 1
+        repair = now - self._last_repair.get((detector, symbol), float("-inf")) >= _DETECTOR_REPAIR_SECONDS
+        if repair:
+            self._last_repair[(detector, symbol)] = now
+        if now - self._last_log.get(detector, float("-inf")) >= _DETECTOR_ERROR_LOG_SECONDS:
+            self._last_log[detector] = now
+            LOGGER.exception(
+                "%s检测器处理 %s 成交出错，已跳过%s",
+                detector,
+                symbol,
+                "，标记该合约待回补重建" if repair else "",
+            )
+        return repair
+
+    def summary(self) -> str:
+        """自上次汇报以来的出错次数，汇报后清零；没有出错时返回空串。"""
+        text = "".join(f"，{name}检测器出错 {count:,} 次" for name, count in self._counts.items())
+        self._counts.clear()
+        return text
 
 
 async def _stop_task(task: asyncio.Task[None] | None) -> None:
@@ -243,7 +277,7 @@ class _Monitor:
         gate = self.config.gate
         detectors = [entry.detector for entry in self.detectors]
         backoff = self._backoff()
-        last_error_log: dict[str, float] = {}
+        faults = _DetectorFaults()
         last_status = time.monotonic()
         tick_count = 0
         had_stream_gap = False
@@ -286,7 +320,7 @@ class _Monitor:
                                 # 必须在实时成交恢复之后再拉 K 线：请求之前的缺口由 REST 覆盖，之后的成交由实时流覆盖。
                                 resync_task = asyncio.create_task(
                                     self.resync_stale_symbols(),
-                                    name="resync-stale-atr",
+                                    name="resync-stale-symbols",
                                 )
 
                         tick_count += 1
@@ -296,12 +330,14 @@ class _Monitor:
                                 alerts = entry.detector.add_tick(tick)
                             except Exception:
                                 # 与坏成交的处理一致：只跳过这笔成交，不能因为一个检测器出错就断开全市场行情，
-                                # 让其他检测器也跟着停摆。
-                                if current_time - last_error_log.get(entry.name, float("-inf")) >= (
-                                    _DETECTOR_ERROR_LOG_SECONDS
-                                ):
-                                    last_error_log[entry.name] = current_time
-                                    LOGGER.exception("%s检测器处理 %s 成交出错，已跳过", entry.name, tick.symbol)
+                                # 让其他检测器也跟着停摆。出错可能发生在更新状态的中途，该合约在这个检测器里
+                                # 的状态已不可信，按断线同样处理：标记失效、暂停判定，用 REST K 线回补重建。
+                                if faults.record(entry.name, tick.symbol, current_time):
+                                    entry.detector.mark_symbol_gap(tick.symbol)
+                                    if resync_task is None or resync_task.done():
+                                        resync_task = asyncio.create_task(
+                                            self.resync_stale_symbols(), name="resync-stale-symbols"
+                                        )
                                 continue
                             for alert in alerts:
                                 dispatcher.publish(alert)
@@ -309,10 +345,11 @@ class _Monitor:
                         if current_time - last_status >= gate.status_interval_seconds:
                             rejected = len(self.feed.rejected_symbols)
                             LOGGER.info(
-                                "监控正常：%d 个合约%s，累计 %s 条成交",
+                                "监控正常：%d 个合约%s，累计 %s 条成交%s",
                                 len(self.symbols),
                                 f"（{rejected} 个订阅被拒绝）" if rejected else "",
                                 f"{tick_count:,}",
+                                faults.summary(),
                             )
                             last_status = current_time
                 raise ConnectionError("Gate.io 行情流意外结束")

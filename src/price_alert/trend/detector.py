@@ -161,6 +161,12 @@ class TrendDetector:
         for state in self._states.values():
             state.stale = True
 
+    def mark_symbol_gap(self, symbol: str) -> None:
+        """单个合约的 K 线可能已不一致时调用（如处理成交中途出错）：与断线同样处理，等 resync_symbol 回补。"""
+        state = self._states.get(symbol.upper())
+        if state is not None:
+            state.stale = True
+
     def resync_symbol(
         self,
         symbol: str,

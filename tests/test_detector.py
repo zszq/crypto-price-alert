@@ -668,3 +668,18 @@ def test_confirmation_restarts_after_each_alert():
 
     # 没有冷却时，每次提醒后仍要重新连续确认 2 秒，而不是之后每秒都提醒。
     assert fired == [13, 15, 17]
+
+
+def test_mark_symbol_gap_only_invalidates_that_symbol():
+    instance = detector()
+    instance.add_symbol("LOW_USDT", history(1.0), 20_000_000)
+    instance.add_symbol("HIGH_USDT", history(4.0), 30_000_000)
+
+    instance.mark_symbol_gap("low_usdt")
+    instance.mark_symbol_gap("MISSING_USDT")
+
+    assert instance.stale_symbols == ["LOW_USDT"]
+    # 失效期间不判定；回补后恢复。
+    assert feed_window(instance, "LOW_USDT", 101.0) == []
+    assert instance.resync_symbol("LOW_USDT", history(1.0), None, BASE + timedelta(minutes=3))
+    assert instance.stale_symbols == []

@@ -196,10 +196,20 @@ class AtrMoveDetector:
     def mark_stream_gap(self) -> None:
         """行情中断后调用：丢弃秒级窗口与确认进度，并暂停 ATR 判定直到 resync_symbol 回补 K 线。"""
         for state in self._states.values():
-            state.buckets.clear()
-            for candidate in state.candidates:
-                candidate.reset()
-            state.atr_stale = True
+            self._invalidate(state)
+
+    def mark_symbol_gap(self, symbol: str) -> None:
+        """单个合约的状态可能已不一致时调用（如处理成交中途出错）：与断线同样处理，等 resync_symbol 回补。"""
+        state = self._states.get(symbol.upper())
+        if state is not None:
+            self._invalidate(state)
+
+    @staticmethod
+    def _invalidate(state: _SymbolState) -> None:
+        state.buckets.clear()
+        for candidate in state.candidates:
+            candidate.reset()
+        state.atr_stale = True
 
     def resync_symbol(
         self,
