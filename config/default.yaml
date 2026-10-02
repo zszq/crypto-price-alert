@@ -126,7 +126,7 @@ indicator:
     # 长窗口的 ATR 倍数（(0, 20]）。ATR 按 K 线周期（1m）计算，窗口越长，正常波动下的位移本来就越大，
     # 所以通常要比短窗口的倍数高。
     # 默认：2
-    trigger_atr_multiple: 2.0
+    trigger_atr_multiple: 1.8
     # 长窗口的最低涨跌幅（百分比，(0, 100]），与 ATR 倍数是「且」的关系。
     # 默认：2
     min_change_percent: 1.6
@@ -165,7 +165,7 @@ trend:
       enabled: true
       # 参与判定的已收盘 K 线根数（3~60）。调大要求趋势持续更久，发现得更晚；调小更灵敏、噪声也更多。
       # 默认：5
-      candles: 5
+      candles: 4
       # 累计涨跌幅下限（百分比，(0, 100]）：第一根开盘价到最后一根收盘价。调低提醒变多。
       # 过滤横盘里幅度很小的连阴连阳；对 BTC、ETH 这类低波动币可能偏高。
       # 默认：5
@@ -188,7 +188,7 @@ trend:
       # 默认：true
       enabled: true
       # 默认：4
-      candles: 4
+      candles: 3
       # 默认：6
       min_change_percent: 6.0
       # 默认：1
@@ -198,7 +198,7 @@ trend:
       # 默认：0.5
       min_body_ratio: 0.5
       # 默认：0.5
-      max_single_candle_ratio: 0.5
+      max_single_candle_ratio: 0.6
     15m:
       # 默认：true
       enabled: true
@@ -213,7 +213,7 @@ trend:
       # 默认：0.5
       min_body_ratio: 0.5
       # 默认：0.5
-      max_single_candle_ratio: 0.5
+      max_single_candle_ratio: 0.6
 
 # 提醒分发通道（冷却属于判定逻辑，见 indicator 下各窗口的 cooldown_seconds）。各通道有独立队列和后台任务，发送不阻塞行情处理。
 alerts:
