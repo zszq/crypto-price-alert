@@ -83,6 +83,7 @@ python -m venv .venv
 - `PRICE_ALERT_WEBHOOK_URL` 环境变量覆盖 `alerts.webhook_url`。
 - `config.py` 中的代码默认值固定不变，没有特别要求不要改；它只在 YAML 缺少对应项时生效，实际运行以 YAML 为准。
 - `config/default.yaml` 每项注释中的「默认 X」标注的是代码默认值。调参时只改 YAML 的取值，注释里的默认值和 `config.py` 都不动，两者允许不一致；配置测试只校验 YAML 能通过校验。
+- README 中的参数、例子和回放结果一律按代码默认值写（复现时给 `--config` 传只含 `{}` 的配置文件），调 YAML 不需要改 README；只有改代码默认值或判定逻辑时才同步更新。
 - `IndicatorConfig` 只放各窗口共用的 K 线/ATR 参数（`candle_interval`、`atr_period`、`warmup_candles`、`max_atr_age_seconds`），窗口参数在结构相同的 `short_window`（`ShortWindowConfig`）与 `long_window`（`LongWindowConfig`，多一个 `enabled`）里，二者继承 `WindowConfig`，只在默认值、取值范围和冷却规则上不同。校验：`warmup_candles > atr_period`、`max_atr_age_seconds ≥ 2 个 K 线周期`（未显式设置时自动取 3 个周期）；`WindowConfig` 校验确认秒数 ≤ 窗口长度；启用长窗口时 `long_window.lookback_seconds > short_window.lookback_seconds`；`LongWindowConfig` 额外校验冷却 ≥ 窗口长度（未显式设置时等于窗口长度）。`GateConfig` 校验 `reconnect_max_seconds ≥ reconnect_initial_seconds`。
 
 ### 新增/修改检测参数时需要同步的位置
