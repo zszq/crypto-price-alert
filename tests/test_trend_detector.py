@@ -37,8 +37,9 @@ def flat(count: int, start: int = 0, price: float = 100.0) -> list[Candle]:
     return [Candle(minute(start + i), price, price + 0.1, price - 0.1, price) for i in range(count)]
 
 
-def make(*rules: TrendRule, seed: int = 10, observer=None) -> TrendDetector:
-    detector = TrendDetector(list(rules) or [rule()], observer)
+def make(*rules: TrendRule, seed: int = 10, observer=None, alert_continuing: bool = False) -> TrendDetector:
+    # 默认关闭延续提醒，各用例只看形态新形成的提醒；延续提醒由专门的用例覆盖。
+    detector = TrendDetector(list(rules) or [rule()], observer, alert_continuing=alert_continuing)
     detector.add_symbol(SYMBOL, flat(seed), 1e9, price_decimals=4)
     return detector
 
@@ -74,6 +75,43 @@ def test_no_repeat_while_pattern_keeps_holding():
 
     assert len(alerts) == 1
     assert evaluations[-1].outcome is TrendOutcome.CONTINUING
+
+
+def test_continuing_alerts_on_every_period_close_while_pattern_holds():
+    evaluations = []
+    detector = make(
+        rule("3m", candles=2, min_change_percent=4.0, max_counter_candles=0),
+        seed=12,
+        observer=evaluations.append,
+        alert_continuing=True,
+    )
+
+    alerts = [a for item in fall(detector, 12, 12, 1.0) for a in item]
+
+    # 00:18 新形成，之后每根 3 分钟 K 线收盘都报一条延续提醒。
+    assert [(a.timestamp, a.continuing) for a in alerts] == [
+        (minute(18), False),
+        (minute(21), True),
+        (minute(24), True),
+    ]
+    assert [item.outcome for item in evaluations if item.metrics is not None and item.metrics.passed] == [
+        TrendOutcome.ALERT,
+        TrendOutcome.CONTINUING_ALERT,
+        TrendOutcome.CONTINUING_ALERT,
+    ]
+    assert alerts[1].started_at == minute(15)
+
+
+def test_continuing_alert_stops_when_pattern_breaks_and_next_one_is_new():
+    detector = make(rule("1m", candles=3, min_change_percent=2.0, max_counter_candles=0), alert_continuing=True)
+
+    first = [a for item in fall(detector, 10, 5, 0.9) for a in item]
+    broken = detector.add_candle(SYMBOL, bar(15, 95.5, 96.0))
+    second = [a for item in fall(detector, 16, 3, 0.9, price=96.0) for a in item]
+
+    assert [a.continuing for a in first] == [False, True, True]
+    assert broken == []
+    assert [a.continuing for a in second] == [False]
 
 
 def test_alerts_again_after_pattern_breaks_and_opposite_direction_is_independent():

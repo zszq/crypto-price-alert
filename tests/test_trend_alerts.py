@@ -63,6 +63,7 @@ def test_to_dict_is_json_ready_and_tagged_as_trend():
     assert (payload["start_price"], payload["price"], payload["change_percent"]) == (0.4129, 0.3797, -8.04)
     assert (payload["counter_candles"], payload["rebound_ratio"], payload["body_ratio"]) == (1, 0.08, 0.58)
     assert payload["single_candle_ratio"] == 0.31
+    assert payload["continuing"] is False
     assert payload["color"] == "red"
     json.dumps(payload)
 
@@ -92,3 +93,14 @@ def test_describe_rule():
     assert describe_trend_rule(rule) == (
         "趋势 5分钟K线：最近 4 根累计涨跌 ≥ 6%，反向 K 线 ≤ 1 根，最大反弹 ≤ 30%，实体占比 ≥ 50%，单根占比 ≤ 50%"
     )
+
+
+def test_continuing_alert_is_labelled_in_text_color_and_payload():
+    continuing = replace(ALERT, continuing=True)
+
+    text = format_alert(continuing)
+    colored = colorize_alert(continuing, text)
+
+    assert text.startswith("[趋势下跌·延续] ")
+    assert colored.startswith(f"{DROP_COLOR}{TREND_LABEL_COLOR}[趋势下跌·延续]{Style.RESET_ALL}{DROP_COLOR}")
+    assert continuing.to_dict()["continuing"] is True

@@ -1,8 +1,9 @@
 import pytest
 from pydantic import ValidationError
 
-from price_alert.assembly import build_detectors
+from price_alert.assembly import build_detectors, build_trend_detector
 from price_alert.config import AppConfig, load_config
+from price_alert.trend.config import TrendConfig
 
 
 def test_defaults_enable_three_periods_with_period_specific_thresholds():
@@ -73,3 +74,9 @@ def test_disabled_trend_is_not_built_into_monitor():
     assert [entry.name for entry in build_detectors(AppConfig())] == ["ATR 异动", "K 线趋势"]
     disabled = AppConfig.model_validate({"trend": {"enabled": False}})
     assert [entry.name for entry in build_detectors(disabled)] == ["ATR 异动"]
+
+
+def test_alert_continuing_defaults_on_and_is_passed_to_detector():
+    assert TrendConfig().alert_continuing is True
+    assert build_trend_detector(TrendConfig())._alert_continuing is True
+    assert build_trend_detector(TrendConfig(alert_continuing=False))._alert_continuing is False

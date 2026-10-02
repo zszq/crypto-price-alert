@@ -1,7 +1,7 @@
 """K 线形态趋势检测器：由实时成交聚合 1 分钟 K 线，再合成各周期 K 线，形态成立即提醒。
 
-每个周期各自独立：形态从不成立变为成立时提醒一次，持续成立期间不再提醒，
-形态被破坏后重新计算，再次成立就是新的一段。不同周期之间互不影响。
+每个周期各自独立：形态从不成立变为成立时提醒，持续成立期间每根周期 K 线收盘再报一条「延续」提醒
+（可关闭，关闭后同一段只报一次），形态被破坏后重新计算，再次成立就是新的一段。不同周期之间互不影响。
 
 对外接口与 ATR 异动检测器保持一致（add_symbol / add_tick / mark_stream_gap / resync_symbol 等），
 服务主循环因此不必知道它的存在；回放和模拟则直接喂已收盘的 1 分钟 K 线（add_candle）。
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from itertools import islice
@@ -35,6 +35,7 @@ class TrendOutcome(StrEnum):
     NO_DIRECTION = "no_direction"
     FAILED = "failed"
     CONTINUING = "continuing"
+    CONTINUING_ALERT = "continuing_alert"
     ALERT = "alert"
 
 
@@ -43,6 +44,7 @@ OUTCOME_LABELS: dict[TrendOutcome, str] = {
     TrendOutcome.NO_DIRECTION: "首尾价格相同",
     TrendOutcome.FAILED: "未满足形态条件",
     TrendOutcome.CONTINUING: "形态延续，本段已提醒",
+    TrendOutcome.CONTINUING_ALERT: "形态延续，延续提醒已发",
     TrendOutcome.ALERT: "提醒",
 }
 
@@ -108,6 +110,8 @@ class TrendDetector:
         self,
         rules: Sequence[TrendRule],
         observer: Callable[[TrendEvaluation], None] | None = None,
+        *,
+        alert_continuing: bool = True,
     ) -> None:
         if not rules:
             raise ValueError("至少需要一个趋势周期")
@@ -116,6 +120,7 @@ class TrendDetector:
         # 按周期从短到长排列，同一分钟多个周期都提醒时短周期在前。
         self.rules = tuple(sorted(rules, key=lambda rule: rule.minutes))
         self._observer = observer
+        self._alert_continuing = alert_continuing
         self._retention = max(rule.history_minutes for rule in self.rules)
         self._states: dict[str, _SymbolState] = {}
         # 每个合约各周期最近一次判定时形态成立的方向（不成立为 None）。不随合约移出而清除：
@@ -289,11 +294,16 @@ class TrendDetector:
                 evaluations.append(TrendEvaluation(symbol, rule.period, closed_at, TrendOutcome.FAILED, metrics))
                 continue
             holding[rule.period] = metrics.direction
-            evaluation = TrendEvaluation(symbol, rule.period, closed_at, TrendOutcome.ALERT, metrics)
-            if previous == metrics.direction:
-                # 上一根周期 K 线收盘时同方向形态就已成立，属于同一段走势的延续。
-                evaluation = replace(evaluation, outcome=TrendOutcome.CONTINUING)
+            # 上一根周期 K 线收盘时同方向形态就已成立，属于同一段走势的延续。
+            continuing = previous == metrics.direction
+            if not continuing:
+                outcome = TrendOutcome.ALERT
+            elif self._alert_continuing:
+                outcome = TrendOutcome.CONTINUING_ALERT
             else:
+                outcome = TrendOutcome.CONTINUING
+            evaluation = TrendEvaluation(symbol, rule.period, closed_at, outcome, metrics)
+            if outcome is not TrendOutcome.CONTINUING:
                 alerts.append(
                     TrendAlert(
                         symbol=symbol,
@@ -305,6 +315,7 @@ class TrendDetector:
                         metrics=metrics,
                         volume_24h_quote=state.volume_24h_quote,
                         price_decimals=state.price_decimals,
+                        continuing=continuing,
                     )
                 )
             evaluations.append(evaluation)

@@ -19,9 +19,11 @@ _FLAT_RANGE = 0.05
 
 def simulate_trend(config: TrendConfig) -> list[TrendAlert]:
     alerts: list[TrendAlert] = []
+    # 合成行情在趋势段结束前形态就可能已成立，延续提醒会让数量随周期参数浮动；这里只验证形态能否形成。
+    formation_only = config.model_copy(update={"alert_continuing": False})
     for rule in config.rules():
         # 每个周期用只含它自己的检测器：要验证的是这个周期的门槛能否被满足，不能让别的周期先提醒掩盖问题。
-        detector = build_trend_detector(config, rules=[rule])
+        detector = build_trend_detector(formation_only, rules=[rule])
         alerts.extend(_simulate_rule(detector, rule))
     return alerts
 

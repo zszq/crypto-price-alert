@@ -1,6 +1,7 @@
 """趋势提醒的数据模型与文本格式。
 
-只描述已经形成的健康单边走势，不预测后续：每个周期在形态新形成时提醒一次，形态被破坏后再成立才算新的一段。
+只描述已经形成的健康单边走势，不预测后续：每个周期在形态新形成时提醒，持续成立期间可再报「延续」提醒，
+形态被破坏后再成立才算新的一段。
 """
 
 from __future__ import annotations
@@ -28,6 +29,8 @@ class TrendAlert:
     metrics: PatternMetrics
     volume_24h_quote: float
     price_decimals: int | None = None
+    # 同一段走势在上一根周期 K 线收盘时就已成立，这条是它的延续，不是新形成的走势。
+    continuing: bool = False
 
     @property
     def color(self) -> Literal["green", "red"]:
@@ -35,7 +38,8 @@ class TrendAlert:
 
     @property
     def label(self) -> str:
-        return LABELS[self.direction]
+        label = LABELS[self.direction]
+        return f"{label}·延续" if self.continuing else label
 
     def to_dict(self) -> dict[str, object]:
         metrics = self.metrics
@@ -46,6 +50,7 @@ class TrendAlert:
             "direction": self.direction,
             "period": self.period,
             "candles": self.candles,
+            "continuing": self.continuing,
             "timestamp": self.timestamp.astimezone(UTC).isoformat(),
             "started_at": self.started_at.astimezone(UTC).isoformat(),
             "start_price": metrics.start_price,

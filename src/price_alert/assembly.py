@@ -65,7 +65,7 @@ def build_trend_detector(
     observer: Callable[[TrendEvaluation], None] | None = None,
 ) -> TrendDetector:
     # rules 覆盖配置中启用的周期，供 simulate 逐个周期单独验证。
-    return TrendDetector(config.rules() if rules is None else rules, observer)
+    return TrendDetector(config.rules() if rules is None else rules, observer, alert_continuing=config.alert_continuing)
 
 
 def build_detectors(config: AppConfig) -> list[MonitoredDetector]:

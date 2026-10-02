@@ -79,6 +79,8 @@ class TrendConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
+    # 形态持续成立时，每根周期 K 线收盘都再报一条「延续」提醒；关闭后同一段走势只在形成时报一次。
+    alert_continuing: bool = True
     periods: TrendPeriodsConfig = Field(default_factory=TrendPeriodsConfig)
 
     @model_validator(mode="after")
