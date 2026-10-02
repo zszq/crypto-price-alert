@@ -83,13 +83,65 @@ def test_doji_counts_as_counter_candle():
 
 
 def test_large_counter_candle_fails_rebound_even_if_count_is_allowed():
-    # 先跌 6%、一根大阳线反弹 4%、再跌到 -5%：反向 K 线只有一根，但它收复了大半跌幅。
-    bars = [(100, 100, 97, 97), (97, 97, 94, 94), (94, 98, 94, 98), (98, 98, 96, 96), (96, 96, 95, 95)]
+    # 先跌 6%、一根大阳线反弹 4%、再跌到 -8%：反向 K 线只有一根，之后也创了新低，但反弹幅度太大。
+    bars = [(100, 100, 97, 97), (97, 97, 94, 94), (94, 98, 94, 98), (98, 98, 93, 93), (93, 93, 92, 92)]
     metrics = evaluate_pattern(candles(*bars), rule())
 
     assert metrics is not None
     assert metrics.counter_candles == 1
     assert metrics.failures == (Condition.REBOUND,)
+
+
+@pytest.mark.parametrize(("next_close", "passed"), [(91.8, False), (91.0, False), (90.9, True)])
+def test_candle_after_counter_must_break_close_before_it(next_close, passed):
+    # 急跌两根后反弹一根：下一根只跌破反弹 K 线的收盘不够，要跌破反弹前的 91 才算重新推进，持平也不算。
+    bars = [
+        (100, 100, 95, 95),
+        (95, 95, 91, 91),
+        (91, 93, 91, 92.5),
+        (92.5, 92.5, next_close, next_close),
+        (next_close, next_close, 90.5, 90.6),
+    ]
+    metrics = evaluate_pattern(candles(*bars), rule())
+
+    assert metrics is not None
+    assert metrics.failures == (() if passed else (Condition.COUNTER_RECOVERY,))
+
+
+def test_consecutive_counter_candles_compare_with_close_before_the_run():
+    # 连续两根反弹算一段，基准是这段之前的 96，而不是第二根反弹的收盘 96.5。
+    def bars(next_close: float) -> list[Candle]:
+        return candles(
+            (100, 100, 96, 96),
+            (96, 96.5, 96, 96.3),
+            (96.3, 96.6, 96.3, 96.5),
+            (96.5, 96.5, next_close, next_close),
+            (next_close, next_close, 94, 94),
+        )
+
+    assert evaluate_pattern(bars(95.8), rule(max_counter_candles=2)).passed  # type: ignore[union-attr]
+    metrics = evaluate_pattern(bars(96.1), rule(max_counter_candles=2))
+    assert metrics is not None
+    assert metrics.failures == (Condition.COUNTER_RECOVERY,)
+
+
+def test_first_counter_candle_fails_edge():
+    bars = [(100, 100.5, 100, 100.3), (100.3, 100.3, 98, 98), (98, 98, 96, 96), (96, 96, 94, 94), (94, 94, 93, 93)]
+    metrics = evaluate_pattern(candles(*bars), rule())
+
+    assert metrics is not None
+    assert metrics.counter_candles == 1
+    assert metrics.failures == (Condition.COUNTER_EDGE,)
+
+
+def test_last_doji_fails_edge():
+    # 最后一根还在停顿，回调能否被收复未知，不算已形成的趋势。
+    bars = [(100, 100, 98, 98), (98, 98, 96, 96), (96, 96, 94, 94), (94, 94, 93, 93), (93, 93.2, 92.8, 93)]
+    metrics = evaluate_pattern(candles(*bars), rule())
+
+    assert metrics is not None
+    assert metrics.counter_candles == 1
+    assert metrics.failures == (Condition.COUNTER_EDGE,)
 
 
 def test_rise_above_start_counts_as_rebound():

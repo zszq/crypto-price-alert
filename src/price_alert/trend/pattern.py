@@ -1,8 +1,10 @@
 """K 线形态趋势判定：某个周期最近 N 根已收盘 K 线是否构成一段“健康”的单边走势。
 
-五个条件全部满足才算趋势：
+七个条件全部满足才算趋势：
 - 累计涨跌幅：第一根开盘到最后一根收盘达到门槛，过滤横盘里幅度很小的连阴连阳；
 - 反向 K 线根数：允许夹杂一两根反向 K 线（十字星也算），其余都要顺着趋势方向；
+- 首尾顺势：反向 K 线只能夹在中间，走势要以顺势 K 线开始、以顺势 K 线收尾；
+- 反向后突破：每段反向 K 线之后的下一根，收盘要突破反向之前那根的收盘价，回调后重新推进才算趋势延续；
 - 最大反弹比例：夹杂的反向 K 线只能是小幅回调，从滚动极值算起的反向回撤不能超过累计位移的一定比例；
 - 实体占比：整体上下影线不长，价格是一路推进而不是来回拉扯；
 - 单根占比：最大的一根顺势 K 线实体不能占累计位移太多，涨跌是几根 K 线共同推出来的，而不是一根急拉急砸。
@@ -61,6 +63,8 @@ class Condition(StrEnum):
 
     CHANGE = "change"
     COUNTER_CANDLES = "counter_candles"
+    COUNTER_EDGE = "counter_edge"
+    COUNTER_RECOVERY = "counter_recovery"
     REBOUND = "rebound"
     BODY = "body"
     SINGLE_CANDLE = "single_candle"
@@ -69,6 +73,8 @@ class Condition(StrEnum):
 CONDITION_LABELS: dict[Condition, str] = {
     Condition.CHANGE: "累计幅度不足",
     Condition.COUNTER_CANDLES: "反向 K 线过多",
+    Condition.COUNTER_EDGE: "首尾 K 线反向",
+    Condition.COUNTER_RECOVERY: "反向 K 线后未突破前收盘",
     Condition.REBOUND: "反弹过大",
     Condition.BODY: "实体占比不足（影线过长）",
     Condition.SINGLE_CANDLE: "单根 K 线占比过大",
@@ -107,7 +113,8 @@ def evaluate_pattern(window: Sequence[Candle], rule: TrendRule) -> PatternMetric
     sign = 1.0 if direction == "surge" else -1.0
 
     # 十字星没有方向，同样算作反向：健康的趋势应当每一根都在推进。
-    counter_candles = sum(1 for candle in window if sign * (candle.close - candle.open) <= 0)
+    counter_flags = [sign * (candle.close - candle.open) <= 0 for candle in window]
+    counter_candles = sum(counter_flags)
     extreme = start
     max_rebound = 0.0
     for candle in window:
@@ -127,6 +134,11 @@ def evaluate_pattern(window: Sequence[Candle], rule: TrendRule) -> PatternMetric
         failures.append(Condition.CHANGE)
     if counter_candles > rule.max_counter_candles:
         failures.append(Condition.COUNTER_CANDLES)
+    # 第一根反向说明走势还没开始，最后一根反向说明正在回调、能否收复未知，都不算已形成的趋势。
+    if counter_flags[0] or counter_flags[-1]:
+        failures.append(Condition.COUNTER_EDGE)
+    if not _recovered_after_counter(window, counter_flags, sign):
+        failures.append(Condition.COUNTER_RECOVERY)
     if rebound_ratio > rule.max_rebound_ratio:
         failures.append(Condition.REBOUND)
     if body_ratio < rule.min_body_ratio:
@@ -145,6 +157,26 @@ def evaluate_pattern(window: Sequence[Candle], rule: TrendRule) -> PatternMetric
         single_candle_ratio=single_candle_ratio,
         failures=tuple(failures),
     )
+
+
+def _recovered_after_counter(window: Sequence[Candle], counter_flags: Sequence[bool], sign: float) -> bool:
+    """每段反向 K 线之后的下一根，收盘是否都突破了这段反向之前的收盘价。
+
+    只比反向 K 线自己的收盘太宽松：先急跌两根、反弹一根、再小跌一根也能过，实际是急跌后的横盘。
+    要求越过反向之前的收盘价，才说明回调之后价格重新推进。连续几根反向 K 线算一段，
+    下一根指这段之后的第一根顺势 K 线。首尾的反向 K 线由 COUNTER_EDGE 单独判定，这里只看有前有后的。
+    """
+    # 当前这段反向 K 线之前的收盘价；None 表示不在反向段中。
+    reference: float | None = None
+    for index in range(1, len(window)):
+        if counter_flags[index]:
+            if reference is None:
+                reference = window[index - 1].close
+        elif reference is not None:
+            if sign * (window[index].close - reference) <= 0:
+                return False
+            reference = None
+    return True
 
 
 def aggregate_candles(minutes: Sequence[Candle], period_minutes: int) -> list[Candle]:
