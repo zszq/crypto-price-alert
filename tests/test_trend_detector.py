@@ -19,7 +19,8 @@ def rule(period="1m", **overrides) -> TrendRule:
         "max_counter_candles": 1,
         "max_rebound_ratio": 0.3,
         "min_body_ratio": 0.5,
-        # 默认不限制单根占比，各用例只验证自己关心的条件；单根占比由专门的用例覆盖。
+        # 默认不限制单根实体与单根占比，各用例只验证自己关心的条件；这两项由专门的用例覆盖。
+        "min_candle_body_ratio": 0.0,
         "max_single_candle_ratio": 1.0,
     }
     return TrendRule(**(values | overrides))

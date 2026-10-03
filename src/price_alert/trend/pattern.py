@@ -2,7 +2,8 @@
 
 七个条件全部满足才算趋势：
 - 累计涨跌幅：第一根开盘到最后一根收盘达到门槛，过滤横盘里幅度很小的连阴连阳；
-- 反向 K 线根数：允许夹杂一两根反向 K 线（十字星也算），其余都要顺着趋势方向；
+- 反向 K 线根数：允许夹杂一两根反向 K 线，其余都要顺着趋势方向；实体占本根振幅不足门槛的
+  小实体 K 线（十字星、长影线）没有推进价格，同样算反向；
 - 首尾顺势：反向 K 线只能夹在中间，走势要以顺势 K 线开始、以顺势 K 线收尾；
 - 反向后突破：每段反向 K 线之后的下一根，收盘要突破反向之前那根的收盘价，回调后重新推进才算趋势延续；
 - 最大反弹比例：夹杂的反向 K 线只能是小幅回调，从滚动极值算起的反向回撤不能超过累计位移的一定比例；
@@ -37,6 +38,7 @@ class TrendRule:
     max_counter_candles: int
     max_rebound_ratio: float
     min_body_ratio: float
+    min_candle_body_ratio: float
     max_single_candle_ratio: float
 
     def __post_init__(self) -> None:
@@ -112,8 +114,7 @@ def evaluate_pattern(window: Sequence[Candle], rule: TrendRule) -> PatternMetric
     # sign 把下跌翻成上涨来计算，两个方向共用同一套公式。
     sign = 1.0 if direction == "surge" else -1.0
 
-    # 十字星没有方向，同样算作反向：健康的趋势应当每一根都在推进。
-    counter_flags = [sign * (candle.close - candle.open) <= 0 for candle in window]
+    counter_flags = [_is_counter(candle, sign, rule.min_candle_body_ratio) for candle in window]
     counter_candles = sum(counter_flags)
     extreme = start
     max_rebound = 0.0
@@ -157,6 +158,17 @@ def evaluate_pattern(window: Sequence[Candle], rule: TrendRule) -> PatternMetric
         single_candle_ratio=single_candle_ratio,
         failures=tuple(failures),
     )
+
+
+def _is_counter(candle: Candle, sign: float, min_candle_body_ratio: float) -> bool:
+    """反向或没有推进价格的 K 线。
+
+    健康的趋势应当每一根都在推进：十字星和长影线小实体 K 线虽然收在顺势一侧，但价格在这根里来回拉扯，
+    整体实体占比按窗口合计，会被其他大实体 K 线摊薄，所以逐根判定。
+    """
+    body = sign * (candle.close - candle.open)
+    # body > 0 时振幅必然大于 0，用乘法比较免去除零判断。
+    return body <= 0 or body < min_candle_body_ratio * (candle.high - candle.low)
 
 
 def _recovered_after_counter(window: Sequence[Candle], counter_flags: Sequence[bool], sign: float) -> bool:

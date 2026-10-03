@@ -73,7 +73,8 @@ def describe_period(period: PeriodName) -> str:
 def describe_trend_rule(rule: TrendRule) -> str:
     return (
         f"趋势 {describe_period(rule.period)}：最近 {rule.candles} 根累计涨跌 ≥ {rule.min_change_percent:g}%，"
-        f"反向 K 线 ≤ {rule.max_counter_candles} 根，最大反弹 ≤ {rule.max_rebound_ratio:.0%}，"
+        f"反向 K 线 ≤ {rule.max_counter_candles} 根（单根实体 < {rule.min_candle_body_ratio:.0%} 也算），"
+        f"最大反弹 ≤ {rule.max_rebound_ratio:.0%}，"
         f"实体占比 ≥ {rule.min_body_ratio:.0%}，单根占比 ≤ {rule.max_single_candle_ratio:.0%}"
     )
 
@@ -86,11 +87,11 @@ def format_change(alert: TrendAlert) -> str:
 def format_trend_alert(alert: TrendAlert) -> str:
     metrics = alert.metrics
     move = "上涨" if alert.direction == "surge" else "下跌"
-    candle_word = "阳线" if alert.direction == "surge" else "阴线"
     start = format_price(metrics.start_price, alert.price_decimals)
     price = format_price(metrics.end_price, alert.price_decimals)
     details = (
-        f"{candle_word} {alert.candles - metrics.counter_candles}/{alert.candles}"
+        # 小实体 K 线即使收在顺势一侧也计入反向，按阴阳线称呼会出现「五根全阴却显示 4/5」。
+        f"顺势 {alert.candles - metrics.counter_candles}/{alert.candles}"
         f" · 最大反弹 {metrics.rebound_ratio:.0%} · 实体占比 {metrics.body_ratio:.0%}"
         f" · 单根占比 {metrics.single_candle_ratio:.0%}"
     )

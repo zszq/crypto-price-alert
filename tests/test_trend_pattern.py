@@ -16,7 +16,8 @@ def rule(**overrides) -> TrendRule:
         "max_counter_candles": 1,
         "max_rebound_ratio": 0.3,
         "min_body_ratio": 0.5,
-        # 默认不限制单根占比，各用例只验证自己关心的条件；单根占比由专门的用例覆盖。
+        # 默认不限制单根实体与单根占比，各用例只验证自己关心的条件；这两项由专门的用例覆盖。
+        "min_candle_body_ratio": 0.0,
         "max_single_candle_ratio": 1.0,
     }
     return TrendRule(**(values | overrides))
@@ -61,6 +62,34 @@ def test_one_small_counter_candle_is_tolerated():
     assert metrics is not None and metrics.passed
     assert metrics.counter_candles == 1
     assert metrics.rebound_ratio == pytest.approx(0.6 / 8)
+
+
+# 振幅 1、门槛 0.25，取二进制能精确表示的数，边界比较不受浮点误差影响。
+@pytest.mark.parametrize(("body", "counter"), [(0.125, True), (0.25, False)])
+def test_small_body_candle_counts_as_counter(body, counter):
+    # 第三根收阴但实体只占振幅的一小部分，价格在这根里来回拉扯，没有推进；恰好等于门槛不算。
+    bars = [(100, 100, 98, 98), (98, 98, 96, 96), (96, 96.5, 95.5, 96 - body), (95.5, 95.5, 94, 94), (94, 94, 92, 92)]
+    metrics = evaluate_pattern(candles(*bars), rule(min_candle_body_ratio=0.25))
+
+    assert metrics is not None
+    assert metrics.counter_candles == int(counter)
+
+
+def test_stalled_tail_fails_although_every_candle_closes_down():
+    # 三根大阴线跌了 15%，最后两根长下影线小阴线：整体实体占比仍过线，逐根看走势已经停滞。
+    bars = [
+        (100, 100.5, 95, 95.5),
+        (95.5, 95.6, 90.5, 90.8),
+        (90.8, 90.9, 86, 86.4),
+        (86.4, 86.6, 82, 86),
+        (86, 87.2, 85, 85.8),
+    ]
+
+    assert evaluate_pattern(candles(*bars), rule()).passed  # type: ignore[union-attr]
+    metrics = evaluate_pattern(candles(*bars), rule(min_candle_body_ratio=0.3))
+    assert metrics is not None
+    assert metrics.counter_candles == 2
+    assert metrics.failures == (Condition.COUNTER_CANDLES, Condition.COUNTER_EDGE)
 
 
 def test_too_many_counter_candles_fail():

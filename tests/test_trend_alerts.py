@@ -46,12 +46,12 @@ ALERT = TrendAlert(
 def test_alert_text_lists_every_condition():
     assert format_trend_alert(ALERT) == (
         "[趋势下跌] 2026-09-30 22:17:00 | ARK_USDT | 1分钟K线 8 根持续下跌，累计下跌 8.04%（自 22:09 起）"
-        " | 0.4129 → 0.3797 | 阴线 7/8 · 最大反弹 8% · 实体占比 58% · 单根占比 31%"
+        " | 0.4129 → 0.3797 | 顺势 7/8 · 最大反弹 8% · 实体占比 58% · 单根占比 31%"
     )
     surge = replace(ALERT, direction="surge", period="15m", metrics=replace(METRICS, direction="surge"))
     text = format_trend_alert(surge)
     assert text.startswith("[趋势上涨]")
-    assert "15分钟K线 8 根持续上涨" in text and "阳线 7/8" in text
+    assert "15分钟K线 8 根持续上涨" in text and "顺势 7/8" in text
 
 
 def test_to_dict_is_json_ready_and_tagged_as_trend():
@@ -88,10 +88,11 @@ def test_jsonl_writes_trend_alert(tmp_path):
 
 
 def test_describe_rule():
-    rule = TrendRule("5m", 4, 6.0, 1, 0.3, 0.5, 0.5)
+    rule = TrendRule("5m", 4, 6.0, 1, 0.3, 0.5, 0.3, 0.5)
 
     assert describe_trend_rule(rule) == (
-        "趋势 5分钟K线：最近 4 根累计涨跌 ≥ 6%，反向 K 线 ≤ 1 根，最大反弹 ≤ 30%，实体占比 ≥ 50%，单根占比 ≤ 50%"
+        "趋势 5分钟K线：最近 4 根累计涨跌 ≥ 6%，反向 K 线 ≤ 1 根（单根实体 < 30% 也算），最大反弹 ≤ 30%，"
+        "实体占比 ≥ 50%，单根占比 ≤ 50%"
     )
 
 

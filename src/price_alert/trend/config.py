@@ -22,6 +22,9 @@ class TrendPeriodConfig(BaseModel):
     max_counter_candles: int = Field(ge=0, le=59)
     max_rebound_ratio: float = Field(default=0.3, ge=0, le=1)
     min_body_ratio: float = Field(default=0.5, ge=0, le=1)
+    # 单根顺势 K 线实体 ÷ 本根振幅的下限，不足的视为十字星、算作反向 K 线：整体实体占比按窗口合计，
+    # 几根大实体会把末尾停滞的十字星、长影线摊薄，需要逐根约束。
+    min_candle_body_ratio: float = Field(default=0.3, ge=0, le=1)
     # 最大一根顺势 K 线实体 ÷ 累计位移的上限：排除一根急拉急砸加几根小 K 线凑出来的“趋势”。
     max_single_candle_ratio: float = Field(default=0.5, gt=0, le=1)
 
@@ -39,6 +42,7 @@ class TrendPeriodConfig(BaseModel):
             max_counter_candles=self.max_counter_candles,
             max_rebound_ratio=self.max_rebound_ratio,
             min_body_ratio=self.min_body_ratio,
+            min_candle_body_ratio=self.min_candle_body_ratio,
             max_single_candle_ratio=self.max_single_candle_ratio,
         )
 
