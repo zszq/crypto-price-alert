@@ -201,7 +201,7 @@ trend:
       # 默认：0.3
       max_rebound_ratio: 0.3
       # 默认：0.5
-      min_body_ratio: 0.5
+      min_body_ratio: 0.6
       # 默认：0.3
       min_candle_body_ratio: 0.3
       # 默认：0.5
@@ -218,7 +218,7 @@ trend:
       # 默认：0.3
       max_rebound_ratio: 0.3
       # 默认：0.5
-      min_body_ratio: 0.5
+      min_body_ratio: 0.6
       # 默认：0.3
       min_candle_body_ratio: 0.3
       # 默认：0.5
