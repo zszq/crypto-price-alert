@@ -16,7 +16,6 @@ from price_alert.replay import (
     render_replay,
     run_replay,
 )
-from price_alert.windows import Outcome
 
 START = datetime(2026, 9, 29, 9, 27, tzinfo=BEIJING_TIME)
 END = datetime(2026, 9, 29, 9, 30, tzinfo=BEIJING_TIME)
@@ -80,15 +79,11 @@ def test_run_replay_reproduces_alert_and_explains_each_second():
     result = run_replay(AppConfig(), plan, data)
 
     assert result.warmup_candles == 50
-    assert [alert.window for alert in result.alerts] == ["short"]
-    assert result.alerts[0].price_decimals == 2
+    # 两个窗口互不影响，同一秒都满足时各报一条。
+    assert [alert.window for alert in result.alerts] == ["short", "long"]
+    assert result.alerts[0].timestamp == result.alerts[1].timestamp
+    assert all(alert.price_decimals == 2 for alert in result.alerts)
     assert all(START <= item.second <= END for item in result.evaluations)
-    # 同一秒长窗口也满足，但只发一条，长窗口记为被短窗口抢先。
-    alert_second = next(item.second for item in result.evaluations if item.outcome is Outcome.ALERT)
-    assert any(
-        item.window == "long" and item.second == alert_second and item.outcome is Outcome.SUPERSEDED
-        for item in result.evaluations
-    )
 
 
 def test_render_lists_alerts_rules_and_threshold_rows():
@@ -96,7 +91,7 @@ def test_render_lists_alerts_rules_and_threshold_rows():
     text = "\n".join(render_replay(run_replay(AppConfig(), plan, data)))
 
     assert "回放 QNT_USDT：2026-09-29 09:27:00 ～ 2026-09-29 09:30:00" in text
-    assert "提醒 1 条" in text
+    assert "提醒 2 条" in text
     assert "短窗口：30秒内涨跌 ≥ 1% 且 ≥ 1.5 ATR" in text
     assert "长窗口：3分钟内涨跌 ≥ 2% 且 ≥ 2 ATR" in text
     assert "最接近触发" in text
@@ -144,7 +139,7 @@ def test_run_replay_settles_last_second_with_late_trade():
 
     result = run_replay(AppConfig(), plan, ReplayData(flat_candles(plan), [*tail_jump_trades(plan), late]))
 
-    assert [alert.window for alert in result.alerts] == ["short"]
+    assert [alert.window for alert in result.alerts] == ["short", "long"]
     assert result.unsettled_second is None
     assert not any(line.startswith("注意：结果不完整") for line in render_replay(result))
 

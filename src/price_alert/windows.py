@@ -71,7 +71,6 @@ class Outcome(StrEnum):
     CARRIED = "carried"
     MOVE_FADED = "move_faded"
     COOLDOWN = "cooldown"
-    SUPERSEDED = "superseded"
     ALERT = "alert"
 
 
@@ -85,7 +84,6 @@ OUTCOME_LABELS: dict[Outcome, str] = {
     Outcome.CARRIED: "确认已满但为无成交补齐秒",
     Outcome.MOVE_FADED: "空档后复核：异动已消退",
     Outcome.COOLDOWN: "冷却中",
-    Outcome.SUPERSEDED: "同一秒已由其他窗口提醒",
     Outcome.ALERT: "提醒",
 }
 

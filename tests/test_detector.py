@@ -499,7 +499,7 @@ def test_slow_grind_is_caught_by_long_window_only():
     assert alerts[0].change_percent == pytest.approx(2.4 / 100.06 * 100)
 
 
-def test_short_window_wins_when_both_windows_fire_in_the_same_second():
+def test_both_windows_alert_in_the_same_second_independently():
     evaluations = []
     instance = detector(long_window(), observer=evaluations.append)
     instance.add_symbol("BTC_USDT", history(1.0), 1_000_000_000)
@@ -507,15 +507,31 @@ def test_short_window_wins_when_both_windows_fire_in_the_same_second():
     prices = {second: 100.0 for second in range(41)} | {second: 103.0 for second in range(41, 90)}
     alerts = feed_prices(instance, "BTC_USDT", prices)
 
-    # 同一段跳涨只提醒一次，由更紧迫的短窗口发出；长窗口在自己的冷却内不会把同一段行情再报一次。
-    assert [alert.window for alert in alerts] == ["short"]
-    fired_second = next(item.second for item in evaluations if item.outcome is Outcome.ALERT)
-    long_outcomes = {item.outcome for item in evaluations if item.window == "long"}
-    assert any(
-        item.window == "long" and item.second == fired_second and item.outcome is Outcome.SUPERSEDED
-        for item in evaluations
+    # 两个窗口互不影响：同一秒都满足就各报一条，短窗口在前；之后长窗口在自己的冷却内不再重复报这段行情。
+    assert [alert.window for alert in alerts] == ["short", "long"]
+    assert alerts[0].timestamp == alerts[1].timestamp
+    assert Outcome.COOLDOWN in {item.outcome for item in evaluations if item.window == "long"}
+
+
+def test_short_alerts_do_not_extend_long_cooldown():
+    instance = AtrMoveDetector(
+        atr_period=3,
+        candle_interval_seconds=60,
+        max_atr_age_seconds=180,
+        windows=[short_window(cooldown_seconds=10), long_window()],
     )
-    assert Outcome.COOLDOWN in long_outcomes
+    instance.add_symbol("BTC_USDT", history(1.0), 1_000_000_000)
+
+    # 第 41 秒跳到 103，两个窗口在第 43 秒各报一条；第 69~70 秒的尖刺让短窗口在第 71、81 秒又报两条，
+    # 第 95 秒再涨到 106。长窗口的冷却只从它自己第 43 秒的提醒算起，第 97 秒照常提醒；
+    # 若被短窗口第 81 秒的提醒续上，要到第 121 秒才能再报。
+    prices = {second: 100.0 for second in range(41)} | {second: 103.0 for second in range(41, 95)}
+    prices |= {69: 104.5, 70: 104.5} | {second: 106.0 for second in range(95, 100)}
+    alerts = feed_prices(instance, "BTC_USDT", prices)
+
+    start = BASE + timedelta(minutes=3)
+    fired = [(alert.window, int((alert.timestamp - start).total_seconds())) for alert in alerts]
+    assert fired == [("short", 43), ("long", 43), ("short", 71), ("short", 81), ("short", 97), ("long", 97)]
 
 
 def test_long_cooldown_does_not_delay_a_new_short_move():

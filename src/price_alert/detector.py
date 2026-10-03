@@ -11,7 +11,7 @@ from typing import Literal
 
 from price_alert.indicators import WilderAtr
 from price_alert.models import Candle, PriceAlert, PriceTick
-from price_alert.windows import MoveWindow, Outcome, WindowEvaluation
+from price_alert.windows import MoveWindow, Outcome, WindowEvaluation, WindowName
 
 # 基准桶允许比目标时刻早的秒数：成交稀疏时恰好落在目标秒上的桶未必存在，差一两秒不影响位移的含义。
 BASELINE_TOLERANCE_SECONDS = 2
@@ -140,7 +140,7 @@ class AtrMoveDetector:
         self.atr_period = atr_period
         self.candle_interval_seconds = candle_interval_seconds
         self.max_atr_age = timedelta(seconds=max_atr_age_seconds)
-        # 顺序即优先级：同一秒多个窗口同时满足时只发排在前面的那个，避免同一行情连发两条。
+        # 各窗口判定与冷却互不影响；顺序只决定同一秒多个窗口都提醒时的输出先后。
         self.windows = tuple(windows)
         self._observer = observer
         self._cooldowns = tuple(timedelta(seconds=window.cooldown_seconds) for window in self.windows)
@@ -151,7 +151,8 @@ class AtrMoveDetector:
         self._fill_limit = min(window.lookback_seconds for window in self.windows)
         self._candle_interval = timedelta(seconds=candle_interval_seconds)
         self._states: dict[str, _SymbolState] = {}
-        self._last_alert: dict[str, datetime] = {}
+        # 按（合约, 窗口）记录上次提醒：短窗口频繁提醒不能把长窗口的冷却一直续上。
+        self._last_alert: dict[tuple[str, WindowName], datetime] = {}
 
     @property
     def symbols(self) -> list[str]:
@@ -335,9 +336,7 @@ class AtrMoveDetector:
         oldest_required = bucket.timestamp - self._retention
         while len(state.buckets) > 2 and state.buckets[1].timestamp <= oldest_required:
             state.buckets.popleft()
-        alert = self._evaluate(symbol, state, bucket, timestamp, latest_price, atr)
-        if alert is not None:
-            alerts.append(alert)
+        alerts.extend(self._evaluate(symbol, state, bucket, timestamp, latest_price, atr))
 
     def _atr_before(
         self,
@@ -409,36 +408,33 @@ class AtrMoveDetector:
         timestamp: datetime,
         latest_price: float | None,
         atr_state: WilderAtr | None,
-    ) -> PriceAlert | None:
-        """在所有窗口上评估一个已结束的秒，再统一裁决冷却与多窗口同时满足的情况。"""
+    ) -> list[PriceAlert]:
+        """在所有窗口上评估一个已结束的秒；各窗口的冷却与确认进度互不影响，同一秒可以各报一条。"""
         evaluations = [
             self._evaluate_window(symbol, state, window, candidate, current, latest_price, atr_state)
             for window, candidate in zip(self.windows, state.candidates, strict=True)
         ]
 
-        alert: PriceAlert | None = None
-        previous_alert = self._last_alert.get(symbol)
+        alerts: list[PriceAlert] = []
         for index, evaluation in enumerate(evaluations):
             if evaluation.outcome is not Outcome.ALERT:
                 continue
-            if alert is not None:
-                evaluations[index] = replace(evaluation, outcome=Outcome.SUPERSEDED)
-            elif previous_alert is not None and timestamp - previous_alert < self._cooldowns[index]:
-                # 冷却按合约共享“上次提醒时间”、按窗口各自计时长：长窗口的冷却须覆盖它自己的观察窗口，
-                # 否则同一段行情会在窗口滑过期间被它反复报出，而短窗口的提醒又不该被长冷却拖住。
+            window = self.windows[index]
+            key = (symbol, window.name)
+            previous_alert = self._last_alert.get(key)
+            # 冷却只看本窗口自己的上次提醒：长窗口的冷却覆盖它自己的观察窗口，避免同一段行情在窗口滑过期间
+            # 被它反复报出；另一个窗口的提醒既不续上本窗口的冷却，也不清空本窗口的确认进度。
+            if previous_alert is not None and timestamp - previous_alert < self._cooldowns[index]:
                 evaluations[index] = replace(evaluation, outcome=Outcome.COOLDOWN)
-                state.candidates[index].reset()
             else:
-                alert = self._build_alert(symbol, state, self.windows[index], evaluation, timestamp)
+                alerts.append(self._build_alert(symbol, state, window, evaluation, timestamp))
+                self._last_alert[key] = timestamp
+            state.candidates[index].reset()
 
-        if alert is not None:
-            self._last_alert[symbol] = timestamp
-            for candidate in state.candidates:
-                candidate.reset()
         if self._observer is not None:
             for evaluation in evaluations:
                 self._observer(evaluation)
-        return alert
+        return alerts
 
     def _evaluate_window(
         self,
@@ -454,7 +450,7 @@ class AtrMoveDetector:
 
         atr_state 由调用方按这一秒所在周期选定，不能直接用 state.atr：结算可能晚于下一周期开始；
         为 None 表示这一秒没有对应周期的 ATR 可用。
-        返回 ALERT 只表示窗口本身的条件全部满足，冷却与多窗口裁决由调用方处理。
+        返回 ALERT 只表示窗口本身的条件全部满足，冷却由调用方处理。
         """
 
         def result(outcome: Outcome, atr: float | None = None) -> WindowEvaluation:

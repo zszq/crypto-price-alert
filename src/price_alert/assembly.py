@@ -19,7 +19,7 @@ from price_alert.windows import MoveWindow, WindowEvaluation, WindowName
 
 
 def build_windows(config: AppConfig, cooldown_seconds: int | None = None) -> list[MoveWindow]:
-    """按配置生成观察窗口，短窗口在前：同一秒两个窗口都满足时优先发更紧迫的短窗口提醒。
+    """按配置生成观察窗口，短窗口在前：同一秒两个窗口都提醒时，更紧迫的短窗口提醒排在前面。
 
     cooldown_seconds 覆盖全部窗口的冷却，供 simulate 这类不需要冷却的场景使用。
     """

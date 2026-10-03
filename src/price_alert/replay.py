@@ -37,7 +37,7 @@ SETTLE_MARGIN = timedelta(seconds=10)
 SETTLE_SEARCH_LIMIT = timedelta(hours=1)
 # 这些结果说明窗口已经进入或越过门槛判定，默认输出只列它们，其余秒只计入统计。
 _NOTABLE_OUTCOMES = frozenset(
-    {Outcome.CONFIRMING, Outcome.CARRIED, Outcome.MOVE_FADED, Outcome.COOLDOWN, Outcome.SUPERSEDED, Outcome.ALERT}
+    {Outcome.CONFIRMING, Outcome.CARRIED, Outcome.MOVE_FADED, Outcome.COOLDOWN, Outcome.ALERT}
 )
 
 
