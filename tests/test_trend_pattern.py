@@ -16,7 +16,7 @@ def rule(**overrides) -> TrendRule:
         "max_counter_candles": 1,
         "max_rebound_ratio": 0.3,
         "min_body_ratio": 0.5,
-        # 默认不限制单根实体与单根占比，各用例只验证自己关心的条件；这两项由专门的用例覆盖。
+        # 默认不限制单根实体占比与最大实体占比，各用例只验证自己关心的条件；这两项由专门的用例覆盖。
         "min_candle_body_ratio": 0.0,
         "max_single_candle_ratio": 1.0,
     }
@@ -76,7 +76,7 @@ def test_small_body_candle_counts_as_counter(body, counter):
 
 
 def test_stalled_tail_fails_although_every_candle_closes_down():
-    # 三根大阴线跌了 15%，最后两根长下影线小阴线：整体实体占比仍过线，逐根看走势已经停滞。
+    # 三根大阴线跌了 15%，最后两根长下影线小阴线：总实体占比仍过线，逐根看走势已经停滞。
     bars = [
         (100, 100.5, 95, 95.5),
         (95.5, 95.6, 90.5, 90.8),

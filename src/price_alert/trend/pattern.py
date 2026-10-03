@@ -7,8 +7,8 @@
 - 首尾顺势：反向 K 线只能夹在中间，走势要以顺势 K 线开始、以顺势 K 线收尾；
 - 反向后突破：每段反向 K 线之后的下一根，收盘要突破反向之前那根的收盘价，回调后重新推进才算趋势延续；
 - 最大反弹比例：夹杂的反向 K 线只能是小幅回调，从滚动极值算起的反向回撤不能超过累计位移的一定比例；
-- 实体占比：整体上下影线不长，价格是一路推进而不是来回拉扯；
-- 单根占比：最大的一根顺势 K 线实体不能占累计位移太多，涨跌是几根 K 线共同推出来的，而不是一根急拉急砸。
+- 总实体占比：整体上下影线不长，价格是一路推进而不是来回拉扯；
+- 最大实体占比：最大的一根顺势 K 线实体不能占累计位移太多，涨跌是几根 K 线共同推出来的，而不是一根急拉急砸。
 
 本模块只有纯函数，实时检测、回放与模拟共用同一份判定。
 """
@@ -78,8 +78,8 @@ CONDITION_LABELS: dict[Condition, str] = {
     Condition.COUNTER_EDGE: "首尾 K 线反向",
     Condition.COUNTER_RECOVERY: "反向 K 线后未突破前收盘",
     Condition.REBOUND: "反弹过大",
-    Condition.BODY: "实体占比不足（影线过长）",
-    Condition.SINGLE_CANDLE: "单根 K 线占比过大",
+    Condition.BODY: "总实体占比不足（影线过长）",
+    Condition.SINGLE_CANDLE: "最大实体占比过大",
 }
 
 
@@ -119,7 +119,7 @@ def evaluate_pattern(window: Sequence[Candle], rule: TrendRule) -> PatternMetric
     extreme = start
     max_rebound = 0.0
     for candle in window:
-        # 反弹只看收盘价：盘中影线已由实体占比约束，收盘才代表这一根的定价。
+        # 反弹只看收盘价：盘中影线已由总实体占比约束，收盘才代表这一根的定价。
         max_rebound = max(max_rebound, sign * (extreme - candle.close))
         if sign * (candle.close - extreme) > 0:
             extreme = candle.close
@@ -164,7 +164,7 @@ def _is_counter(candle: Candle, sign: float, min_candle_body_ratio: float) -> bo
     """反向或没有推进价格的 K 线。
 
     健康的趋势应当每一根都在推进：十字星和长影线小实体 K 线虽然收在顺势一侧，但价格在这根里来回拉扯，
-    整体实体占比按窗口合计，会被其他大实体 K 线摊薄，所以逐根判定。
+    总实体占比按窗口合计，会被其他大实体 K 线摊薄，所以逐根判定。
     """
     body = sign * (candle.close - candle.open)
     # body > 0 时振幅必然大于 0，用乘法比较免去除零判断。

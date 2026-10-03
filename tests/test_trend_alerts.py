@@ -46,7 +46,7 @@ ALERT = TrendAlert(
 def test_alert_text_lists_every_condition():
     assert format_trend_alert(ALERT) == (
         "[趋势下跌] 2026-09-30 22:17:00 | ARK_USDT | 1分钟K线 8 根持续下跌，累计下跌 8.04%（自 22:09 起）"
-        " | 0.4129 → 0.3797 | 顺势 7/8 · 最大反弹 8% · 实体占比 58% · 单根占比 31%"
+        " | 0.4129 → 0.3797 | 顺势 7/8 · 最大反弹 8% · 总实体占比 58% · 最大实体占比 31%"
     )
     surge = replace(ALERT, direction="surge", period="15m", metrics=replace(METRICS, direction="surge"))
     text = format_trend_alert(surge)
@@ -92,8 +92,10 @@ def test_describe_rule():
 
     assert describe_trend_rule(rule) == (
         "趋势 5分钟K线：最近 4 根累计涨跌 ≥ 6%，反向 K 线 ≤ 1 根（单根实体 < 30% 也算），最大反弹 ≤ 30%，"
-        "实体占比 ≥ 50%，单根占比 ≤ 50%"
+        "总实体占比 ≥ 50%，最大实体占比 ≤ 50%"
     )
+    # 不限制单根实体时不附带说明。
+    assert "反向 K 线 ≤ 1 根，最大反弹" in describe_trend_rule(replace(rule, min_candle_body_ratio=0.0))
 
 
 def test_continuing_alert_is_labelled_in_text_color_and_payload():

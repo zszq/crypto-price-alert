@@ -71,11 +71,13 @@ def describe_period(period: PeriodName) -> str:
 
 
 def describe_trend_rule(rule: TrendRule) -> str:
+    # 0 表示不限制单根实体，此时只有真正反向的 K 线算反向，不写「< 0% 也算」这种无意义的说明。
+    small_body = f"（单根实体 < {rule.min_candle_body_ratio:.0%} 也算）" if rule.min_candle_body_ratio > 0 else ""
     return (
         f"趋势 {describe_period(rule.period)}：最近 {rule.candles} 根累计涨跌 ≥ {rule.min_change_percent:g}%，"
-        f"反向 K 线 ≤ {rule.max_counter_candles} 根（单根实体 < {rule.min_candle_body_ratio:.0%} 也算），"
+        f"反向 K 线 ≤ {rule.max_counter_candles} 根{small_body}，"
         f"最大反弹 ≤ {rule.max_rebound_ratio:.0%}，"
-        f"实体占比 ≥ {rule.min_body_ratio:.0%}，单根占比 ≤ {rule.max_single_candle_ratio:.0%}"
+        f"总实体占比 ≥ {rule.min_body_ratio:.0%}，最大实体占比 ≤ {rule.max_single_candle_ratio:.0%}"
     )
 
 
@@ -92,8 +94,8 @@ def format_trend_alert(alert: TrendAlert) -> str:
     details = (
         # 小实体 K 线即使收在顺势一侧也计入反向，按阴阳线称呼会出现「五根全阴却显示 4/5」。
         f"顺势 {alert.candles - metrics.counter_candles}/{alert.candles}"
-        f" · 最大反弹 {metrics.rebound_ratio:.0%} · 实体占比 {metrics.body_ratio:.0%}"
-        f" · 单根占比 {metrics.single_candle_ratio:.0%}"
+        f" · 最大反弹 {metrics.rebound_ratio:.0%} · 总实体占比 {metrics.body_ratio:.0%}"
+        f" · 最大实体占比 {metrics.single_candle_ratio:.0%}"
     )
     return (
         f"[{alert.label}] {beijing_time(alert.timestamp)} | {alert.symbol} | "
