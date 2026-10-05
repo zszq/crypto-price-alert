@@ -4,6 +4,7 @@ from pydantic import ValidationError
 from price_alert.assembly import build_detectors, build_trend_detector
 from price_alert.config import AppConfig, load_config
 from price_alert.trend.config import TrendConfig
+from price_alert.universe import VolumeRange
 
 
 def test_defaults_enable_three_periods_with_period_specific_thresholds():
@@ -75,6 +76,29 @@ def test_disabled_trend_is_not_built_into_monitor():
     assert [entry.name for entry in build_detectors(AppConfig())] == ["ATR 异动", "K 线趋势"]
     disabled = AppConfig.model_validate({"trend": {"enabled": False}})
     assert [entry.name for entry in build_detectors(disabled)] == ["ATR 异动"]
+
+
+def test_trend_volume_range_is_configured_separately_from_atr():
+    config = AppConfig.model_validate(
+        {
+            "gate": {"min_volume_24h_quote": 8_000_000},
+            "trend": {"min_volume_24h_quote": 3_000_000, "max_volume_24h_quote": 50_000_000},
+        }
+    )
+
+    atr, trend = build_detectors(config)
+
+    assert atr.volume == VolumeRange(8_000_000)
+    assert trend.volume == VolumeRange(3_000_000, 50_000_000)
+    # 上限默认不设，下限默认与秒级异动的代码默认值一致。
+    assert TrendConfig().max_volume_24h_quote is None
+    assert TrendConfig().min_volume_24h_quote == AppConfig().gate.min_volume_24h_quote
+
+
+@pytest.mark.parametrize("maximum", [3_000_000, 2_000_000])
+def test_rejects_trend_volume_upper_bound_not_above_lower_bound(maximum):
+    with pytest.raises(ValidationError, match="max_volume_24h_quote"):
+        TrendConfig(min_volume_24h_quote=3_000_000, max_volume_24h_quote=maximum)
 
 
 def test_alert_continuing_defaults_on_and_is_passed_to_detector():

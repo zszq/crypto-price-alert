@@ -13,7 +13,13 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
-from price_alert.assembly import build_detector, build_rest_client, build_trend_detector, build_windows
+from price_alert.assembly import (
+    build_detector,
+    build_detectors,
+    build_rest_client,
+    build_trend_detector,
+    build_windows,
+)
 from price_alert.config import INTERVAL_SECONDS, AppConfig, load_config
 from price_alert.formatting import BEIJING_TIME
 from price_alert.gate import price_decimals
@@ -208,14 +214,16 @@ def trend_replay(config: AppConfig, args: argparse.Namespace) -> None:
 
 def print_universe(config: AppConfig) -> None:
     rest = build_rest_client(config)
-    selected = select_liquid_contracts(
-        rest.fetch_tickers(),
-        rest.fetch_contracts(),
-        config.gate.min_volume_24h_quote,
-    )
-    print(f"当前符合条件：{len(selected)} 个 Gate.io 虚拟币 USDT 永续合约")
-    for ticker in selected:
-        print(f"{ticker.symbol:<20} {ticker.volume_24h_quote / 1_000_000:>12.2f}M USDT")
+    tickers, contracts = rest.fetch_tickers(), rest.fetch_contracts()
+    # 与实时监控同一来源取各检测器的成交额范围，展示的就是 run 启动时各自的合约池。
+    for index, entry in enumerate(build_detectors(config)):
+        volume = entry.volume
+        selected = select_liquid_contracts(tickers, contracts, volume.minimum, volume.maximum)
+        if index:
+            print()
+        print(f"{entry.name}（24h 计价成交额 {volume.describe()} USDT）：{len(selected)} 个虚拟币 USDT 永续合约")
+        for ticker in selected:
+            print(f"{ticker.symbol:<20} {ticker.volume_24h_quote / 1_000_000:>12.2f}M USDT")
 
 
 def _load_config_or_exit(path: str) -> AppConfig:
@@ -240,7 +248,8 @@ def main() -> None:
     config = _load_config_or_exit(args.config)
 
     if args.command == "check-config":
-        print(f"配置有效：Gate.io USDT 永续，成交额门槛 {config.gate.min_volume_24h_quote / 1_000_000:.1f}M")
+        ranges = "，".join(f"{entry.name} {entry.volume.describe()}" for entry in build_detectors(config))
+        print(f"配置有效：Gate.io USDT 永续，24h 计价成交额范围：{ranges}")
         for window in build_windows(config):
             print(f"  {describe_rule(window)}")
         if config.trend.enabled:

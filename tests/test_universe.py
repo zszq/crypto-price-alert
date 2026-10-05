@@ -1,4 +1,4 @@
-from price_alert.universe import select_liquid_contracts
+from price_alert.universe import VolumeRange, select_liquid_contracts
 
 
 def test_selects_only_usdt_contracts_strictly_above_quote_volume_threshold():
@@ -111,3 +111,42 @@ def test_selected_contracts_carry_price_precision_from_order_price_round():
     )
 
     assert {item.symbol: item.price_decimals for item in selected} == {"BTC_USDT": 1, "ODD_USDT": None}
+
+
+def test_optional_upper_bound_keeps_volume_inside_the_range():
+    volumes = {"LOW_USDT": 10_000_000, "MIN_USDT": 10_000_001, "MAX_USDT": 50_000_000, "HIGH_USDT": 50_000_001}
+    tickers = [{"contract": symbol, "last": "1", "volume_24h_quote": str(volume)} for symbol, volume in volumes.items()]
+    contracts = [{"name": symbol, "contract_type": "", "status": "trading"} for symbol in volumes]
+
+    bounded = select_liquid_contracts(tickers, contracts, 10_000_000, 50_000_000)
+    unbounded = select_liquid_contracts(tickers, contracts, 10_000_000)
+
+    # 下限严格大于、上限含等于；不设上限时只看下限。
+    assert [item.symbol for item in bounded] == ["MAX_USDT", "MIN_USDT"]
+    assert [item.symbol for item in unbounded] == ["HIGH_USDT", "MAX_USDT", "MIN_USDT"]
+
+
+def test_retained_contracts_also_get_a_looser_upper_exit_line():
+    tickers = [
+        {"contract": "KEEP_USDT", "last": "1", "volume_24h_quote": "60000000"},
+        {"contract": "NEW_USDT", "last": "1", "volume_24h_quote": "60000000"},
+        {"contract": "DROP_USDT", "last": "1", "volume_24h_quote": "70000000"},
+    ]
+    contracts = [{"name": item["contract"], "contract_type": "", "status": "trading"} for item in tickers]
+
+    # 上限 50M、比例 0.8：已监控的合约放宽到 62.5M 才移除，新合约仍按 50M 准入。
+    selected = select_liquid_contracts(
+        tickers,
+        contracts,
+        10_000_000,
+        50_000_000,
+        retained_symbols=["KEEP_USDT", "DROP_USDT"],
+        exit_volume_ratio=0.8,
+    )
+
+    assert [item.symbol for item in selected] == ["KEEP_USDT"]
+
+
+def test_volume_range_description():
+    assert VolumeRange(8_000_000).describe() == "> 8M"
+    assert VolumeRange(8_000_000, 50_500_000).describe() == "8M ~ 50.5M"

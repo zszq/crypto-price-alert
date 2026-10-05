@@ -61,8 +61,8 @@ ATR 异动强度 = |当前完整秒 VWAP - N 秒前完整秒 VWAP| / Wilder ATR
 
 ```text
 Gate REST /futures/usdt/contracts + /tickers
-        ↓ 仅虚拟币、交易中、24h quote volume > 10M USDT
-动态交易对池
+        ↓ 仅虚拟币、交易中；按 24h quote volume 分别筛选
+动态交易对池：秒级异动 > 10M USDT，趋势提醒 > 10M USDT（上限可选），订阅两者并集
         ↓
 Gate REST candlesticks 预热 ATR 与趋势（同周期合并为一次请求）
         ↓
@@ -192,8 +192,8 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 
 `config/default.yaml` 的主要参数：
 
-- `gate.min_volume_24h_quote`：24 小时 USDT 计价成交额门槛；
-- `gate.universe_exit_volume_ratio`：已在监控中的合约的退出门槛比例，成交额低于或等于 `min_volume_24h_quote × 该比例` 即移除（准入与退出都是严格大于门槛才保留），默认 0.8；
+- `gate.min_volume_24h_quote`：秒级 ATR 异动的 24 小时 USDT 计价成交额门槛，默认 10M；趋势提醒的合约池另见 `trend.min_volume_24h_quote` / `trend.max_volume_24h_quote`；
+- `gate.universe_exit_volume_ratio`：已在监控中的合约的退出门槛比例，成交额低于或等于 `下限 × 该比例` 即移除（准入与退出都是严格大于下限才保留）；设了上限的，超过 `上限 ÷ 该比例` 才移除，默认 0.8，秒级异动与趋势提醒共用；
 - `gate.universe_refresh_seconds`：交易对池刷新周期；
 - `gate.reconnect_initial_seconds` / `gate.reconnect_max_seconds`：断线重连的指数退避初始值与上限，上限不能小于初始值；
 - `gate.max_data_lag_seconds`：实时成交的最大允许滞后，默认 10 秒。网络拥塞时成交会在链路上积压，推送过来的已是几十秒前的行情，此时秒级判定失去意义；逐笔校验成交时间戳，超过该值即主动断开重连以清空积压，滞后的成交在判定之前就被拦下，不会产生提醒。若日志频繁出现「行情数据滞后」，说明到 Gate 的网络链路不稳，应先排查网络而不是调高该值；
@@ -218,6 +218,7 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 - `indicator.long_window.cooldown_seconds`：不能小于长窗口长度，不填写时等于长窗口长度（短窗口冷却没有这条限制，默认 30 秒）；
 - `trend.enabled`：是否启用 K 线形态趋势提醒，默认开启；关闭后不创建趋势检测器，也不会多拉 K 线；
 - `trend.alert_continuing`：形态持续成立时是否每根周期 K 线收盘都报一条「延续」提醒，默认开启；关闭后同一段走势只报一次；
+- `trend.min_volume_24h_quote` / `trend.max_volume_24h_quote`：趋势提醒的合约池范围，与秒级异动分开设置。成交额严格大于下限（默认 10M）且不超过上限才监控；上限默认不设，即下限以上全部纳入，设置时须大于下限。两个合约池各自增删，只在其中一个池里的合约只做对应的判定，行情订阅取两者并集；`universe` 命令分别列出两个合约池；
 - `trend.periods.3m` / `5m` / `15m`：各周期的形态门槛，结构相同、默认值不同（只写部分字段时其余取该周期自己的默认值）：
   - `enabled`、`candles`（参与判定的 K 线根数）、`min_change_percent`（累计涨跌幅下限）；
   - `max_counter_candles`（反向 K 线最多根数，小实体 K 线也算，必须小于 `candles`）；

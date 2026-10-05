@@ -7,6 +7,7 @@ import contextlib
 import logging
 import time
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -110,7 +111,7 @@ async def _stop_task(task: asyncio.Task[None] | None) -> None:
 class _Monitor:
     """实时监控各循环共享的一组依赖：合约池刷新、断线回补与行情循环作用于同一组检测器和订阅。"""
 
-    # 各检测器的合约池始终一致；排在第一个的决定“当前监控哪些合约”。
+    # 各检测器按自己的成交额范围维护合约池，行情订阅取它们的并集。
     detectors: tuple[MonitoredDetector, ...]
     rest: GateRestClient
     feed: GateTradeFeed
@@ -124,12 +125,16 @@ class _Monitor:
 
     @property
     def symbols(self) -> list[str]:
-        return self.detectors[0].detector.symbols
+        """需要订阅成交的合约：任一检测器在监控的都算。"""
+        return sorted({symbol for entry in self.detectors for symbol in entry.detector.symbols})
 
-    async def fetch_candles(self, symbol: str) -> list[_Warmup]:
-        """按检测器顺序返回各自的预热 K 线；同一周期只请求一次，取最多的根数再按各自需求截取。"""
+    async def fetch_candles(self, symbol: str, entries: Sequence[MonitoredDetector]) -> list[_Warmup]:
+        """按 entries 顺序返回各自的预热 K 线；同一周期只请求一次，取最多的根数再按各自需求截取。
+
+        只为传入的检测器请求：合约不在某个检测器的合约池里时，不必为它多拉一份 K 线。
+        """
         limits: dict[str, int] = {}
-        for entry in self.detectors:
+        for entry in entries:
             limits[entry.candle_interval] = max(limits.get(entry.candle_interval, 0), entry.warmup_candles)
         fetched: dict[str, tuple[list[Candle], datetime]] = {}
         for interval, limit in limits.items():
@@ -137,7 +142,7 @@ class _Monitor:
                 candles = await asyncio.to_thread(self.rest.fetch_candles, symbol, interval, limit)
             fetched[interval] = (candles, datetime.now(UTC))
         warmups: list[_Warmup] = []
-        for entry in self.detectors:
+        for entry in entries:
             candles, fetched_at = fetched[entry.candle_interval]
             # 截取到自己要求的根数，与单独请求时拿到的数据完全相同，合并请求不改变任何检测器的行为。
             own = candles[-entry.warmup_candles :]
@@ -151,13 +156,14 @@ class _Monitor:
         resynced = 0
 
         async def resync(symbol: str) -> bool:
+            # 只为该合约失效的检测器请求：合约可能只在部分检测器的合约池里。
+            entries = [entry for entry in self.detectors if symbol in entry.detector.stale_symbols]
             try:
-                warmups = await self.fetch_candles(symbol)
+                warmups = await self.fetch_candles(symbol, entries)
             except Exception as exc:
                 LOGGER.warning("%s 断线后 K 线回补失败：%s", symbol, exc)
                 return False
-            for entry, (closed, live, fetched_at) in zip(self.detectors, warmups, strict=True):
-                # 不需要回补的检测器会直接忽略。
+            for entry, (closed, live, fetched_at) in zip(entries, warmups, strict=True):
                 entry.detector.resync_symbol(symbol, closed, live, fetched_at)
             return True
 
@@ -175,23 +181,31 @@ class _Monitor:
             LOGGER.warning("%d 个合约 K 线回补失败，暂停其异动判定，%.1f 秒后重试", failed, backoff.delay)
             await backoff.wait()
 
-    async def sync_universe(self, selected: list[ContractTicker]) -> None:
-        selected_by_symbol = {ticker.symbol: ticker for ticker in selected}
-        current = set(self.symbols)
-        target = set(selected_by_symbol)
-        for entry in self.detectors:
+    async def sync_universe(self, selections: Sequence[list[ContractTicker]]) -> None:
+        """selections 与 detectors 一一对应，是各检测器本轮筛选出的合约池。"""
+        tickers: dict[str, ContractTicker] = {}
+        # 合约 → 新加入了它的检测器：同一合约新进多个检测器时只预热一次，同周期 K 线共用请求。
+        joining: dict[str, list[MonitoredDetector]] = {}
+        for entry, selected in zip(self.detectors, selections, strict=True):
+            selected_by_symbol = {ticker.symbol: ticker for ticker in selected}
+            tickers.update(selected_by_symbol)
+            current = set(entry.detector.symbols)
+            target = set(selected_by_symbol)
             entry.detector.remove_symbols(current - target)
             for symbol in current & target:
                 ticker = selected_by_symbol[symbol]
                 entry.detector.add_symbol(symbol, [], ticker.volume_24h_quote, price_decimals=ticker.price_decimals)
+            for symbol in target - current:
+                joining.setdefault(symbol, []).append(entry)
 
-        new_symbols = sorted(target - current)
+        new_symbols = sorted(joining)
         if not new_symbols:
             return
+        warming = {entry.name for joined in joining.values() for entry in joined}
         LOGGER.info(
             "开始为 %d 个新合约拉取 K 线预热（%s，并发 %d）",
             len(new_symbols),
-            "、".join(entry.name for entry in self.detectors),
+            "、".join(entry.name for entry in self.detectors if entry.name in warming),
             self.config.gate.warmup_concurrency,
         )
         started = last_report = time.monotonic()
@@ -199,15 +213,16 @@ class _Monitor:
 
         async def add_new_symbol(symbol: str) -> None:
             nonlocal done, failed, last_report
-            warmups = [_EMPTY_WARMUP] * len(self.detectors)
+            entries = joining[symbol]
+            warmups = [_EMPTY_WARMUP] * len(entries)
             try:
-                warmups = await self.fetch_candles(symbol)
+                warmups = await self.fetch_candles(symbol, entries)
             except Exception as exc:
                 # 单个新品种预热失败时仍加入监控，它会在实时 K 线积累后自行就绪。
                 failed += 1
                 LOGGER.warning("%s K 线预热失败：%s", symbol, exc)
-            ticker = selected_by_symbol[symbol]
-            for entry, (closed, live, _) in zip(self.detectors, warmups, strict=True):
+            ticker = tickers[symbol]
+            for entry, (closed, live, _) in zip(entries, warmups, strict=True):
                 entry.detector.add_symbol(symbol, closed, ticker.volume_24h_quote, live, ticker.price_decimals)
             done += 1
             now = time.monotonic()
@@ -223,30 +238,38 @@ class _Monitor:
             time.monotonic() - started,
         )
 
-    async def refresh_universe(self) -> list[ContractTicker]:
+    async def refresh_universe(self) -> None:
         gate = self.config.gate
         raw_tickers, raw_contracts = await asyncio.gather(
             asyncio.to_thread(self.rest.fetch_tickers),
             asyncio.to_thread(self.rest.fetch_contracts),
         )
-        selected = select_liquid_contracts(
-            raw_tickers,
-            raw_contracts,
-            gate.min_volume_24h_quote,
-            retained_symbols=self.symbols,
-            exit_volume_ratio=gate.universe_exit_volume_ratio,
-        )
-        if not selected:
+        selections = [
+            select_liquid_contracts(
+                raw_tickers,
+                raw_contracts,
+                entry.volume.minimum,
+                entry.volume.maximum,
+                # 退出缓冲只看本检测器自己是否已在监控：另一个检测器的合约刚进入本范围时按准入线判断。
+                retained_symbols=entry.detector.symbols,
+                exit_volume_ratio=gate.universe_exit_volume_ratio,
+            )
+            for entry in self.detectors
+        ]
+        # 单个检测器的范围可能本来就很窄，选不出合约属正常；全部为空才说明交易所数据异常。
+        if not any(selections):
             raise RuntimeError("Gate.io 没有满足成交额条件的可用虚拟币合约")
-        await self.sync_universe(selected)
+        await self.sync_universe(selections)
         # 先完成预热再订阅，新合约的第一笔实时成交到达时检测器已经就绪。
         await self.feed.set_symbols(self.symbols)
         LOGGER.info(
-            "交易对池已刷新：%d 个虚拟币合约，24h 计价成交额门槛 %.1fM USDT",
-            len(selected),
-            gate.min_volume_24h_quote / 1_000_000,
+            "交易对池已刷新：%s，共订阅 %d 个合约（24h 计价成交额，USDT）",
+            "，".join(
+                f"{entry.name} {len(selected)} 个（{entry.volume.describe()}）"
+                for entry, selected in zip(self.detectors, selections, strict=True)
+            ),
+            len(self.symbols),
         )
-        return selected
 
     async def initial_universe(self) -> None:
         backoff = self._backoff()

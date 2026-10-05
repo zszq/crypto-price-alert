@@ -4,10 +4,23 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from price_alert.gate import price_decimals
 from price_alert.models import ContractTicker
+
+
+@dataclass(frozen=True, slots=True)
+class VolumeRange:
+    """一个检测器的合约池准入范围：24 小时计价成交额严格大于下限，且不超过上限（None 表示不设上限）。"""
+
+    minimum: float
+    maximum: float | None = None
+
+    def describe(self) -> str:
+        low = f"{self.minimum / 1_000_000:g}M"
+        return f"> {low}" if self.maximum is None else f"{low} ~ {self.maximum / 1_000_000:g}M"
 
 
 def _number(value: Any) -> float:
@@ -23,6 +36,7 @@ def select_liquid_contracts(
     tickers: Iterable[Mapping[str, Any]],
     contracts: Iterable[Mapping[str, Any]],
     min_volume_24h_quote: float,
+    max_volume_24h_quote: float | None = None,
     retained_symbols: Iterable[str] = (),
     exit_volume_ratio: float = 1.0,
 ) -> list[ContractTicker]:
@@ -38,17 +52,19 @@ def select_liquid_contracts(
         and not contract.get("in_delisting")
     }
     retained = {symbol.upper() for symbol in retained_symbols}
-    # 已在监控中的合约用更低的退出门槛，避免成交额在门槛附近波动时被反复移除、重新预热。
-    exit_volume = min_volume_24h_quote * exit_volume_ratio
+    # 已在监控中的合约两侧都放宽退出线，避免成交额在下限或上限附近波动时被反复移除、重新预热。
+    exit_low = min_volume_24h_quote * exit_volume_ratio
+    exit_high = None if max_volume_24h_quote is None else max_volume_24h_quote / exit_volume_ratio
     selected: list[ContractTicker] = []
     for ticker in tickers:
         symbol = str(ticker.get("contract", "")).upper()
         last_price = _number(ticker.get("last"))
         # Gate 已弃用 volume_24h_usd；旧响应只在缺少新字段时作为兼容回退。
         volume = _number(ticker.get("volume_24h_quote", ticker.get("volume_24h_usd")))
-        threshold = exit_volume if symbol in retained else min_volume_24h_quote
+        low, high = (exit_low, exit_high) if symbol in retained else (min_volume_24h_quote, max_volume_24h_quote)
+        in_range = volume > low and (high is None or volume <= high)
         contract = crypto_contracts.get(symbol)
-        if contract is not None and symbol.endswith("_USDT") and last_price > 0 and volume > threshold:
+        if contract is not None and symbol.endswith("_USDT") and last_price > 0 and in_range:
             selected.append(
                 ContractTicker(symbol, last_price, volume, price_decimals(contract.get("order_price_round")))
             )

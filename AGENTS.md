@@ -36,13 +36,13 @@ python -m venv .venv
 
 ### 服务主循环（service.py）
 
-- 服务同时驱动多个检测器，只依赖 `detection.Detector` 约定（`symbols`、`stale_symbols`、`add_symbol`、`remove_symbols`、`mark_stream_gap`、`mark_symbol_gap`、`resync_symbol`、`add_tick`），检测器列表由 `assembly.build_detectors` 给出，每个包装成 `MonitoredDetector`（名称、预热 K 线周期与根数）。同一周期的检测器共用一次 REST 请求（取最多的根数，再各自截取尾部，与单独请求结果相同）；合约池以第一个检测器为准，所有检测器同步增删；每笔成交依次交给所有检测器，单个检测器抛出异常只跳过这笔成交，不断线、不影响其他检测器：出错可能发生在更新状态的中途，所以由 `_DetectorFaults` 记账后调用该检测器的 `mark_symbol_gap` 把这个合约标记失效、并在没有回补任务时启动 `resync_stale_symbols` 用 REST K 线重建（同一检测器同一合约 60 秒内最多修复一次；带堆栈的错误日志每个检测器 60 秒最多一次；出错次数附在「监控正常」状态日志里，汇报后清零）；断线时全部 `mark_stream_gap`，回补覆盖任一检测器失效的合约。新增/删除一种检测器只改 `build_detectors`，不改服务。
+- 服务同时驱动多个检测器，只依赖 `detection.Detector` 约定（`symbols`、`stale_symbols`、`add_symbol`、`remove_symbols`、`mark_stream_gap`、`mark_symbol_gap`、`resync_symbol`、`add_tick`），检测器列表由 `assembly.build_detectors` 给出，每个包装成 `MonitoredDetector`（名称、预热 K 线周期与根数、成交额范围）。同一周期的检测器共用一次 REST 请求（取最多的根数，再各自截取尾部，与单独请求结果相同，且只为需要该合约预热/回补的检测器请求）；`MonitoredDetector.volume`（`universe.VolumeRange`）是各检测器自己的成交额范围，每个检测器各自筛选、增删合约池，行情订阅取并集（`_Monitor.symbols`），检测器忽略不在自己池里的成交；每笔成交依次交给所有检测器，单个检测器抛出异常只跳过这笔成交，不断线、不影响其他检测器：出错可能发生在更新状态的中途，所以由 `_DetectorFaults` 记账后调用该检测器的 `mark_symbol_gap` 把这个合约标记失效、并在没有回补任务时启动 `resync_stale_symbols` 用 REST K 线重建（同一检测器同一合约 60 秒内最多修复一次；带堆栈的错误日志每个检测器 60 秒最多一次；出错次数附在「监控正常」状态日志里，汇报后清零）；断线时全部 `mark_stream_gap`，回补覆盖任一检测器失效的合约。新增/删除一种检测器只改 `build_detectors`，不改服务。
 - 检测器、REST 客户端、订阅、配置和预热信号量这组共享依赖装在 `_Monitor` 里，各循环是它的方法；首次初始化、断线回补与重连三处的指数退避共用 `_Backoff`。
 - `run_monitor` 先用 `initial_universe` 带退避地完成首次合约池初始化，然后在 `TaskGroup` 中并行跑两个互相独立的循环：`universe_loop` 定期刷新合约池，`stream_loop` 维持 WebSocket 长连接。合约池变化通过 `GateTradeFeed.set_symbols` 增量订阅/退订，**不会断线**。
 - `stream_loop` 中任何异常（包括握手/TCP 超时抛出的 `TimeoutError`）都按故障处理：先 `detector.mark_stream_gap()` 清空秒级窗口并把全部合约的 ATR 标记为失效，再按指数退避重连；收到第一笔成交后退避重置；若此前断过线，会再次 `mark_stream_gap()`（覆盖断线退避期间合约池刷新新增的合约），并在后台启动 `resync_stale_symbols` 为失效合约回补 K 线（失败按退避重试，断线时取消）。回补必须在实时成交恢复后发起，这样请求前的缺口由 REST 覆盖、请求后的成交由实时流覆盖。`GateTradeFeed` 的接收超时被转换成 `ConnectionError`。
 - `GateTradeFeed` 的订阅请求带自增 `id`（Gate 会原样回传），Gate 一批中只要有一个无效合约就整批失败，所以批量失败时会逐个重订阅，被拒绝的合约记录在 `rejected_symbols`。订阅发送与集合变更由 `_subscription_lock` 串行化。
 - 单笔坏成交或无法解析的消息只跳过并限流打日志（`_ThrottledLogger`），不能向上抛出导致断线。
-- `sync_universe` 做增量同步：移除的合约丢弃检测状态（冷却记录保留），保留的合约只更新成交额，新增合约并发（`warmup_concurrency`）拉 K 线预热；`_split_candles` 把已收盘 K 线用于 seed ATR，未收盘的当前 K 线作为 `live_candle` 初始化实时 K 线。预热失败的合约仍加入，靠实时 K 线自行就绪。
+- `sync_universe` 按检测器分别做增量同步：移除的合约丢弃检测状态（冷却记录保留），保留的合约只更新成交额，新增合约并发（`warmup_concurrency`）拉 K 线预热（同一合约同时新进多个检测器时只预热一次）；只有所有检测器都选不出合约时才按刷新失败处理；`_split_candles` 把已收盘 K 线用于 seed ATR，未收盘的当前 K 线作为 `live_candle` 初始化实时 K 线。预热失败的合约仍加入，靠实时 K 线自行就绪。
 - 提醒通过 `AlertDispatcher.publish` 非阻塞投递，每个通道独立队列和后台任务，绝不能在成交循环里 `await` 通知发送。
 - `GateRestClient` 是同步 `urllib` 实现，异步代码中通过 `asyncio.to_thread` 调用。只重试 408/429/5xx 与网络/读取/JSON 解析类临时错误，其他 4xx 直接抛出。
 
@@ -68,7 +68,7 @@ python -m venv .venv
 - `pattern.py`：纯函数。`TrendRule` 描述一个周期的门槛；`evaluate_pattern(window, rule)` 对最近 `candles` 根周期 K 线判定，返回 `PatternMetrics`（含未满足的 `Condition`）。七个条件：累计涨跌幅（第一根开盘到最后一根收盘）、反向 K 线根数（实体 ÷ 本根振幅低于 `min_candle_body_ratio` 的小实体 K 线与十字星也算反向，≤ `max_counter_candles`；判定在 `_is_counter`，首尾顺势、反向后突破共用这份标记）、首尾顺势（反向 K 线不能是第一根或最后一根）、反向后突破（每段连续反向 K 线之后的第一根，收盘要严格突破这段之前那根的收盘价，没有配置项）、最大反弹比例（按收盘价从滚动极值算，起点之后先反向走也算反弹）、总实体占比（实体和 ÷ 振幅和）、最大实体占比（最大一根顺势 K 线实体 ÷ 整段累计位移，反向 K 线不计）。`PERIOD_MINUTES` 是趋势周期到分钟数的唯一映射；`aggregate_candles` 把对齐的 1 分钟 K 线合成周期 K 线。
 - `detector.py::TrendDetector`：由成交聚合 1 分钟 K 线，**下一分钟第一笔成交到达时**才结算上一分钟；空分钟按上一收盘价补平线。保留最长周期所需的 `candles × 分钟数` 根 1 分钟 K 线（预热请求 `warmup_candles` 为其 + 1）。每结算一分钟，对收盘时刻落在周期边界的各周期判定。**每个周期各自独立**：`_holding` 记录各周期上一次判定时成立的方向，形态从不成立（或反向）变为成立时提醒，持续成立时按 `trend.alert_continuing`（默认开启）发 `continuing=True` 的延续提醒（`CONTINUING_ALERT`）或只记 `CONTINUING`，形态被破坏（判定不成立、K 线不足或没有方向）即清空，再次成立就是新的一段；不同周期互不影响，同一分钟多个周期新成立会各报一条（短周期在前）。`_holding` 不随合约移出清除。`add_candle` 直接喂已收盘 1 分钟 K 线（回放、模拟用），不能与 `add_tick` 混用。断线：`mark_stream_gap` 后只维护当前分钟、不结算不判定；`resync_symbol` 用 REST 1 分钟 K 线重建历史（当前分钟与交易所同一分钟时高低点取并集；本地已跨入新分钟则交易所当前 K 线按已收盘计入），`_holding` 保留。
 - `alerts.py`：`TrendAlert`（方向、周期、根数、起止时间与 `PatternMetrics`）与文本格式；`to_dict()` 带 `kind: "trend"`。
-- `config.py`：`TrendConfig`（`enabled`、`alert_continuing` 与 `periods`）；各周期是 `TrendPeriodConfig` 的子类（`Trend3mConfig` 等），只改默认值，YAML 键为 `3m`/`5m`/`15m`（alias；1 分钟周期不提供，`pattern.PeriodName` 仍保留 `1m` 供检测器与测试直接使用），部分覆盖时其余字段仍取该周期默认值；校验 `max_counter_candles < candles`。
+- `config.py`：`TrendConfig`（`enabled`、`alert_continuing`、合约池成交额范围 `min_volume_24h_quote`/`max_volume_24h_quote` 与 `periods`）；各周期是 `TrendPeriodConfig` 的子类（`Trend3mConfig` 等），只改默认值，YAML 键为 `3m`/`5m`/`15m`（alias；1 分钟周期不提供，`pattern.PeriodName` 仍保留 `1m` 供检测器与测试直接使用），部分覆盖时其余字段仍取该周期默认值；校验 `max_counter_candles < candles`、设置了上限时 `max_volume_24h_quote > min_volume_24h_quote`。
 - `replay.py`：`cli trend-replay` 用 REST 1 分钟 K 线（分段请求，每段 ≤ 1000 根）驱动同一个检测器，`plan_trend_replay` 预先检查预热起点是否超出 Gate 只保留的最近 10000 根 1 分钟 K 线（测试须传入固定的 `now`）；`simulate.py` 为每个启用周期各跑一段合成单边行情，每个周期应恰好提醒一次。
 
 ### 回放（replay.py）
@@ -92,7 +92,7 @@ python -m venv .venv
 
 ### 合约池筛选（universe.py）
 
-筛选结果 `ContractTicker` 带 `price_decimals`（由 `gate.price_decimals` 把合约的 `order_price_round` 换算成小数位数，仅用于展示；回放取精度也用它），经 `detector.add_symbol` 传到 `PriceAlert`。只接受 `contract_type == ""`（字段必须存在且为空，非币类资产会有分类值）、`status == "trading"`、`in_delisting` 不为真、以 `_USDT` 结尾、`volume_24h_quote` **严格大于**门槛的合约。已在监控中的合约（`retained_symbols`）使用 `门槛 × universe_exit_volume_ratio` 作为退出门槛。`volume_24h_usd` 已被 Gate 弃用，仅作缺字段时的回退。`is_internal=true` 的成交在 `gate.parse_trade_payload` 中被忽略。
+筛选结果 `ContractTicker` 带 `price_decimals`（由 `gate.price_decimals` 把合约的 `order_price_round` 换算成小数位数，仅用于展示；回放取精度也用它），经 `detector.add_symbol` 传到 `PriceAlert`。只接受 `contract_type == ""`（字段必须存在且为空，非币类资产会有分类值）、`status == "trading"`、`in_delisting` 不为真、以 `_USDT` 结尾、`volume_24h_quote` **严格大于**下限、且不超过可选上限（含等于）的合约。秒级异动的下限是 `gate.min_volume_24h_quote`，趋势提醒的范围是 `trend.min_volume_24h_quote` / `trend.max_volume_24h_quote`（上限默认不设），由 `assembly.build_detectors` 装进各自的 `VolumeRange`。已在监控中的合约（`retained_symbols`，按各检测器自己的池）退出线两侧放宽：下限 × `universe_exit_volume_ratio`、上限 ÷ 该比例。`volume_24h_usd` 已被 Gate 弃用，仅作缺字段时的回退。`is_internal=true` 的成交在 `gate.parse_trade_payload` 中被忽略。
 
 ### 通知（notifier.py）
 

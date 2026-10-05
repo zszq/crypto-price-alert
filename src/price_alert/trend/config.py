@@ -85,12 +85,18 @@ class TrendConfig(BaseModel):
     enabled: bool = True
     # 形态持续成立时，每根周期 K 线收盘都再报一条「延续」提醒；关闭后同一段走势只在形成时报一次。
     alert_continuing: bool = True
+    # 趋势合约池的 24 小时计价成交额范围，与秒级异动的 gate.min_volume_24h_quote 分开设置：
+    # 严格大于下限才监控；上限可选，不填即不设上限。退出缓冲沿用 gate.universe_exit_volume_ratio。
+    min_volume_24h_quote: float = Field(default=10_000_000, gt=0)
+    max_volume_24h_quote: float | None = Field(default=None, gt=0)
     periods: TrendPeriodsConfig = Field(default_factory=TrendPeriodsConfig)
 
     @model_validator(mode="after")
     def validate_periods(self) -> TrendConfig:
         if self.enabled and not self.rules():
             raise ValueError("启用趋势提醒时至少要启用一个周期")
+        if self.max_volume_24h_quote is not None and self.max_volume_24h_quote <= self.min_volume_24h_quote:
+            raise ValueError("max_volume_24h_quote 必须大于 min_volume_24h_quote")
         return self
 
     def rules(self) -> list[TrendRule]:

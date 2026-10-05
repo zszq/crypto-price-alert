@@ -15,6 +15,7 @@ from price_alert.gate import GateRestClient, RateLimiter
 from price_alert.trend.config import TrendConfig
 from price_alert.trend.detector import TrendDetector, TrendEvaluation
 from price_alert.trend.pattern import TrendRule
+from price_alert.universe import VolumeRange
 from price_alert.windows import MoveWindow, WindowEvaluation, WindowName
 
 
@@ -72,11 +73,18 @@ def build_detectors(config: AppConfig) -> list[MonitoredDetector]:
     """实时监控运行的全部检测器；趋势提醒关闭时不创建，也就不会多拉 K 线、多占内存。"""
     indicator = config.indicator
     detectors = [
-        MonitoredDetector("ATR 异动", build_detector(config), indicator.candle_interval, indicator.warmup_candles)
+        MonitoredDetector(
+            "ATR 异动",
+            build_detector(config),
+            indicator.candle_interval,
+            indicator.warmup_candles,
+            VolumeRange(config.gate.min_volume_24h_quote),
+        )
     ]
     if config.trend.enabled:
         trend = build_trend_detector(config.trend)
-        detectors.append(MonitoredDetector("K 线趋势", trend, trend.warmup_interval, trend.warmup_candles))
+        volume = VolumeRange(config.trend.min_volume_24h_quote, config.trend.max_volume_24h_quote)
+        detectors.append(MonitoredDetector("K 线趋势", trend, trend.warmup_interval, trend.warmup_candles, volume))
     return detectors
 
 

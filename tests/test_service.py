@@ -10,8 +10,11 @@ from price_alert.config import AppConfig
 from price_alert.detection import MonitoredDetector
 from price_alert.gate import GateTradeFeed
 from price_alert.models import Candle, PriceTick
+from price_alert.universe import VolumeRange
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
+# 用例里的合约成交额都是 20M：多数用例只关心编排，合约池范围取能全部纳入的值。
+ANY_VOLUME = VolumeRange(10_000_000)
 
 
 class StopLoop(BaseException):
@@ -51,7 +54,8 @@ def monitor(detector, rest=None, feed=None, app_config=None, sem=None) -> servic
         detectors = tuple(detector)
     else:
         indicator = app_config.indicator
-        detectors = (MonitoredDetector("ATR 异动", detector, indicator.candle_interval, indicator.warmup_candles),)
+        entry = MonitoredDetector("ATR 异动", detector, indicator.candle_interval, indicator.warmup_candles, ANY_VOLUME)
+        detectors = (entry,)
     return service._Monitor(
         detectors=detectors,
         rest=object() if rest is None else rest,
@@ -510,6 +514,14 @@ class RecordingDetector:
         return [f"{self.name}-{tick.trade_id}"]
 
 
+def atr_and_trend(atr, trend, trend_candles: int = 331) -> list[MonitoredDetector]:
+    """实时监控的两个检测器，成交额范围相同。"""
+    return [
+        MonitoredDetector("ATR 异动", atr, "1m", 50, ANY_VOLUME),
+        MonitoredDetector("K 线趋势", trend, "1m", trend_candles, ANY_VOLUME),
+    ]
+
+
 class IntervalRest(FakeRest):
     """按请求的周期与根数生成截至当前的 K 线，最后一根是未收盘的当前 K 线。"""
 
@@ -530,9 +542,9 @@ class IntervalRest(FakeRest):
 def test_detectors_sharing_an_interval_share_one_request_and_keep_their_own_depth():
     atr, trend, other = RecordingDetector("atr"), RecordingDetector("trend"), RecordingDetector("other")
     detectors = [
-        MonitoredDetector("ATR 异动", atr, "1m", 50),
-        MonitoredDetector("K 线趋势", trend, "1m", 331),
-        MonitoredDetector("其他", other, "5m", 20),
+        MonitoredDetector("ATR 异动", atr, "1m", 50, ANY_VOLUME),
+        MonitoredDetector("K 线趋势", trend, "1m", 331, ANY_VOLUME),
+        MonitoredDetector("其他", other, "5m", 20, ANY_VOLUME),
     ]
     rest = IntervalRest([ticker("BTC_USDT", 20e6)], [contract("BTC_USDT")])
     feed = GateTradeFeed("wss://example.test")
@@ -549,9 +561,54 @@ def test_detectors_sharing_an_interval_share_one_request_and_keep_their_own_dept
     assert feed.symbols == ["BTC_USDT"]
 
 
+def test_each_detector_keeps_its_own_volume_range_and_feed_subscribes_the_union():
+    atr, trend = RecordingDetector("atr"), RecordingDetector("trend")
+    detectors = [
+        MonitoredDetector("ATR 异动", atr, "1m", 50, VolumeRange(10_000_000)),
+        MonitoredDetector("K 线趋势", trend, "1m", 331, VolumeRange(10_000_000, 50_000_000)),
+    ]
+    feed = GateTradeFeed("wss://example.test")
+    first = IntervalRest(
+        [ticker("BTC_USDT", 100e6), ticker("ETH_USDT", 20e6)], [contract("BTC_USDT"), contract("ETH_USDT")]
+    )
+    asyncio.run(monitor(detectors, first, feed).refresh_universe())
+
+    assert (atr.symbols, trend.symbols) == (["BTC_USDT", "ETH_USDT"], ["ETH_USDT"])
+    assert feed.symbols == ["BTC_USDT", "ETH_USDT"]
+    # BTC 只进了 ATR 的合约池，只按 ATR 的根数请求；ETH 两者共用一次请求。
+    assert sorted(first.requests) == [("BTC_USDT", "1m", 50), ("ETH_USDT", "1m", 331)]
+
+    # BTC 回落进趋势范围：只为新加入的趋势检测器预热，ATR 沿用已有状态；ETH 跌破退出线，两边都移除。
+    second = IntervalRest(
+        [ticker("BTC_USDT", 30e6), ticker("ETH_USDT", 5e6)], [contract("BTC_USDT"), contract("ETH_USDT")]
+    )
+    asyncio.run(monitor(detectors, second, feed).refresh_universe())
+
+    assert second.requests == [("BTC_USDT", "1m", 331)]
+    assert (atr.symbols, trend.symbols, feed.symbols) == (["BTC_USDT"], ["BTC_USDT"], ["BTC_USDT"])
+
+
+def test_refresh_fails_only_when_every_detector_selects_nothing():
+    atr, trend = RecordingDetector("atr"), RecordingDetector("trend")
+    detectors = [
+        MonitoredDetector("ATR 异动", atr, "1m", 50, VolumeRange(10_000_000)),
+        MonitoredDetector("K 线趋势", trend, "1m", 331, VolumeRange(30_000_000, 50_000_000)),
+    ]
+    feed = GateTradeFeed("wss://example.test")
+
+    # 趋势范围内没有合约属正常，ATR 照常监控。
+    rest = IntervalRest([ticker("BTC_USDT", 20e6)], [contract("BTC_USDT")])
+    asyncio.run(monitor(detectors, rest, feed).refresh_universe())
+    assert (atr.symbols, trend.symbols) == (["BTC_USDT"], [])
+
+    empty = IntervalRest([ticker("BTC_USDT", 1e6)], [contract("BTC_USDT")])
+    with pytest.raises(RuntimeError, match="没有满足成交额条件"):
+        asyncio.run(monitor(detectors, empty, feed).refresh_universe())
+
+
 def test_warmup_failure_still_adds_symbol_to_every_detector():
     atr, trend = RecordingDetector("atr"), RecordingDetector("trend")
-    detectors = [MonitoredDetector("ATR 异动", atr, "1m", 50), MonitoredDetector("K 线趋势", trend, "1m", 331)]
+    detectors = atr_and_trend(atr, trend)
 
     class DownRest(FakeRest):
         def fetch_candles(self, symbol, interval, limit):
@@ -571,7 +628,7 @@ def test_resync_covers_symbols_stale_in_any_detector():
         detector.add_symbol("ETH_USDT", [], 1e9)
     # 只有趋势检测器的 ETH 失效：同样要回补，且只对失效的检测器生效。
     trend.stale = {"ETH_USDT"}
-    detectors = [MonitoredDetector("ATR 异动", atr, "1m", 50), MonitoredDetector("K 线趋势", trend, "1m", 331)]
+    detectors = atr_and_trend(atr, trend)
     rest = IntervalRest([], [])
 
     asyncio.run(monitor(detectors, rest).resync_stale_symbols())
@@ -583,7 +640,7 @@ def test_resync_covers_symbols_stale_in_any_detector():
 def test_stream_loop_feeds_every_detector_and_marks_gaps_on_all(monkeypatch):
     record_sleeps(monkeypatch, limit=1)
     atr, trend = RecordingDetector("atr"), RecordingDetector("trend")
-    detectors = [MonitoredDetector("ATR 异动", atr, "1m", 50), MonitoredDetector("K 线趋势", trend, "1m", 331)]
+    detectors = atr_and_trend(atr, trend)
     dispatcher = FakeDispatcher()
     feed = ScriptedFeed([(("1", "2"), ConnectionError("down"))])
 
@@ -597,7 +654,7 @@ def test_stream_loop_feeds_every_detector_and_marks_gaps_on_all(monkeypatch):
 def test_real_trend_detector_warms_up_through_monitor():
     app_config = config()
     trend = build_trend_detector(app_config.trend)
-    detectors = [MonitoredDetector("K 线趋势", trend, trend.warmup_interval, trend.warmup_candles)]
+    detectors = [MonitoredDetector("K 线趋势", trend, trend.warmup_interval, trend.warmup_candles, ANY_VOLUME)]
     rest = IntervalRest([ticker("BTC_USDT", 20e6)], [contract("BTC_USDT")])
 
     asyncio.run(monitor(detectors, rest, GateTradeFeed("wss://example.test"), app_config).refresh_universe())
@@ -621,7 +678,7 @@ def test_failing_detector_is_skipped_and_its_symbol_repaired_without_breaking_th
             raise ValueError("boom")
 
     atr, broken = RecordingDetector("atr"), BrokenDetector("trend")
-    detectors = [MonitoredDetector("ATR 异动", atr, "1m", 50), MonitoredDetector("K 线趋势", broken, "1m", 46)]
+    detectors = atr_and_trend(atr, broken, 46)
     dispatcher = FakeDispatcher()
     feed = ScriptedFeed([(("1", "2", "3"), ConnectionError("down"))])
 

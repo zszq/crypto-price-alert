@@ -1,6 +1,6 @@
 """服务主循环对检测器的约定。
 
-实时监控可以同时运行多个检测器（ATR 秒级异动、K 线形态趋势……），它们共用同一路成交与同一个合约池。
+实时监控可以同时运行多个检测器（ATR 秒级异动、K 线形态趋势……），它们共用同一路成交，各自按成交额范围筛选合约池。
 服务只依赖这里的接口：新增或移除一种检测器只改 assembly.build_detectors，不必改动服务编排。
 """
 
@@ -13,6 +13,7 @@ from typing import Protocol
 
 from price_alert.models import Candle, PriceAlert, PriceTick
 from price_alert.trend.alerts import TrendAlert
+from price_alert.universe import VolumeRange
 
 Alert = PriceAlert | TrendAlert
 
@@ -52,10 +53,11 @@ class Detector(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class MonitoredDetector:
-    """检测器及其预热所需的 K 线：周期相同的检测器共用一次 REST 请求，按各自根数截取。"""
+    """检测器及其合约池范围与预热所需的 K 线：周期相同的检测器共用一次 REST 请求，按各自根数截取。"""
 
     name: str
     detector: Detector
     candle_interval: str
     # 请求的 K 线根数，含一根未收盘的当前 K 线。
     warmup_candles: int
+    volume: VolumeRange
