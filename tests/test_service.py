@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from price_alert import service
-from price_alert.assembly import build_detector, build_trend_detector
+from price_alert.assembly import build_detector, build_launch_detector, build_trend_detector
 from price_alert.config import AppConfig
 from price_alert.detection import MonitoredDetector
 from price_alert.gate import GateTradeFeed
@@ -487,7 +487,9 @@ class RecordingDetector:
     def stale_symbols(self) -> list[str]:
         return sorted(self.stale)
 
-    def add_symbol(self, symbol, candles, volume_24h_quote, live_candle=None, price_decimals=None) -> None:
+    def add_symbol(
+        self, symbol, candles, volume_24h_quote, live_candle=None, price_decimals=None, quanto_multiplier=None
+    ) -> None:
         if symbol not in self._symbols:
             self.warmups[symbol] = (candles, live_candle)
         self._symbols.add(symbol)
@@ -637,6 +639,69 @@ def test_resync_covers_symbols_stale_in_any_detector():
     assert (atr.resyncs, trend.resyncs) == ([], ["ETH_USDT"])
 
 
+def test_resync_and_warmup_serve_earlier_detectors_first():
+    """放量启动监控全市场，回补要几百次请求：秒级异动与趋势的合约排在前面，不必等它们排完才恢复判定。"""
+    atr, launch = RecordingDetector("atr"), RecordingDetector("launch")
+    detectors = [
+        MonitoredDetector("ATR 异动", atr, "1m", 50, ANY_VOLUME),
+        MonitoredDetector("放量启动", launch, "1m", 366, VolumeRange(0)),
+    ]
+    atr.add_symbol("ZEC_USDT", [], 1e9)
+    for symbol in ("AAA_USDT", "BBB_USDT", "ZEC_USDT"):
+        launch.add_symbol(symbol, [], 1e9)
+    atr.stale, launch.stale = {"ZEC_USDT"}, {"AAA_USDT", "BBB_USDT", "ZEC_USDT"}
+    rest = IntervalRest([], [])
+
+    asyncio.run(monitor(detectors, rest, sem=asyncio.Semaphore(1)).resync_stale_symbols())
+
+    assert [symbol for symbol, _, _ in rest.requests] == ["ZEC_USDT", "AAA_USDT", "BBB_USDT"]
+
+    # 首次预热同理：只进放量合约池的合约排在后面。
+    atr, launch = RecordingDetector("atr"), RecordingDetector("launch")
+    detectors = [
+        MonitoredDetector("ATR 异动", atr, "1m", 50, ANY_VOLUME),
+        MonitoredDetector("放量启动", launch, "1m", 366, VolumeRange(0)),
+    ]
+    rest = IntervalRest(
+        [ticker("AAA_USDT", 1e5), ticker("ZEC_USDT", 20e6)], [contract("AAA_USDT"), contract("ZEC_USDT")]
+    )
+    feed = GateTradeFeed("wss://example.test")
+    asyncio.run(monitor(detectors, rest, feed, sem=asyncio.Semaphore(1)).refresh_universe())
+
+    assert [symbol for symbol, _, _ in rest.requests] == ["ZEC_USDT", "AAA_USDT"]
+
+
+def test_earlier_detectors_are_subscribed_before_later_ones_finish_warming():
+    """首次初始化时，秒级异动的合约预热完就订阅，不必等放量启动的几百个合约。"""
+
+    class RecordingFeed:
+        def __init__(self) -> None:
+            self.symbols: list[str] = []
+            self.history: list[list[str]] = []
+
+        async def set_symbols(self, symbols) -> None:
+            self.symbols = sorted(symbols)
+            self.history.append(self.symbols)
+
+    atr, launch = RecordingDetector("atr"), RecordingDetector("launch")
+    detectors = [
+        MonitoredDetector("ATR 异动", atr, "1m", 50, ANY_VOLUME),
+        MonitoredDetector("放量启动", launch, "1m", 366, VolumeRange(0)),
+    ]
+    rest = IntervalRest(
+        [ticker("AAA_USDT", 1e5), ticker("BBB_USDT", 2e5), ticker("ZEC_USDT", 20e6)],
+        [contract("AAA_USDT"), contract("BBB_USDT"), contract("ZEC_USDT")],
+    )
+    feed = RecordingFeed()
+    watched = monitor(detectors, rest, feed)
+
+    asyncio.run(watched.refresh_universe())
+
+    # 第一批只有 ATR 也要的 ZEC；只进放量合约池的两个合约预热完后再整体订阅。
+    assert feed.history == [["ZEC_USDT"], ["AAA_USDT", "BBB_USDT", "ZEC_USDT"]]
+    assert watched.subscribed.is_set()
+
+
 def test_stream_loop_feeds_every_detector_and_marks_gaps_on_all(monkeypatch):
     record_sleeps(monkeypatch, limit=1)
     atr, trend = RecordingDetector("atr"), RecordingDetector("trend")
@@ -661,6 +726,23 @@ def test_real_trend_detector_warms_up_through_monitor():
 
     assert trend.symbols == ["BTC_USDT"]
     assert len(trend._states["BTC_USDT"].minutes) == trend.warmup_candles - 1
+
+
+def test_real_launch_detector_gets_contract_multiplier_through_monitor():
+    app_config = config()
+    launch = build_launch_detector(app_config.launch)
+    detectors = [MonitoredDetector("放量启动", launch, launch.warmup_interval, launch.warmup_candles, ANY_VOLUME)]
+    rest = IntervalRest([ticker("BTC_USDT", 20e6)], [contract("BTC_USDT") | {"quanto_multiplier": "0.0001"}])
+
+    asyncio.run(monitor(detectors, rest, GateTradeFeed("wss://example.test"), app_config).refresh_universe())
+
+    state = launch._states["BTC_USDT"]
+    assert len(state.minutes) == launch.warmup_candles - 1
+    # 实时成交的张数要乘面值才是币数，再乘价格才是计价成交额。
+    assert state.quanto_multiplier == 0.0001
+    before = state.live.quote_volume
+    launch.add_tick(PriceTick("BTC_USDT", 100.0, 50, state.live.timestamp + timedelta(seconds=30)))
+    assert state.live.quote_volume == pytest.approx(before + 50 * 0.0001 * 100.0)
 
 
 def test_failing_detector_is_skipped_and_its_symbol_repaired_without_breaking_the_stream(monkeypatch, caplog):

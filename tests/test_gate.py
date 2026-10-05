@@ -19,6 +19,7 @@ from price_alert.gate import (
     parse_trade_message,
     parse_trade_payload,
     price_decimals,
+    quanto_multiplier,
 )
 
 
@@ -629,6 +630,15 @@ def test_fetch_contract_quotes_symbol_and_requires_object(monkeypatch):
 )
 def test_price_decimals_parses_gate_price_step(raw, expected):
     assert price_decimals(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("0.0001", 0.0001), ("1", 1.0), (10, 10.0), (None, None), ("abc", None), ("0", None), ("-1", None),
+     ("nan", None), ("inf", None)],
+)
+def test_quanto_multiplier_accepts_only_positive_finite_values(raw, expected):
+    assert quanto_multiplier(raw) == expected
 
 
 @pytest.mark.parametrize(

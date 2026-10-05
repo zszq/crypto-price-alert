@@ -12,6 +12,9 @@ from price_alert.config import INTERVAL_SECONDS, AppConfig, WindowConfig
 from price_alert.detection import MonitoredDetector
 from price_alert.detector import AtrMoveDetector
 from price_alert.gate import GateRestClient, RateLimiter
+from price_alert.launch.config import LaunchConfig
+from price_alert.launch.detector import LaunchDetector, LaunchEvaluation
+from price_alert.launch.rule import LaunchRule
 from price_alert.trend.config import TrendConfig
 from price_alert.trend.detector import TrendDetector, TrendEvaluation
 from price_alert.trend.pattern import TrendRule
@@ -69,8 +72,18 @@ def build_trend_detector(
     return TrendDetector(config.rules() if rules is None else rules, observer, alert_continuing=config.alert_continuing)
 
 
+def build_launch_detector(
+    config: LaunchConfig,
+    *,
+    rule: LaunchRule | None = None,
+    observer: Callable[[LaunchEvaluation], None] | None = None,
+) -> LaunchDetector:
+    # rule 覆盖配置生成的规则，供 simulate 调整冷却后单独验证。
+    return LaunchDetector(config.to_rule() if rule is None else rule, observer)
+
+
 def build_detectors(config: AppConfig) -> list[MonitoredDetector]:
-    """实时监控运行的全部检测器；趋势提醒关闭时不创建，也就不会多拉 K 线、多占内存。"""
+    """实时监控运行的全部检测器；趋势、放量提醒关闭时不创建，也就不会多拉 K 线、多占内存。"""
     indicator = config.indicator
     detectors = [
         MonitoredDetector(
@@ -85,6 +98,10 @@ def build_detectors(config: AppConfig) -> list[MonitoredDetector]:
         trend = build_trend_detector(config.trend)
         volume = VolumeRange(config.trend.min_volume_24h_quote, config.trend.max_volume_24h_quote)
         detectors.append(MonitoredDetector("K 线趋势", trend, trend.warmup_interval, trend.warmup_candles, volume))
+    if config.launch.enabled:
+        launch = build_launch_detector(config.launch)
+        volume = VolumeRange(config.launch.min_volume_24h_quote, config.launch.max_volume_24h_quote)
+        detectors.append(MonitoredDetector("放量启动", launch, launch.warmup_interval, launch.warmup_candles, volume))
     return detectors
 
 

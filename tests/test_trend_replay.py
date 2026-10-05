@@ -5,9 +5,9 @@ import pytest
 from price_alert.assembly import build_trend_detector
 from price_alert.config import AppConfig
 from price_alert.formatting import BEIJING_TIME
+from price_alert.gate import fetch_minute_candles
 from price_alert.models import Candle
 from price_alert.trend.replay import (
-    fetch_minute_candles,
     plan_trend_replay,
     render_trend_replay,
     run_trend_replay,

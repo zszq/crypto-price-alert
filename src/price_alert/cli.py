@@ -22,8 +22,11 @@ from price_alert.assembly import (
 )
 from price_alert.config import INTERVAL_SECONDS, AppConfig, load_config
 from price_alert.formatting import BEIJING_TIME
-from price_alert.gate import price_decimals
+from price_alert.gate import GateRestClient, fetch_minute_candles, price_decimals
 from price_alert.instance import AlreadyRunningError, ProcessLock
+from price_alert.launch.alerts import describe_launch_rule
+from price_alert.launch.replay import plan_launch_replay, render_launch_replay, run_launch_replay
+from price_alert.launch.simulate import simulate_launch
 from price_alert.models import Candle, PriceTick
 from price_alert.notifier import ConsoleNotifier
 from price_alert.replay import (
@@ -36,7 +39,7 @@ from price_alert.replay import (
 )
 from price_alert.service import run_monitor
 from price_alert.trend.alerts import describe_trend_rule
-from price_alert.trend.replay import fetch_minute_candles, plan_trend_replay, render_trend_replay, run_trend_replay
+from price_alert.trend.replay import plan_trend_replay, render_trend_replay, run_trend_replay
 from price_alert.trend.simulate import simulate_trend
 from price_alert.universe import select_liquid_contracts
 from price_alert.windows import MoveWindow, describe_rule
@@ -47,6 +50,8 @@ DEMO_ATR = 2.0
 DEFAULT_REPLAY_MINUTES = 15
 # 趋势回放只给开始时间时的时长：趋势以十几分钟到数小时计，区间要能容下一段完整的开始到结束。
 DEFAULT_TREND_REPLAY_HOURS = 3
+# 放量回放只给开始时间时的时长：足够看完一段启动以及之后的几波拉升。
+DEFAULT_LAUNCH_REPLAY_HOURS = 6
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,6 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("simulate", "使用合成行情验证 ATR 异动提醒"),
         ("replay", "用历史成交回放某个合约，逐秒解释为什么提醒或没有提醒"),
         ("trend-replay", "用历史 1 分钟 K 线回放某个合约的趋势提醒，逐根解释判定结果"),
+        ("launch-replay", "用历史 1 分钟 K 线回放某个合约的放量启动提醒，逐分钟解释判定结果"),
     ):
         command = commands.add_parser(name, help=help_text)
         command.add_argument("--config", default="config/default.yaml")
@@ -71,6 +77,11 @@ def build_parser() -> argparse.ArgumentParser:
         commands.choices["trend-replay"],
         f"默认开始后 {DEFAULT_TREND_REPLAY_HOURS} 小时",
         "输出每个周期每根 K 线的判定，而不只是形态成立的时刻",
+    )
+    _add_replay_arguments(
+        commands.choices["launch-replay"],
+        f"默认开始后 {DEFAULT_LAUNCH_REPLAY_HOURS} 小时",
+        "输出每一分钟的判定，而不只是满足条件的分钟",
     )
     return parser
 
@@ -99,17 +110,21 @@ def _build_demo_candles(end: datetime, count: int, interval_seconds: int) -> lis
 
 def expected_simulated_alerts(config: AppConfig) -> int:
     trend_periods = len(config.trend.rules()) if config.trend.enabled else 0
-    return len(build_windows(config)) + trend_periods
+    return len(build_windows(config)) + trend_periods + int(config.launch.enabled)
 
 
 async def simulate(config: AppConfig) -> int:
-    """为每个启用的观察窗口和趋势周期各跑一遍合成行情，返回提醒总数；正常时等于 expected_simulated_alerts。"""
+    """为每个启用的观察窗口、趋势周期和放量启动各跑一遍合成行情，返回提醒总数；正常时等于 expected_simulated_alerts。"""
     notifier = ConsoleNotifier(beep=False, colors=config.alerts.console_colors)
     alert_count = 0
     for window in build_windows(config, cooldown_seconds=0):
         alert_count += await _simulate_window(config, window, notifier)
     if config.trend.enabled:
         for alert in simulate_trend(config.trend):
+            alert_count += 1
+            await notifier.send(alert)
+    if config.launch.enabled:
+        for alert in simulate_launch(config.launch):
             alert_count += 1
             await notifier.send(alert)
     return alert_count
@@ -200,16 +215,37 @@ def trend_replay(config: AppConfig, args: argparse.Namespace) -> None:
         candles = fetch_minute_candles(rest, plan.symbol, plan.warmup_start, plan.end)
     except (OSError, ValueError, TypeError, http.client.HTTPException) as exc:
         raise SystemExit(f"获取 {plan.symbol} 历史 K 线失败：{exc}") from exc
-    decimals: int | None = None
-    try:
-        decimals = price_decimals(rest.fetch_contract(plan.symbol).get("order_price_round"))
-    except Exception as exc:
-        # 与成交回放一致：精度只影响价格显示，取不到就按有效数字显示。
-        LOGGER.warning("%s 合约信息获取失败，价格按有效数字显示：%s", plan.symbol, exc)
     if not candles:
         raise SystemExit(f"{plan.symbol} 在该时间段没有取到 K 线：合约名可能有误")
-    result = run_trend_replay(config.trend, plan, candles, decimals)
+    result = run_trend_replay(config.trend, plan, candles, _fetch_price_decimals(rest, plan.symbol))
     print("\n".join(render_trend_replay(result, show_all=args.all)))
+
+
+def launch_replay(config: AppConfig, args: argparse.Namespace) -> None:
+    rule = config.launch.to_rule()
+    try:
+        start, end = _replay_range(args, timedelta(hours=DEFAULT_LAUNCH_REPLAY_HOURS))
+        plan = plan_launch_replay(normalize_symbol(args.symbol), start, end, rule)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    rest = build_rest_client(config)
+    try:
+        candles = fetch_minute_candles(rest, plan.symbol, plan.warmup_start, plan.end)
+    except (OSError, ValueError, TypeError, http.client.HTTPException) as exc:
+        raise SystemExit(f"获取 {plan.symbol} 历史 K 线失败：{exc}") from exc
+    if not candles:
+        raise SystemExit(f"{plan.symbol} 在该时间段没有取到 K 线：合约名可能有误")
+    result = run_launch_replay(config.launch, plan, candles, _fetch_price_decimals(rest, plan.symbol))
+    print("\n".join(render_launch_replay(result, show_all=args.all)))
+
+
+def _fetch_price_decimals(rest: GateRestClient, symbol: str) -> int | None:
+    try:
+        return price_decimals(rest.fetch_contract(symbol).get("order_price_round"))
+    except Exception as exc:
+        # 与成交回放一致：精度只影响价格显示，取不到就按有效数字显示。
+        LOGGER.warning("%s 合约信息获取失败，价格按有效数字显示：%s", symbol, exc)
+        return None
 
 
 def print_universe(config: AppConfig) -> None:
@@ -257,6 +293,10 @@ def main() -> None:
                 print(f"  {describe_trend_rule(rule)}")
         else:
             print("  趋势提醒：已关闭")
+        if config.launch.enabled:
+            print(f"  {describe_launch_rule(config.launch.to_rule())}")
+        else:
+            print("  放量启动提醒：已关闭")
         return
     if args.command == "universe":
         print_universe(config)
@@ -266,8 +306,8 @@ def main() -> None:
         produced = asyncio.run(simulate(config))
         if produced != expected:
             raise SystemExit(
-                f"模拟应产生 {expected} 条提醒（每个窗口、每个趋势周期各一条），实际 {produced} 条，"
-                "请检查 indicator 与 trend 配置"
+                f"模拟应产生 {expected} 条提醒（每个窗口、每个趋势周期、放量启动各一条），实际 {produced} 条，"
+                "请检查 indicator、trend 与 launch 配置"
             )
         return
     if args.command == "replay":
@@ -275,6 +315,9 @@ def main() -> None:
         return
     if args.command == "trend-replay":
         trend_replay(config, args)
+        return
+    if args.command == "launch-replay":
+        launch_replay(config, args)
         return
     try:
         with ProcessLock(Path("data/price-alert.lock")):

@@ -15,7 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -38,6 +38,10 @@ RATE_LIMIT_RESET_HEADER = "X-Gate-RateLimit-Reset-Timestamp"
 # 历史成交接口单页上限；offset 翻页在十万级就会被拒绝（offset too big），所以翻页主要靠收缩 to。
 TRADES_PAGE_SIZE = 1000
 TRADES_PROGRESS_PAGES = 20
+# Gate 只保留最近 10000 根 1 分钟 K 线（约 6.9 天），更早的请求会直接返回 400。
+GATE_MINUTE_HISTORY = 10_000
+# 分段取 1 分钟 K 线时单次请求的根数，低于 Gate 的 2000 上限并留出余量。
+MINUTE_CANDLES_PER_REQUEST = 1000
 # 提醒里附带的合约交易页，末尾拼接合约名。
 TRADE_PAGE_URL = "https://www.gate.com/zh/futures/USDT/"
 
@@ -52,6 +56,15 @@ def price_decimals(order_price_round: Any) -> int | None:
         return None
     # normalize 去掉尾随零（"0.010" 与 "0.01" 同为两位）；步长为整数时指数非负，按 0 位小数显示。
     return max(0, -step.normalize().as_tuple().exponent)
+
+
+def quanto_multiplier(value: Any) -> float | None:
+    """合约面值（一张合约对应的币数），无法识别或不是正的有限数时返回 None。"""
+    try:
+        multiplier = float(value)
+    except (TypeError, ValueError):
+        return None
+    return multiplier if math.isfinite(multiplier) and multiplier > 0 else None
 
 
 def futures_trade_url(symbol: str) -> str:
@@ -314,6 +327,20 @@ class GateRestClient:
                 return delay
         # 两个头都没有才盲目退避：等多久全靠猜，限频窗口未重置就会连续撞满重试次数。
         return RATE_LIMITED_BACKOFF_SECONDS * (2**attempt)
+
+
+def fetch_minute_candles(rest: GateRestClient, symbol: str, start: datetime, end: datetime) -> list[Candle]:
+    """取开盘时间在 [start, end) 内的 1 分钟 K 线，按单次上限分段请求；趋势与放量回放共用。"""
+    minute = timedelta(minutes=1)
+    candles: dict[datetime, Candle] = {}
+    cursor = start
+    while cursor < end:
+        # Gate 的 from/to 两端都包含，分段的 to 取下一段起点前一分钟，避免重复。
+        stop = min(cursor + minute * MINUTE_CANDLES_PER_REQUEST, end)
+        for candle in rest.fetch_candles_between(symbol, "1m", cursor, stop - minute):
+            candles[candle.timestamp] = candle
+        cursor = stop
+    return [candles[key] for key in sorted(candles) if start <= key < end]
 
 
 def parse_candle(payload: Mapping[str, Any]) -> Candle:

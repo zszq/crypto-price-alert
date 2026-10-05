@@ -113,6 +113,29 @@ def test_selected_contracts_carry_price_precision_from_order_price_round():
     assert {item.symbol: item.price_decimals for item in selected} == {"BTC_USDT": 1, "ODD_USDT": None}
 
 
+def test_selected_contracts_carry_quanto_multiplier():
+    selected = select_liquid_contracts(
+        [
+            {"contract": "BTC_USDT", "last": "112345.6", "volume_24h_quote": "20000000"},
+            {"contract": "BAD_USDT", "last": "1", "volume_24h_quote": "20000000"},
+            {"contract": "ODD_USDT", "last": "1", "volume_24h_quote": "20000000"},
+        ],
+        [
+            {"name": "BTC_USDT", "contract_type": "", "status": "trading", "quanto_multiplier": "0.0001"},
+            {"name": "BAD_USDT", "contract_type": "", "status": "trading", "quanto_multiplier": "0"},
+            {"name": "ODD_USDT", "contract_type": "", "status": "trading"},
+        ],
+        10_000_000,
+    )
+
+    # 面值缺失或不是正数时为 None，放量检测据此不对该合约换算成交额。
+    assert {item.symbol: item.quanto_multiplier for item in selected} == {
+        "BTC_USDT": 0.0001,
+        "BAD_USDT": None,
+        "ODD_USDT": None,
+    }
+
+
 def test_optional_upper_bound_keeps_volume_inside_the_range():
     volumes = {"LOW_USDT": 10_000_000, "MIN_USDT": 10_000_001, "MAX_USDT": 50_000_000, "HIGH_USDT": 50_000_001}
     tickers = [{"contract": symbol, "last": "1", "volume_24h_quote": str(volume)} for symbol, volume in volumes.items()]

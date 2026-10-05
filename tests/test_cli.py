@@ -4,6 +4,7 @@ import pytest
 
 from price_alert import cli
 from price_alert.config import AppConfig
+from price_alert.launch.simulate import simulate_launch
 
 
 @pytest.mark.parametrize(
@@ -33,9 +34,14 @@ from price_alert.config import AppConfig
     ],
 )
 def test_simulate_produces_one_alert_per_enabled_window(indicator, expected_alerts, capsys):
-    # 关闭趋势提醒，只验证观察窗口；趋势周期由下面的用例单独覆盖。
+    # 关闭趋势与放量提醒，只验证观察窗口；趋势周期、放量启动由下面的用例单独覆盖。
     config = AppConfig.model_validate(
-        {"indicator": indicator, "trend": {"enabled": False}, "alerts": {"console_colors": False}}
+        {
+            "indicator": indicator,
+            "trend": {"enabled": False},
+            "launch": {"enabled": False},
+            "alerts": {"console_colors": False},
+        }
     )
 
     assert asyncio.run(cli.simulate(config)) == expected_alerts == cli.expected_simulated_alerts(config)
@@ -55,7 +61,9 @@ def test_simulate_produces_one_alert_per_enabled_window(indicator, expected_aler
     ],
 )
 def test_simulate_produces_one_alert_per_enabled_trend_period(periods, expected_trend_alerts, capsys):
-    config = AppConfig.model_validate({"trend": {"periods": periods}, "alerts": {"console_colors": False}})
+    config = AppConfig.model_validate(
+        {"trend": {"periods": periods}, "launch": {"enabled": False}, "alerts": {"console_colors": False}}
+    )
     windows = 2
 
     assert asyncio.run(cli.simulate(config)) == windows + expected_trend_alerts
@@ -156,3 +164,50 @@ def test_trend_replay_without_enabled_periods_exits_readably():
 
     with pytest.raises(SystemExit, match="没有启用任何周期"):
         cli.trend_replay(config, args)
+
+
+def test_simulate_includes_one_launch_alert(capsys):
+    config = AppConfig.model_validate({"trend": {"enabled": False}, "alerts": {"console_colors": False}})
+
+    assert asyncio.run(cli.simulate(config)) == 3 == cli.expected_simulated_alerts(config)
+    assert capsys.readouterr().out.count("[放量拉升]") == 1
+
+
+@pytest.mark.parametrize(
+    "launch",
+    [
+        {"window_minutes": 1, "cooldown_minutes": 1, "min_change_percent": 0.01},
+        {"window_minutes": 60, "baseline_minutes": 1440, "cooldown_minutes": 60, "min_volume_ratio": 100},
+        {"min_window_quote": 0, "require_breakout": False},
+    ],
+)
+def test_simulated_launch_satisfies_extreme_thresholds(launch):
+    config = AppConfig.model_validate({"launch": launch})
+
+    assert len(simulate_launch(config.launch)) == 1
+
+
+def test_launch_replay_runs_against_fake_exchange(monkeypatch, capsys):
+    from datetime import UTC, datetime, timedelta
+
+    from price_alert.models import Candle
+
+    class FakeRest:
+        def fetch_candles_between(self, symbol, interval, start, end):
+            count = int((end - start) / timedelta(minutes=1)) + 1
+            return [Candle(start + timedelta(minutes=i), 1.0, 1.0, 1.0, 1.0, 10.0) for i in range(count)]
+
+        def fetch_contract(self, symbol):
+            raise ConnectionError("contract down")
+
+    monkeypatch.setattr(cli, "build_rest_client", lambda config: FakeRest())
+    original_plan = cli.plan_launch_replay
+    now = datetime(2026, 10, 6, tzinfo=UTC)
+    monkeypatch.setattr(cli, "plan_launch_replay", lambda *items: original_plan(*items, now=now))
+    args = cli.build_parser().parse_args(["launch-replay", "rlc", "--start", "2026-10-05 17:30"])
+
+    cli.launch_replay(AppConfig(), args)
+
+    output = capsys.readouterr().out
+    assert "放量启动回放 RLC_USDT：2026-10-05 17:30:00 ～ 2026-10-05 23:30:00" in output
+    assert "区间内没有放量启动提醒" in output

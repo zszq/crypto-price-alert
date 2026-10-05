@@ -169,6 +169,7 @@ class AtrMoveDetector:
         volume_24h_quote: float,
         live_candle: Candle | None = None,
         price_decimals: int | None = None,
+        quanto_multiplier: float | None = None,
     ) -> None:
         normalized = symbol.upper()
         existing = self._states.get(normalized)

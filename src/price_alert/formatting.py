@@ -29,5 +29,19 @@ def describe_window(seconds: int) -> str:
     return f"{seconds}秒"
 
 
+def describe_minutes(minutes: int) -> str:
+    # 以小时计的时长（如放量基准期）按小时说，「360分钟」不如「6小时」直观。
+    return f"{minutes // 60}小时" if minutes >= 60 and minutes % 60 == 0 else f"{minutes}分钟"
+
+
+def format_amount(value: float) -> str:
+    """计价成交额按万、亿显示，冷门币几百 USDT 与热门币上亿 USDT 都能一眼读出量级。"""
+    for unit, name in ((100_000_000, "亿"), (10_000, "万")):
+        if value >= unit:
+            # 去掉无意义的尾随零，门槛「3万」不显示成「3.00万」。
+            return f"{value / unit:.2f}".rstrip("0").rstrip(".") + name
+    return f"{value:.0f}"
+
+
 def beijing_time(moment: datetime, pattern: str = "%Y-%m-%d %H:%M:%S") -> str:
     return moment.astimezone(BEIJING_TIME).strftime(pattern)

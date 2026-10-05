@@ -118,6 +118,8 @@ class _Monitor:
     config: AppConfig
     # 合约池刷新与断线回补共用一个信号量：两个循环并行运行，各自持有一个的话峰值并发会翻倍。
     semaphore: asyncio.Semaphore
+    # 首次订阅到合约后置位，行情循环等它再连接：启动时不必等全部检测器预热完才开始接收成交。
+    subscribed: asyncio.Event = field(default_factory=asyncio.Event)
 
     def _backoff(self) -> _Backoff:
         gate = self.config.gate
@@ -127,6 +129,23 @@ class _Monitor:
     def symbols(self) -> list[str]:
         """需要订阅成交的合约：任一检测器在监控的都算。"""
         return sorted({symbol for entry in self.detectors for symbol in entry.detector.symbols})
+
+    def _tiers(self, needed: dict[str, list[MonitoredDetector]]) -> list[list[str]]:
+        """按需要它的最靠前的检测器把合约分批，靠前的检测器先处理。
+
+        放量启动监控全市场，一轮预热或回补要几百次请求、受限速约束一两分钟；排在秒级异动与趋势之后，
+        它们的合约才不必在队列里陪着等。needed 中每个合约的检测器按 self.detectors 的顺序追加，第一个即最靠前。
+        """
+        order = {entry.name: index for index, entry in enumerate(self.detectors)}
+        tiers: dict[int, list[str]] = {}
+        for symbol in sorted(needed):
+            tiers.setdefault(order[needed[symbol][0].name], []).append(symbol)
+        return [tiers[index] for index in sorted(tiers)]
+
+    async def _subscribe(self) -> None:
+        await self.feed.set_symbols(self.symbols)
+        if self.feed.symbols:
+            self.subscribed.set()
 
     async def fetch_candles(self, symbol: str, entries: Sequence[MonitoredDetector]) -> list[_Warmup]:
         """按 entries 顺序返回各自的预热 K 线；同一周期只请求一次，取最多的根数再按各自需求截取。
@@ -155,9 +174,8 @@ class _Monitor:
         backoff = self._backoff()
         resynced = 0
 
-        async def resync(symbol: str) -> bool:
+        async def resync(symbol: str, entries: list[MonitoredDetector]) -> bool:
             # 只为该合约失效的检测器请求：合约可能只在部分检测器的合约池里。
-            entries = [entry for entry in self.detectors if symbol in entry.detector.stale_symbols]
             try:
                 warmups = await self.fetch_candles(symbol, entries)
             except Exception as exc:
@@ -169,10 +187,15 @@ class _Monitor:
 
         while True:
             # 每轮重新读取：回补期间合约池刷新可能已移除部分合约。
-            symbols = sorted({symbol for entry in self.detectors for symbol in entry.detector.stale_symbols})
+            stale: dict[str, list[MonitoredDetector]] = {}
+            for entry in self.detectors:
+                for symbol in entry.detector.stale_symbols:
+                    stale.setdefault(symbol, []).append(entry)
+            # 按批次顺序排队取信号量与令牌，靠前检测器的合约先恢复判定。
+            symbols = [symbol for tier in self._tiers(stale) for symbol in tier]
             if not symbols:
                 return
-            results = await asyncio.gather(*(resync(symbol) for symbol in symbols))
+            results = await asyncio.gather(*(resync(symbol, stale[symbol]) for symbol in symbols))
             failed = results.count(False)
             resynced += len(symbols) - failed
             if not failed:
@@ -194,11 +217,18 @@ class _Monitor:
             entry.detector.remove_symbols(current - target)
             for symbol in current & target:
                 ticker = selected_by_symbol[symbol]
-                entry.detector.add_symbol(symbol, [], ticker.volume_24h_quote, price_decimals=ticker.price_decimals)
+                entry.detector.add_symbol(
+                    symbol,
+                    [],
+                    ticker.volume_24h_quote,
+                    price_decimals=ticker.price_decimals,
+                    quanto_multiplier=ticker.quanto_multiplier,
+                )
             for symbol in target - current:
                 joining.setdefault(symbol, []).append(entry)
 
-        new_symbols = sorted(joining)
+        tiers = self._tiers(joining)
+        new_symbols = [symbol for tier in tiers for symbol in tier]
         if not new_symbols:
             return
         warming = {entry.name for joined in joining.values() for entry in joined}
@@ -223,14 +253,21 @@ class _Monitor:
                 LOGGER.warning("%s K 线预热失败：%s", symbol, exc)
             ticker = tickers[symbol]
             for entry, (closed, live, _) in zip(entries, warmups, strict=True):
-                entry.detector.add_symbol(symbol, closed, ticker.volume_24h_quote, live, ticker.price_decimals)
+                entry.detector.add_symbol(
+                    symbol, closed, ticker.volume_24h_quote, live, ticker.price_decimals, ticker.quanto_multiplier
+                )
             done += 1
             now = time.monotonic()
             if now - last_report >= _WARMUP_PROGRESS_SECONDS and done < len(new_symbols):
                 last_report = now
                 LOGGER.info("K 线预热进度：%d/%d", done, len(new_symbols))
 
-        await asyncio.gather(*(add_new_symbol(symbol) for symbol in new_symbols))
+        for index, tier in enumerate(tiers):
+            await asyncio.gather(*(add_new_symbol(symbol) for symbol in tier))
+            if index < len(tiers) - 1:
+                # 先订阅已预热好的合约：靠前的检测器马上开始接收成交，不必等后面几百个合约预热完。
+                await self._subscribe()
+                LOGGER.info("已订阅 %d 个合约，其余 %d 个新合约继续预热", len(self.symbols), len(new_symbols) - done)
         LOGGER.info(
             "K 线预热完成：%d 个合约%s，耗时 %.1f 秒",
             len(new_symbols),
@@ -261,7 +298,7 @@ class _Monitor:
             raise RuntimeError("Gate.io 没有满足成交额条件的可用虚拟币合约")
         await self.sync_universe(selections)
         # 先完成预热再订阅，新合约的第一笔实时成交到达时检测器已经就绪。
-        await self.feed.set_symbols(self.symbols)
+        await self._subscribe()
         LOGGER.info(
             "交易对池已刷新：%s，共订阅 %d 个合约（24h 计价成交额，USDT）",
             "，".join(
@@ -369,7 +406,8 @@ class _Monitor:
                             rejected = len(self.feed.rejected_symbols)
                             LOGGER.info(
                                 "监控正常：%d 个合约%s，累计 %s 条成交%s",
-                                len(self.symbols),
+                                # 按实际订阅数：分批预热期间，检测器里已有、还没订阅的合约收不到成交。
+                                len(self.feed.symbols),
                                 f"（{rejected} 个订阅被拒绝）" if rejected else "",
                                 f"{tick_count:,}",
                                 faults.summary(),
@@ -397,8 +435,17 @@ async def run_monitor(config: AppConfig) -> None:
         config=config,
         semaphore=asyncio.Semaphore(gate.warmup_concurrency),
     )
-    await monitor.initial_universe()
+
+    async def maintain_universe() -> None:
+        await monitor.initial_universe()
+        await monitor.universe_loop()
+
+    async def stream(dispatcher: AlertDispatcher) -> None:
+        # 首次初始化按检测器分批预热，第一批订阅后就开始接收成交，其余合约预热完再增量订阅。
+        await monitor.subscribed.wait()
+        await monitor.stream_loop(dispatcher)
+
     async with AlertDispatcher(build_notifiers(config.alerts), config.alerts.queue_size) as dispatcher:
         async with asyncio.TaskGroup() as tasks:
-            tasks.create_task(monitor.universe_loop())
-            tasks.create_task(monitor.stream_loop(dispatcher))
+            tasks.create_task(maintain_universe())
+            tasks.create_task(stream(dispatcher))

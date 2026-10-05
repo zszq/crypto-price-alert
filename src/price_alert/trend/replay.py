@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 from price_alert.assembly import build_trend_detector
 from price_alert.formatting import beijing_time, format_price
-from price_alert.gate import GateRestClient
+from price_alert.gate import GATE_MINUTE_HISTORY
 from price_alert.models import Candle
 from price_alert.trend.alerts import TrendAlert, describe_trend_rule, format_trend_alert
 from price_alert.trend.config import TrendConfig
@@ -21,10 +21,6 @@ from price_alert.trend.detector import OUTCOME_LABELS, TrendDetector, TrendEvalu
 from price_alert.trend.pattern import CONDITION_LABELS, TrendRule
 
 MINUTE = timedelta(minutes=1)
-# Gate 只保留最近 10000 根 1 分钟 K 线（约 6.9 天），更早的请求会直接返回 400。
-GATE_MINUTE_HISTORY = 10_000
-# 单次请求的 K 线根数，低于 Gate 的 2000 上限并留出余量。
-_CHUNK_CANDLES = 1000
 # 默认输出只列形态成立的判定，其余只计入统计。
 _QUIET_OUTCOMES = frozenset({TrendOutcome.INSUFFICIENT_DATA, TrendOutcome.NO_DIRECTION, TrendOutcome.FAILED})
 
@@ -71,19 +67,6 @@ def plan_trend_replay(
             f"开始时间最早为 {beijing_time(earliest + warmup + MINUTE, '%Y-%m-%d %H:%M')}（北京时间）"
         )
     return TrendReplayPlan(symbol, start, end, warmup_start)
-
-
-def fetch_minute_candles(rest: GateRestClient, symbol: str, start: datetime, end: datetime) -> list[Candle]:
-    """取开盘时间在 [start, end) 内的 1 分钟 K 线，按单次上限分段请求。"""
-    candles: dict[datetime, Candle] = {}
-    cursor = start
-    while cursor < end:
-        # Gate 的 from/to 两端都包含，分段的 to 取下一段起点前一分钟，避免重复。
-        stop = min(cursor + MINUTE * _CHUNK_CANDLES, end)
-        for candle in rest.fetch_candles_between(symbol, "1m", cursor, stop - MINUTE):
-            candles[candle.timestamp] = candle
-        cursor = stop
-    return [candles[key] for key in sorted(candles) if start <= key < end]
 
 
 def run_trend_replay(

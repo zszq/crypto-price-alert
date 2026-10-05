@@ -7,7 +7,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from price_alert.gate import price_decimals
+from price_alert.gate import price_decimals, quanto_multiplier
 from price_alert.models import ContractTicker
 
 
@@ -19,7 +19,8 @@ class VolumeRange:
     maximum: float | None = None
 
     def describe(self) -> str:
-        low = f"{self.minimum / 1_000_000:g}M"
+        # 下限为 0 即不设门槛，写成「0M」反而像漏了单位。
+        low = f"{self.minimum / 1_000_000:g}M" if self.minimum else "0"
         return f"> {low}" if self.maximum is None else f"{low} ~ {self.maximum / 1_000_000:g}M"
 
 
@@ -66,6 +67,12 @@ def select_liquid_contracts(
         contract = crypto_contracts.get(symbol)
         if contract is not None and symbol.endswith("_USDT") and last_price > 0 and in_range:
             selected.append(
-                ContractTicker(symbol, last_price, volume, price_decimals(contract.get("order_price_round")))
+                ContractTicker(
+                    symbol,
+                    last_price,
+                    volume,
+                    price_decimals(contract.get("order_price_round")),
+                    quanto_multiplier(contract.get("quanto_multiplier")),
+                )
             )
     return sorted(selected, key=lambda item: item.volume_24h_quote, reverse=True)

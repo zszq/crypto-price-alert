@@ -56,6 +56,8 @@ class ContractTicker:
     volume_24h_quote: float
     # 交易所报价精度（小数位数），只用于展示；缺失时由展示层按有效数字自行决定。
     price_decimals: int | None = None
+    # 一张合约对应的币数：实时成交的 size 是张数，换算计价成交额要乘它和价格。无法识别时为 None。
+    quanto_multiplier: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
