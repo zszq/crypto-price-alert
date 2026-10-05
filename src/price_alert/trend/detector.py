@@ -246,30 +246,32 @@ class TrendDetector:
 
     def _seed(self, state: _SymbolState, candles: Sequence[Candle], live_candle: Candle | None) -> None:
         for candle in sorted(candles, key=lambda item: item.timestamp):
-            self._append(state, candle)
+            state.minutes.extend(self._filled(state, candle))
         last = state.minutes[-1].timestamp if state.minutes else None
         if live_candle is not None and (last is None or live_candle.timestamp > last):
             state.live = _LiveMinute.from_candle(live_candle)
 
-    def _append(self, state: _SymbolState, candle: Candle) -> list[Candle]:
-        """按时间追加一根 1 分钟 K 线，中间缺的分钟补平线；返回实际追加的 K 线。"""
+    def _filled(self, state: _SymbolState, candle: Candle) -> list[Candle]:
+        """接在已有 K 线之后需要追加的 K 线：中间缺的分钟补平线；不晚于最后一根的返回空列表。"""
         minutes = state.minutes
         if minutes and candle.timestamp <= minutes[-1].timestamp:
             return []
-        appended: list[Candle] = []
+        filled: list[Candle] = []
         if minutes:
             previous = minutes[-1]
             missing = int((candle.timestamp - previous.timestamp) / MINUTE) - 1
             # 超出保留长度的平线进来也会被挤出，只补需要的部分。
             for offset in range(min(missing, self._retention), 0, -1):
-                appended.append(_flat(candle.timestamp - MINUTE * offset, previous.close))
-        appended.append(candle)
-        minutes.extend(appended)
-        return appended
+                filled.append(_flat(candle.timestamp - MINUTE * offset, previous.close))
+        filled.append(candle)
+        return filled
 
     def _close_minute(self, symbol: str, state: _SymbolState, candle: Candle) -> list[TrendAlert]:
         alerts: list[TrendAlert] = []
-        for minute in self._append(state, candle):
+        # 逐根追加、逐根判定：判定窗口取的是最近的 K 线，一次补出多根平线时若先全部追加，
+        # 判定靠前的分钟会把之后的平线算进窗口，周期 K 线也不再对齐周期边界。
+        for minute in self._filled(state, candle):
+            state.minutes.append(minute)
             alerts.extend(self._evaluate(symbol, state, minute.timestamp + MINUTE))
         return alerts
 

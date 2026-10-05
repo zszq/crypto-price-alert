@@ -316,3 +316,21 @@ def test_mark_symbol_gap_only_invalidates_that_symbol():
     assert detector.stale_symbols == [SYMBOL]
     assert detector.resync_symbol(SYMBOL, flat(10), None, minute(10))
     assert detector.stale_symbols == []
+
+
+def test_flat_minutes_filled_after_a_gap_are_judged_without_later_candles():
+    evaluations = []
+    detector = TrendDetector([rule("3m", candles=3, min_change_percent=3.0)], evaluations.append)
+    detector.add_symbol(SYMBOL, flat(9), 1e9)
+    price = 100.0
+    for index in range(9, 18):
+        price -= 0.5
+        detector.add_tick(PriceTick(SYMBOL, price, 1.0, minute(index) + timedelta(seconds=1)))
+
+    # 17 分之后沉寂到 22 分：这笔成交一次补出 18~21 分的平线。00:21 收盘的 3 分钟窗口是 12~20 分，
+    # 起点是 12 分的开盘价 98.0；不能把 21 分的平线算进去、错位成 13~21 分（起点 97.5）。
+    detector.add_tick(PriceTick(SYMBOL, price, 1.0, minute(22) + timedelta(seconds=1)))
+
+    judged = {item.timestamp: item for item in evaluations}
+    assert judged[minute(21)].metrics.start_price == pytest.approx(98.0)
+    assert judged[minute(18)].metrics.start_price == pytest.approx(99.5)
