@@ -268,7 +268,7 @@ launch:
   require_breakout: true
   # 同方向两次提醒的最小间隔（分钟，1~1440，不能小于窗口）：同一段放量在窗口滑过期间不会每分钟报一次。
   # 默认：15
-  cooldown_minutes: 15
+  cooldown_minutes: 10
   # 再次提醒要求价格比上次提醒价再推进的幅度（百分比，[0, 100]）：原地放量震荡不重复提醒，拉出新一截才报下一波。
   # 默认：5
   realert_step_percent: 5.0
