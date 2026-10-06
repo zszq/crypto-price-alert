@@ -77,7 +77,8 @@ class LaunchMetrics:
     window_quote: float
     # 基准期内与窗口等长的平均成交额。
     baseline_quote: float
-    # 窗口成交额 ÷ 基准平均；基准期完全无成交时为 None，视为满足。
+    # 量比 = 窗口成交额 ÷ 基准平均，即最近一个窗口（默认 5 分钟）的成交额是它平时同样长度成交额的多少倍；
+    # 基准期完全无成交时为 None，视为满足。
     volume_ratio: float | None
     # 基准期最高价（上涨）或最低价（下跌）：收盘越过它才算离开原来的区间。
     breakout_price: float
