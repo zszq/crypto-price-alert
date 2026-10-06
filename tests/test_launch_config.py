@@ -7,12 +7,11 @@ from price_alert.launch.config import LaunchConfig
 from price_alert.universe import VolumeRange
 
 
-def test_defaults_watch_every_contract_and_build_rule():
+def test_defaults_and_build_rule():
     config = LaunchConfig()
     rule = config.to_rule()
 
-    # 启动前的币成交极少，默认不设成交额下限。
-    assert (config.min_volume_24h_quote, config.max_volume_24h_quote) == (0, None)
+    assert (config.min_volume_24h_quote, config.max_volume_24h_quote) == (1_000_000, None)
     assert (rule.window_minutes, rule.baseline_minutes, rule.history_minutes) == (5, 360, 365)
     assert (rule.min_volume_ratio, rule.min_window_quote, rule.min_change_percent) == (5.0, 100_000, 3.0)
     assert (rule.require_breakout, rule.alert_drops) == (True, False)

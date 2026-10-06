@@ -133,8 +133,9 @@ class _Monitor:
     def _tiers(self, needed: dict[str, list[MonitoredDetector]]) -> list[list[str]]:
         """按需要它的最靠前的检测器把合约分批，靠前的检测器先处理。
 
-        放量启动监控全市场，一轮预热或回补要几百次请求、受限速约束一两分钟；排在秒级异动与趋势之后，
-        它们的合约才不必在队列里陪着等。needed 中每个合约的检测器按 self.detectors 的顺序追加，第一个即最靠前。
+        放量启动的合约池最大（下限设为 0 时是全市场），一轮预热或回补要上百次请求、受限速约束可达一两分钟；
+        排在秒级异动与趋势之后，它们的合约才不必在队列里陪着等。
+        needed 中每个合约的检测器按 self.detectors 的顺序追加，第一个即最靠前。
         """
         order = {entry.name: index for index, entry in enumerate(self.detectors)}
         tiers: dict[int, list[str]] = {}

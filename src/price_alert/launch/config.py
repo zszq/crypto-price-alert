@@ -11,9 +11,10 @@ class LaunchConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
-    # 启动前的币往往成交极少（RLC 启动前 24 小时只有约 7 万 USDT），按 24 小时成交额设门槛就会等它涨完才入池，
-    # 所以默认不设下限，监控全部虚拟币合约；冷门币的噪声靠 min_window_quote 的绝对成交额兜底。
-    min_volume_24h_quote: float = Field(default=0, ge=0)
+    # 24 小时成交额不足 100 万的币，提醒后 30 分钟的成交额还不如提醒窗口本身，多是没人跟进的假启动；
+    # 下限定在 100 万而不更高，是因为启动中的币成交额涨得很快，多数第一波刚过就会入池，
+    # 6.6 天回测中报到的大行情没有减少；再提高就开始漏掉之后大涨的提醒。
+    min_volume_24h_quote: float = Field(default=1_000_000, ge=0)
     max_volume_24h_quote: float | None = Field(default=None, gt=0)
     window_minutes: int = Field(default=5, ge=1, le=60)
     # 基准期加窗口不超过 1500 分钟，预热一次请求就能取完（Gate 单次上限 2000 根）。
