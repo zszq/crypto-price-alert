@@ -29,9 +29,12 @@ def simulate_launch(config: LaunchConfig) -> list[LaunchAlert]:
     ]
     detector.add_symbol(SYMBOL, flat, 1_000_000_000, quanto_multiplier=1.0)
 
-    # 成交额与涨幅都取门槛的 1.5 倍，平均分到窗口的每一分钟，逐分钟走高且无影线。
+    # 成交额与涨幅都取门槛的 1.5 倍（涨幅不超过上下限的中点），平均分到窗口的每一分钟，逐分钟走高且无影线。
     window_quote = max(rule.min_window_quote, rule.min_volume_ratio * _BASE_QUOTE * rule.window_minutes) * 1.5
-    step = _PRICE * rule.min_change_percent * 1.5 / 100 / rule.window_minutes
+    change = rule.min_change_percent * 1.5
+    if rule.max_change_percent is not None:
+        change = min(change, (rule.min_change_percent + rule.max_change_percent) / 2)
+    step = _PRICE * change / 100 / rule.window_minutes
     alerts: list[LaunchAlert] = []
     for index in range(rule.window_minutes):
         open_price = _PRICE + step * index

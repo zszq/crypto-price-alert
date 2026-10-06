@@ -69,9 +69,12 @@ def describe_launch_rule(rule: LaunchRule) -> str:
     baseline = describe_minutes(rule.baseline_minutes)
     breakout = f"，收盘突破近{baseline}高低点" if rule.require_breakout else ""
     directions = "涨跌都提醒" if rule.alert_drops else "只提醒上涨"
+    change = f"涨跌幅 ≥ {rule.min_change_percent:g}%"
+    if rule.max_change_percent is not None:
+        change = f"涨跌幅 {rule.min_change_percent:g}%~{rule.max_change_percent:g}%"
     return (
         f"放量启动：最近 {rule.window_minutes} 分钟成交额 ≥ {format_amount(rule.min_window_quote)} USDT "
-        f"且 ≥ 近{baseline}同长度均量的 {rule.min_volume_ratio:g} 倍，涨跌幅 ≥ {rule.min_change_percent:g}%{breakout}；"
+        f"且 ≥ 近{baseline}同长度均量的 {rule.min_volume_ratio:g} 倍，{change}{breakout}；"
         f"同方向再次提醒需间隔 ≥ {rule.cooldown_minutes} 分钟且价格比上次提醒再推进 ≥ {rule.realert_step_percent:g}%"
         f"（超过{baseline}重新计为启动）；{directions}"
     )

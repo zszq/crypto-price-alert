@@ -23,6 +23,7 @@ class Condition(StrEnum):
     CHANGE = "change"
     BREAKOUT = "breakout"
     DIRECTION = "direction"
+    OVERSHOOT = "overshoot"
 
 
 CONDITION_LABELS: dict[Condition, str] = {
@@ -31,6 +32,7 @@ CONDITION_LABELS: dict[Condition, str] = {
     Condition.CHANGE: "涨跌幅不足",
     Condition.BREAKOUT: "未突破基准期高低点",
     Condition.DIRECTION: "下跌（未开启下跌提醒）",
+    Condition.OVERSHOOT: "涨跌幅过大（已是追高，不提醒但计入冷却）",
 }
 
 
@@ -45,17 +47,24 @@ class LaunchRule:
     alert_drops: bool = False
     cooldown_minutes: int = 15
     realert_step_percent: float = 5.0
+    max_change_percent: float | None = 15.0
 
     def __post_init__(self) -> None:
         if self.window_minutes < 1:
             raise ValueError("window_minutes 必须至少为 1")
         if self.baseline_minutes <= self.window_minutes:
             raise ValueError("baseline_minutes 必须大于 window_minutes")
+        if self.max_change_percent is not None and self.max_change_percent <= self.min_change_percent:
+            raise ValueError("max_change_percent 必须大于 min_change_percent")
 
     @property
     def history_minutes(self) -> int:
         """判定一次所需的已收盘 1 分钟 K 线：基准期加观察窗口。"""
         return self.baseline_minutes + self.window_minutes
+
+    def overshoots(self, change_percent: float) -> bool:
+        """涨跌幅（取绝对值）超过上限：这么短时间走完这么多，提醒时已在插针的高点。"""
+        return self.max_change_percent is not None and abs(change_percent) > self.max_change_percent
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +136,9 @@ def evaluate_launch(history: Sequence[Candle], rule: LaunchRule) -> LaunchMetric
         failures.append(Condition.RATIO)
     if abs(change_percent) < rule.min_change_percent:
         failures.append(Condition.CHANGE)
+    # 从沉寂中 5 分钟就涨超 15% 的几乎都是插针式拉盘，回测中 15 次有 14 次 60 分钟内回落 8% 以上，提醒只会追在高点。
+    if rule.overshoots(change_percent):
+        failures.append(Condition.OVERSHOOT)
     if rule.require_breakout and not breaks_out(direction, end_price, breakout_price):
         failures.append(Condition.BREAKOUT)
     return LaunchMetrics(

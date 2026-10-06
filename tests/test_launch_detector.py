@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from price_alert.launch.detector import LaunchDetector, LaunchOutcome
-from price_alert.launch.rule import LaunchRule
+from price_alert.launch.rule import Condition, LaunchRule
 from price_alert.models import Candle, PriceTick
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
@@ -93,6 +93,58 @@ def test_cooldown_then_requires_price_to_extend():
     second = [alert for item in rally(detector, 43, [107.0, 109.5], quote=8000.0, price=104.5) for alert in item]
     assert [alert.wave for alert in second] == [2]
     assert second[0].label == "放量拉升·第2波"
+
+
+def test_overshoot_is_silent_but_blocks_catch_up_alert_at_the_top():
+    evaluations = []
+    detector = make(evaluations.append, seed=30, baseline_minutes=30)
+    # 3 分钟从 100 拉到 120（+20%），只因超过 15% 上限而不提醒。
+    assert not any(rally(detector, 30, [105.0, 118.0, 120.0]))
+    assert evaluations[-1].metrics.failures == (Condition.OVERSHOOT,)
+
+    # 窗口滑过插针后涨幅回到区间内（118 → 128，+8.5%）：插针已记入冷却，不在高位补报。
+    assert not any(rally(detector, 33, [124.0, 128.0], price=120.0))
+    assert evaluations[-1].outcome is LaunchOutcome.COOLDOWN
+
+
+def test_after_overshoot_next_alert_must_extend_past_spike_close():
+    evaluations = []
+    detector = make(evaluations.append, seed=30, baseline_minutes=30, require_breakout=False)
+    rally(detector, 30, [105.0, 118.0, 120.0])
+    for index in range(33, 39):
+        detector.add_candle(SYMBOL, Candle(minute(index), 122.0, 122.5, 121.5, 122.0, 100.0))
+
+    # 冷却已过、再次放量：125.8 没比插针收盘价 120 再推进 5%，不算新的一波。
+    assert not any(rally(detector, 39, [123.5, 125.0, 125.8], quote=2000.0, price=122.0))
+    assert evaluations[-1].outcome is LaunchOutcome.NOT_EXTENDED
+
+    # 推进到 128 才报；插针没有发出提醒，这仍是用户看到的第 1 波。
+    alerts = rally(detector, 42, [128.0], quote=2000.0, price=125.8)
+    assert [(alert.wave, alert.label) for item in alerts for alert in item] == [(1, "放量拉升")]
+
+
+def test_overshoot_below_last_alert_does_not_lower_next_wave_bar():
+    evaluations = []
+    detector = make(evaluations.append, seed=30, baseline_minutes=30, require_breakout=False)
+    assert [a.metrics.end_price for item in rally(detector, 30, [101.0, 102.5, 104.0]) for a in item] == [104.0]
+    detector.add_candle(SYMBOL, bar(33, 104.0, 85.0, 100.0))
+    for index in range(34, 40):
+        detector.add_candle(SYMBOL, Candle(minute(index), 85.0, 85.5, 84.5, 85.0, 100.0))
+    # 回落后插针 85 → 100（+17.6%），但没比上次提醒价 104 再推进 5%：真提醒也会被拦下，插针不能改写提醒记录。
+    rally(detector, 40, [90.0, 97.0, 100.0], quote=2000.0, price=85.0)
+    assert evaluations[-1].metrics.failures == (Condition.OVERSHOOT,)
+    for index in range(43, 48):
+        detector.add_candle(SYMBOL, Candle(minute(index), 100.0, 100.5, 99.5, 100.0, 100.0))
+
+    # 106 比插针价 100 高 6%，但比上次提醒价 104 只高 1.9%，仍不算新的一波。
+    assert not any(rally(detector, 48, [102.0, 104.0, 106.0], quote=2000.0, price=100.0))
+    assert evaluations[-1].outcome is LaunchOutcome.NOT_EXTENDED
+
+
+def test_overshoot_alerts_directly_when_cap_disabled():
+    alerts = rally(make(seed=30, baseline_minutes=30, max_change_percent=None), 30, [105.0, 118.0, 120.0])
+
+    assert [alert.metrics.change_percent for item in alerts for alert in item] == [pytest.approx(20.0)]
 
 
 def test_alert_memory_expires_after_one_baseline():

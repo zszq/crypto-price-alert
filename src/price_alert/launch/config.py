@@ -25,6 +25,8 @@ class LaunchConfig(BaseModel):
     alert_drops: bool = False
     cooldown_minutes: int = Field(default=15, ge=1, le=1440)
     realert_step_percent: float = Field(default=5.0, ge=0, le=100)
+    # 涨跌幅上限：窗口内就走完这么多的多是插针式拉盘，提醒时已在高点；None 表示不设上限。
+    max_change_percent: float | None = Field(default=15.0, gt=0, le=1000)
 
     @model_validator(mode="after")
     def validate_ranges(self) -> LaunchConfig:
@@ -35,6 +37,8 @@ class LaunchConfig(BaseModel):
             raise ValueError("cooldown_minutes 不能小于 window_minutes")
         if self.max_volume_24h_quote is not None and self.max_volume_24h_quote <= self.min_volume_24h_quote:
             raise ValueError("max_volume_24h_quote 必须大于 min_volume_24h_quote")
+        if self.max_change_percent is not None and self.max_change_percent <= self.min_change_percent:
+            raise ValueError("max_change_percent 必须大于 min_change_percent")
         return self
 
     def to_rule(self) -> LaunchRule:
@@ -48,4 +52,5 @@ class LaunchConfig(BaseModel):
             alert_drops=self.alert_drops,
             cooldown_minutes=self.cooldown_minutes,
             realert_step_percent=self.realert_step_percent,
+            max_change_percent=self.max_change_percent,
         )

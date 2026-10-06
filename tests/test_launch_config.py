@@ -17,6 +17,8 @@ def test_defaults_watch_every_contract_and_build_rule():
     assert (rule.min_volume_ratio, rule.min_window_quote, rule.min_change_percent) == (5.0, 30_000, 3.0)
     assert (rule.require_breakout, rule.alert_drops) == (True, False)
     assert (rule.cooldown_minutes, rule.realert_step_percent) == (15, 5.0)
+    assert rule.max_change_percent == 15.0
+    assert LaunchConfig(max_change_percent=None).to_rule().max_change_percent is None
 
 
 def test_launch_detector_joins_monitor_with_its_own_volume_range():
@@ -38,6 +40,7 @@ def test_launch_detector_joins_monitor_with_its_own_volume_range():
         ({"window_minutes": 10, "cooldown_minutes": 5}, "cooldown_minutes 不能小于 window_minutes"),
         ({"min_volume_24h_quote": 100, "max_volume_24h_quote": 100}, "max_volume_24h_quote"),
         ({"min_volume_ratio": 1}, "min_volume_ratio"),
+        ({"min_change_percent": 5, "max_change_percent": 5}, "max_change_percent 必须大于 min_change_percent"),
         ({"unknown": 1}, "unknown"),
     ],
 )

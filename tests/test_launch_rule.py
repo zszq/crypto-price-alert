@@ -68,6 +68,16 @@ def test_breakout_uses_close_and_can_be_disabled():
     assert evaluate_launch(candles, rule(require_breakout=False)).passed
 
 
+def test_overshoot_is_rejected_unless_cap_disabled():
+    # 3 分钟涨 20%：插针式拉盘，提醒时已在高点。
+    candles = history([(105.0, 1000), (112.0, 1000), (120.0, 1000)])
+
+    assert evaluate_launch(candles, rule()).failures == (Condition.OVERSHOOT,)
+    assert evaluate_launch(candles, rule(max_change_percent=None)).passed
+    # 不到上限照常通过。
+    assert evaluate_launch(history([(105.0, 1000), (110.0, 1000), (114.0, 1000)]), rule()).passed
+
+
 def test_drop_needs_alert_drops_and_breaks_the_low():
     candles = history([(99.0, 1000), (97.5, 1000), (96.0, 1000)])
 
@@ -92,3 +102,5 @@ def test_history_length_must_match_rule():
         evaluate_launch(history([(101.0, 1000)]), rule())
     with pytest.raises(ValueError, match="baseline_minutes"):
         rule(baseline_minutes=3)
+    with pytest.raises(ValueError, match="max_change_percent"):
+        rule(max_change_percent=3.0)

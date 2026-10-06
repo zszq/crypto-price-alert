@@ -91,9 +91,16 @@ def test_amounts_use_wan_and_yi_without_trailing_zeros():
 def test_rule_description_lists_thresholds_and_repeat_policy():
     rule = LaunchRule(5, 360, 5.0, 30_000, 3.0)
     assert describe_launch_rule(rule) == (
-        "放量启动：最近 5 分钟成交额 ≥ 3万 USDT 且 ≥ 近6小时同长度均量的 5 倍，涨跌幅 ≥ 3%，收盘突破近6小时高低点；"
+        "放量启动：最近 5 分钟成交额 ≥ 3万 USDT 且 ≥ 近6小时同长度均量的 5 倍，涨跌幅 3%~15%，收盘突破近6小时高低点；"
         "同方向再次提醒需间隔 ≥ 15 分钟且价格比上次提醒再推进 ≥ 5%（超过6小时重新计为启动）；只提醒上涨"
     )
-    loose = replace(rule, require_breakout=False, alert_drops=True, baseline_minutes=90)
+    loose = replace(
+        rule,
+        require_breakout=False,
+        alert_drops=True,
+        baseline_minutes=90,
+        max_change_percent=None,
+    )
     assert "突破" not in describe_launch_rule(loose)
+    assert "涨跌幅 ≥ 3%" in describe_launch_rule(loose)
     assert "近90分钟" in describe_launch_rule(loose) and "涨跌都提醒" in describe_launch_rule(loose)

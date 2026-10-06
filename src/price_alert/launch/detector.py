@@ -3,7 +3,8 @@
 判定见 rule.evaluate_launch。重复提醒按（合约, 方向）记录上一次提醒：
 - 距上次提醒不足 cooldown_minutes 不再提醒，同一段放量在窗口滑过期间不会每分钟报一次；
 - 冷却过后，价格还要比上次提醒价再推进 realert_step_percent 才报下一波，原地放量震荡不重复提醒；
-- 上次提醒已超过一个基准期，它的放量和高点都已移出基准期，再次满足条件就是新的启动，从第 1 波重新计数。
+- 上次提醒已超过一个基准期，它的放量和高点都已移出基准期，再次满足条件就是新的启动，从第 1 波重新计数；
+- 只因涨跌幅超过上限（插针）而不提醒的分钟也按提醒记录（波次不变），否则窗口滑过插针、涨幅回到区间内后会在高位补报。
 
 对外接口与其他检测器保持一致（add_symbol / add_tick / mark_stream_gap / resync_symbol 等），
 服务主循环因此不必知道它的存在；回放和模拟则直接喂已收盘的 1 分钟 K 线（add_candle）。
@@ -18,7 +19,14 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
 from price_alert.launch.alerts import LaunchAlert
-from price_alert.launch.rule import Direction, LaunchMetrics, LaunchRule, evaluate_launch, still_launching
+from price_alert.launch.rule import (
+    Condition,
+    Direction,
+    LaunchMetrics,
+    LaunchRule,
+    evaluate_launch,
+    still_launching,
+)
 from price_alert.models import Candle, PriceTick
 
 MINUTE = timedelta(minutes=1)
@@ -114,6 +122,7 @@ class LaunchDetector:
         self._retention = rule.history_minutes
         self._states: dict[str, _SymbolState] = {}
         # 不随合约移出而清除：合约很快重新入池时，仍在延续的同一波不应再当作启动提醒一次。
+        # 也记录因插针而静默的分钟（见 _record_overshoot）。
         self._last_alerts: dict[tuple[str, Direction], _LastAlert] = {}
 
     @property
@@ -286,6 +295,8 @@ class LaunchDetector:
             metrics = evaluate_launch(list(state.minutes), rule)
             if not metrics.passed:
                 outcome, wave = LaunchOutcome.FAILED, 0
+                if metrics.failures == (Condition.OVERSHOOT,):
+                    self._record_overshoot(symbol, metrics, closed_at)
             elif latest_price is not None and not still_launching(metrics, latest_price, rule):
                 outcome, wave = LaunchOutcome.EXPIRED, 0
             else:
@@ -307,6 +318,15 @@ class LaunchDetector:
         if self._observer is not None:
             self._observer(evaluation)
         return alert
+
+    def _record_overshoot(self, symbol: str, metrics: LaunchMetrics, closed_at: datetime) -> None:
+        """其他条件都满足、只是涨跌幅超过上限：不提醒，但当作这段行情已经启动。之后要过冷却并比插针收盘价
+        再推进一截才提醒；否则几分钟后窗口滑过插针，涨幅回到区间内，会在插针的高位补报一条。"""
+        # 与真提醒走同一套冷却与再推进判断：真提醒也会被拦下的插针不改写记录，免得拉低下一波的门槛。
+        outcome, wave = self._repeat_outcome(symbol, metrics, closed_at)
+        if outcome is LaunchOutcome.ALERT:
+            # 没有发出提醒，波次不加：之后发出的第一条仍是第 1 波，或接着上一条发出的提醒计数。
+            self._last_alerts[(symbol, metrics.direction)] = _LastAlert(closed_at, metrics.end_price, wave - 1)
 
     def _repeat_outcome(self, symbol: str, metrics: LaunchMetrics, closed_at: datetime) -> tuple[LaunchOutcome, int]:
         """条件已满足时，按同方向上一次提醒决定是否再提醒，返回判定与这次是第几波。"""
