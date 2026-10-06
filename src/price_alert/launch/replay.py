@@ -21,7 +21,7 @@ from price_alert.launch.rule import CONDITION_LABELS, LaunchRule
 from price_alert.models import Candle
 
 MINUTE = timedelta(minutes=1)
-# 默认输出只列满足条件的分钟，其余只计入统计。
+# 默认输出只列满足条件或被插针拦下（影响之后冷却）的分钟，其余只计入统计。
 _QUIET_OUTCOMES = frozenset({LaunchOutcome.INSUFFICIENT_DATA, LaunchOutcome.FAILED})
 
 
@@ -160,8 +160,8 @@ def render_launch_replay(result: LaunchReplayResult, show_all: bool = False) -> 
     if show_all:
         lines.append("逐分钟判定：")
     elif rows:
-        lines.append("满足条件的分钟（加 --all 查看每一分钟的判定）：")
+        lines.append("满足条件或被插针拦下的分钟（加 --all 查看每一分钟的判定）：")
     else:
-        lines.append("没有满足条件的分钟（加 --all 查看每一分钟的判定）。")
+        lines.append("没有满足条件或被插针拦下的分钟（加 --all 查看每一分钟的判定）。")
     lines.extend(f"  {_format_row(item, rule, decimals)}" for item in rows)
     return lines

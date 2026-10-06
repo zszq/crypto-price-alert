@@ -38,6 +38,7 @@ class LaunchOutcome(StrEnum):
     COOLDOWN = "cooldown"
     NOT_EXTENDED = "not_extended"
     EXPIRED = "expired"
+    OVERSHOOT = "overshoot"
     ALERT = "alert"
 
 
@@ -47,6 +48,7 @@ OUTCOME_LABELS: dict[LaunchOutcome, str] = {
     LaunchOutcome.COOLDOWN: "满足条件，冷却中",
     LaunchOutcome.NOT_EXTENDED: "满足条件，价格未比上次提醒再推进",
     LaunchOutcome.EXPIRED: "满足条件，但空档后结算时价格已回落",
+    LaunchOutcome.OVERSHOOT: "只因涨跌幅过大（插针）不提醒，按提醒记入冷却与波次",
     LaunchOutcome.ALERT: "提醒",
 }
 
@@ -295,8 +297,9 @@ class LaunchDetector:
             metrics = evaluate_launch(list(state.minutes), rule)
             if not metrics.passed:
                 outcome, wave = LaunchOutcome.FAILED, 0
-                if metrics.failures == (Condition.OVERSHOOT,):
-                    self._record_overshoot(symbol, metrics, closed_at)
+                if metrics.failures == (Condition.OVERSHOOT,) and self._record_overshoot(symbol, metrics, closed_at):
+                    # 单独成一类判定：回放据此解释之后为什么「冷却中」或要求再推进。
+                    outcome = LaunchOutcome.OVERSHOOT
             elif latest_price is not None and not still_launching(metrics, latest_price, rule):
                 outcome, wave = LaunchOutcome.EXPIRED, 0
             else:
@@ -319,14 +322,16 @@ class LaunchDetector:
             self._observer(evaluation)
         return alert
 
-    def _record_overshoot(self, symbol: str, metrics: LaunchMetrics, closed_at: datetime) -> None:
-        """其他条件都满足、只是涨跌幅超过上限：不提醒，但当作这段行情已经启动。之后要过冷却并比插针收盘价
-        再推进一截才提醒；否则几分钟后窗口滑过插针，涨幅回到区间内，会在插针的高位补报一条。"""
+    def _record_overshoot(self, symbol: str, metrics: LaunchMetrics, closed_at: datetime) -> bool:
+        """其他条件都满足、只是涨跌幅超过上限：不提醒，但当作这段行情已经启动，返回是否写入了提醒记录。
+        之后要过冷却并比插针收盘价再推进一截才提醒；否则几分钟后窗口滑过插针，涨幅回到区间内，会在插针的高位补报一条。"""
         # 与真提醒走同一套冷却与再推进判断：真提醒也会被拦下的插针不改写记录，免得拉低下一波的门槛。
         outcome, wave = self._repeat_outcome(symbol, metrics, closed_at)
-        if outcome is LaunchOutcome.ALERT:
-            # 没有发出提醒，波次不加：之后发出的第一条仍是第 1 波，或接着上一条发出的提醒计数。
-            self._last_alerts[(symbol, metrics.direction)] = _LastAlert(closed_at, metrics.end_price, wave - 1)
+        if outcome is not LaunchOutcome.ALERT:
+            return False
+        # 没有发出提醒，波次不加：之后发出的第一条仍是第 1 波，或接着上一条发出的提醒计数。
+        self._last_alerts[(symbol, metrics.direction)] = _LastAlert(closed_at, metrics.end_price, wave - 1)
+        return True
 
     def _repeat_outcome(self, symbol: str, metrics: LaunchMetrics, closed_at: datetime) -> tuple[LaunchOutcome, int]:
         """条件已满足时，按同方向上一次提醒决定是否再提醒，返回判定与这次是第几波。"""

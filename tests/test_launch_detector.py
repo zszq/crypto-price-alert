@@ -101,6 +101,7 @@ def test_overshoot_is_silent_but_blocks_catch_up_alert_at_the_top():
     # 3 分钟从 100 拉到 120（+20%），只因超过 15% 上限而不提醒。
     assert not any(rally(detector, 30, [105.0, 118.0, 120.0]))
     assert evaluations[-1].metrics.failures == (Condition.OVERSHOOT,)
+    assert evaluations[-1].outcome is LaunchOutcome.OVERSHOOT
 
     # 窗口滑过插针后涨幅回到区间内（118 → 128，+8.5%）：插针已记入冷却，不在高位补报。
     assert not any(rally(detector, 33, [124.0, 128.0], price=120.0))
@@ -133,6 +134,7 @@ def test_overshoot_below_last_alert_does_not_lower_next_wave_bar():
     # 回落后插针 85 → 100（+17.6%），但没比上次提醒价 104 再推进 5%：真提醒也会被拦下，插针不能改写提醒记录。
     rally(detector, 40, [90.0, 97.0, 100.0], quote=2000.0, price=85.0)
     assert evaluations[-1].metrics.failures == (Condition.OVERSHOOT,)
+    assert evaluations[-1].outcome is LaunchOutcome.FAILED
     for index in range(43, 48):
         detector.add_candle(SYMBOL, Candle(minute(index), 100.0, 100.5, 99.5, 100.0, 100.0))
 

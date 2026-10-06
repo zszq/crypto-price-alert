@@ -63,3 +63,18 @@ def test_run_and_render_explain_alerts_and_failures():
     assert [row.split(" | ")[0].strip() for row in rows] == [
         f"{minute:%H:%M}" for minute in (START + timedelta(minutes=offset) for offset in range(1, 11))
     ]
+
+
+def test_overshoot_minute_is_listed_to_explain_later_cooldown():
+    config = launch_config()
+    plan = plan_launch_replay("RLC_USDT", START, START + timedelta(minutes=6), config.to_rule(), NOW)
+    history = candles(plan.warmup_start, [1.0] * 33, 100.0)
+    # 3 分钟涨 18% 超过上限，不提醒；窗口滑过后涨幅回到区间内，也只是冷却中，不在高位补报。
+    spike = candles(START, [1.0, 1.02, 1.18, 1.20, 1.22, 1.24], 2000.0)
+
+    result = run_launch_replay(config, plan, history + spike)
+    text = "\n".join(render_launch_replay(result))
+
+    assert result.alerts == []
+    assert "17:53 | 1 → 1.18 +18.00% | 3分钟成交额 6000 量比 20.0 | 只因涨跌幅过大（插针）不提醒" in text
+    assert "满足条件，冷却中" in text

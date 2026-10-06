@@ -32,7 +32,7 @@ CONDITION_LABELS: dict[Condition, str] = {
     Condition.CHANGE: "涨跌幅不足",
     Condition.BREAKOUT: "未突破基准期高低点",
     Condition.DIRECTION: "下跌（未开启下跌提醒）",
-    Condition.OVERSHOOT: "涨跌幅过大（已是追高，不提醒但计入冷却）",
+    Condition.OVERSHOOT: "涨跌幅过大（插针）",
 }
 
 
