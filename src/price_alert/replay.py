@@ -1,6 +1,6 @@
 """历史成交回放：用与实时监控完全相同的检测器逐秒重放一段行情，解释它为什么提醒或没有提醒。
 
-分三步，便于单独测试：plan_replay 只做时间推算，fetch_replay_data 只负责联网取数，
+分四步，便于单独测试：plan_replay 只做时间推算，fetch_replay_data 只负责联网取数，
 run_replay 离线驱动检测器，render_replay 把结果排成文本。
 """
 

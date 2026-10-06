@@ -423,8 +423,6 @@ class AtrMoveDetector:
             window = self.windows[index]
             key = (symbol, window.name)
             previous_alert = self._last_alert.get(key)
-            # 冷却只看本窗口自己的上次提醒：长窗口的冷却覆盖它自己的观察窗口，避免同一段行情在窗口滑过期间
-            # 被它反复报出；另一个窗口的提醒既不续上本窗口的冷却，也不清空本窗口的确认进度。
             if previous_alert is not None and timestamp - previous_alert < self._cooldowns[index]:
                 evaluations[index] = replace(evaluation, outcome=Outcome.COOLDOWN)
             else:

@@ -149,7 +149,7 @@ def _retry_after_seconds(headers: Any) -> float | None:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
         seconds = (parsed - datetime.now(UTC)).total_seconds()
-    if seconds != seconds:  # NaN：float("nan") 能通过上面的解析，但比较运算全为假，会绕过封顶
+    if seconds != seconds:  # 同 _rate_limit_reset_seconds：NaN 会绕过封顶
         return None
     return min(max(seconds, 0.0), MAX_RETRY_AFTER_SECONDS)
 

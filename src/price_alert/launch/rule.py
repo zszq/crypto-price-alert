@@ -136,7 +136,6 @@ def evaluate_launch(history: Sequence[Candle], rule: LaunchRule) -> LaunchMetric
         failures.append(Condition.RATIO)
     if abs(change_percent) < rule.min_change_percent:
         failures.append(Condition.CHANGE)
-    # 从沉寂中 5 分钟就涨超 15% 的几乎都是插针式拉盘，回测中 15 次有 14 次 60 分钟内回落 8% 以上，提醒只会追在高点。
     if rule.overshoots(change_percent):
         failures.append(Condition.OVERSHOOT)
     if rule.require_breakout and not breaks_out(direction, end_price, breakout_price):

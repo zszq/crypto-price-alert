@@ -146,7 +146,7 @@ def test_sparse_trades_are_confirmed_by_carrying_last_price_through_empty_second
     for second in range(11):
         instance.add_tick(PriceTick("THIN_USDT", 100.0, 1.0, start + timedelta(seconds=second)))
 
-    # 每隔一秒才有一笔成交：旧逻辑因“相邻秒”被打断而永远无法确认。
+    # 每隔一秒才有一笔成交：空秒不补齐的话“相邻秒”会被打断，永远无法确认。
     assert instance.add_tick(PriceTick("THIN_USDT", 101.0, 1.0, start + timedelta(seconds=11))) == []
     assert instance.add_tick(PriceTick("THIN_USDT", 101.0, 1.0, start + timedelta(seconds=13))) == []
     alerts = instance.add_tick(PriceTick("THIN_USDT", 101.0, 1.0, start + timedelta(seconds=15)))

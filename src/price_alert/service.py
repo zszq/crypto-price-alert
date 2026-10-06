@@ -133,7 +133,7 @@ class _Monitor:
     def _tiers(self, needed: dict[str, list[MonitoredDetector]]) -> list[list[str]]:
         """按需要它的最靠前的检测器把合约分批，靠前的检测器先处理。
 
-        放量启动的合约池最大（下限设为 0 时是全市场），一轮预热或回补要上百次请求、受限速约束可达一两分钟；
+        放量启动的成交额下限最低，只归它的合约可能有上百个，一轮预热或回补受限速约束要等上一阵；
         排在秒级异动与趋势之后，它们的合约才不必在队列里陪着等。
         needed 中每个合约的检测器按 self.detectors 的顺序追加，第一个即最靠前。
         """
@@ -351,18 +351,11 @@ class _Monitor:
                 # aclosing 保证循环体抛错时也会立即关闭 WebSocket，而不是等垃圾回收。
                 async with contextlib.aclosing(self.feed.stream()) as ticks:
                     async for tick in ticks:
-                        # 链路拥塞时成交会在网络中积压，推送的仍是几十秒前的行情：此时秒级判定
-                        # 已失去意义，提醒发出时价格早已改变。滞后超限就主动断开——重连能清空
-                        # 积压，也让日志直指真因，而不是等 keepalive 因 pong 被积压数据队头
-                        # 阻塞而报出含义不明的 1011。
-                        # 逐笔校验而不做节流：datetime.now 不到 1 微秒，相比 add_tick 可以忽略，
-                        # 按时间间隔抽查反而会留出放行积压成交的窗口。
-                        # 校验必须排在下面的“连接成功”之前：滞后的成交既不算判定依据，也不算
-                        # 连接可用的证据——否则每次重连的首笔滞后成交都会重置退避，拥塞或本地
-                        # 时钟偏移时会退化成每秒一次的重连风暴（每次都重新订阅全部合约）。
-                        # 注意这里拿本地时钟与交易所时间戳直接相减（检测器内部只做时间戳之间的
-                        # 相对比较，不依赖本地时钟）：本地时钟若快于交易所超过阈值，会被误判为
-                        # 滞后而一直重连，此时应先校准系统时间而不是调高阈值。
+                        # 链路拥塞时推送的是几十秒前的积压行情，秒级判定已无意义：滞后超限就主动重连
+                        # 清空积压，日志也直指真因，而不是等 keepalive 报出含义不明的 1011。
+                        # 逐笔校验（开销可忽略），抽查会留出放行积压成交的窗口。必须排在“连接成功”之前，
+                        # 否则每次重连的首笔滞后成交都会重置退避，退化成每秒一次的重连风暴。
+                        # 这里依赖本地时钟：本地快于交易所超过阈值也会一直重连，应先校准系统时间而不是调高阈值。
                         lag = (datetime.now(UTC) - tick.timestamp).total_seconds()
                         if lag > gate.max_data_lag_seconds:
                             raise ConnectionError(
@@ -390,9 +383,8 @@ class _Monitor:
                             try:
                                 alerts = entry.detector.add_tick(tick)
                             except Exception:
-                                # 与坏成交的处理一致：只跳过这笔成交，不能因为一个检测器出错就断开全市场行情，
-                                # 让其他检测器也跟着停摆。出错可能发生在更新状态的中途，该合约在这个检测器里
-                                # 的状态已不可信，按断线同样处理：标记失效、暂停判定，用 REST K 线回补重建。
+                                # 只跳过这笔成交，不能因一个检测器出错就断开全市场行情。出错可能在更新状态中途，
+                                # 该合约在这个检测器里的状态已不可信，按断线同样处理：标记失效，用 REST K 线回补重建。
                                 if faults.record(entry.name, tick.symbol, current_time):
                                     entry.detector.mark_symbol_gap(tick.symbol)
                                     if resync_task is None or resync_task.done():
@@ -442,7 +434,6 @@ async def run_monitor(config: AppConfig) -> None:
         await monitor.universe_loop()
 
     async def stream(dispatcher: AlertDispatcher) -> None:
-        # 首次初始化按检测器分批预热，第一批订阅后就开始接收成交，其余合约预热完再增量订阅。
         await monitor.subscribed.wait()
         await monitor.stream_loop(dispatcher)
 
