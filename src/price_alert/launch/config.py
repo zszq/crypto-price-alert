@@ -19,7 +19,9 @@ class LaunchConfig(BaseModel):
     # 基准期加窗口不超过 1500 分钟，预热一次请求就能取完（Gate 单次上限 2000 根）。
     baseline_minutes: int = Field(default=360, ge=30, le=1440)
     min_volume_ratio: float = Field(default=5.0, gt=1, le=1000)
-    min_window_quote: float = Field(default=30_000, ge=0)
+    # 拉升后成交随即冷清的假启动几乎都出自窗口成交额只有几万的冷门币；回测中门槛提到 10 万，
+    # 与「拉升后再观察几分钟成交」去掉的假启动相当，却不必延迟提醒，大行情也一段不漏。
+    min_window_quote: float = Field(default=100_000, ge=0)
     min_change_percent: float = Field(default=3.0, gt=0, le=100)
     require_breakout: bool = True
     alert_drops: bool = False

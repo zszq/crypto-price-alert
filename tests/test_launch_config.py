@@ -14,7 +14,7 @@ def test_defaults_watch_every_contract_and_build_rule():
     # 启动前的币成交极少，默认不设成交额下限。
     assert (config.min_volume_24h_quote, config.max_volume_24h_quote) == (0, None)
     assert (rule.window_minutes, rule.baseline_minutes, rule.history_minutes) == (5, 360, 365)
-    assert (rule.min_volume_ratio, rule.min_window_quote, rule.min_change_percent) == (5.0, 30_000, 3.0)
+    assert (rule.min_volume_ratio, rule.min_window_quote, rule.min_change_percent) == (5.0, 100_000, 3.0)
     assert (rule.require_breakout, rule.alert_drops) == (True, False)
     assert (rule.cooldown_minutes, rule.realert_step_percent) == (15, 5.0)
     assert rule.max_change_percent == 15.0
