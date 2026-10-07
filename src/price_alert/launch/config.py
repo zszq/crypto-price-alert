@@ -21,7 +21,8 @@ class LaunchConfig(BaseModel):
     baseline_minutes: int = Field(default=360, ge=30, le=1440)
     # 量比：最近一个窗口（默认 5 分钟）的成交额，是它平时同样长度成交额的多少倍；
     # 「平时」取基准期的均值，按相对放大衡量，不必给成交额悬殊的各个币分别定门槛。
-    min_volume_ratio: float = Field(default=5.0, gt=1, le=1000)
+    # 半年回测中从 5 降到 3，多报到的都是基准期本来就活跃的币，冷门币已由窗口成交额门槛挡住，假启动不增反降。
+    min_volume_ratio: float = Field(default=3.0, gt=1, le=1000)
     # 拉升后成交随即冷清的假启动几乎都出自窗口成交额只有几万的冷门币；回测中门槛提到 10 万，
     # 与「拉升后再观察几分钟成交」去掉的假启动相当，却不必延迟提醒，大行情也一段不漏。
     min_window_quote: float = Field(default=100_000, ge=0)
