@@ -131,16 +131,18 @@ class _Monitor:
         return sorted({symbol for entry in self.detectors for symbol in entry.detector.symbols})
 
     def _tiers(self, needed: dict[str, list[MonitoredDetector]]) -> list[list[str]]:
-        """按需要它的最靠前的检测器把合约分批，靠前的检测器先处理。
+        """按需要它的检测器中排序最靠前的那个把合约分批，靠前的批次先处理。
 
-        放量启动的成交额下限最低，只归它的合约可能有上百个，一轮预热或回补受限速约束要等上一阵；
-        排在秒级异动与趋势之后，它们的合约才不必在队列里陪着等。
-        needed 中每个合约的检测器按 self.detectors 的顺序追加，第一个即最靠前。
+        先后按成交额下限从高到低排，而不是检测器的列表顺序：下限越低合约池越大，放量启动只归它的合约
+        可能有上百个，一轮预热或回补受限速约束要等上一阵，排在最后，其他检测器的合约才不必在队列里陪着等。
+        下限相同时按 self.detectors 的顺序。
         """
-        order = {entry.name: index for index, entry in enumerate(self.detectors)}
+        ranked = sorted(self.detectors, key=lambda entry: -entry.volume.minimum)
+        order = {entry.name: index for index, entry in enumerate(ranked)}
         tiers: dict[int, list[str]] = {}
         for symbol in sorted(needed):
-            tiers.setdefault(order[needed[symbol][0].name], []).append(symbol)
+            first = min(order[entry.name] for entry in needed[symbol])
+            tiers.setdefault(first, []).append(symbol)
         return [tiers[index] for index in sorted(tiers)]
 
     async def _subscribe(self) -> None:

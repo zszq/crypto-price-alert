@@ -83,7 +83,7 @@ def build_launch_detector(
 
 
 def build_detectors(config: AppConfig) -> list[MonitoredDetector]:
-    """实时监控运行的全部检测器；趋势、放量提醒关闭时不创建，也就不会多拉 K 线、多占内存。"""
+    """实时监控运行的全部检测器，顺序与 config/default.yaml 一致；放量、趋势提醒关闭时不创建，不多拉 K 线。"""
     indicator = config.indicator
     detectors = [
         MonitoredDetector(
@@ -94,14 +94,14 @@ def build_detectors(config: AppConfig) -> list[MonitoredDetector]:
             VolumeRange(config.gate.min_volume_24h_quote),
         )
     ]
-    if config.trend.enabled:
-        trend = build_trend_detector(config.trend)
-        volume = VolumeRange(config.trend.min_volume_24h_quote, config.trend.max_volume_24h_quote)
-        detectors.append(MonitoredDetector("K 线趋势", trend, trend.warmup_interval, trend.warmup_candles, volume))
     if config.launch.enabled:
         launch = build_launch_detector(config.launch)
         volume = VolumeRange(config.launch.min_volume_24h_quote, config.launch.max_volume_24h_quote)
         detectors.append(MonitoredDetector("放量启动", launch, launch.warmup_interval, launch.warmup_candles, volume))
+    if config.trend.enabled:
+        trend = build_trend_detector(config.trend)
+        volume = VolumeRange(config.trend.min_volume_24h_quote, config.trend.max_volume_24h_quote)
+        detectors.append(MonitoredDetector("K 线趋势", trend, trend.warmup_interval, trend.warmup_candles, volume))
     return detectors
 
 

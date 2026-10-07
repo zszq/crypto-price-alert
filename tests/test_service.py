@@ -671,6 +671,24 @@ def test_resync_and_warmup_serve_earlier_detectors_first():
     assert [symbol for symbol, _, _ in rest.requests] == ["ZEC_USDT", "AAA_USDT"]
 
 
+def test_tiers_follow_volume_floor_not_detector_order():
+    """放量启动在列表里排在趋势之前，但合约池最大，只归它的合约仍排在只归趋势的合约之后。"""
+    atr, launch, trend = RecordingDetector("atr"), RecordingDetector("launch"), RecordingDetector("trend")
+    detectors = [
+        MonitoredDetector("ATR 异动", atr, "1m", 50, ANY_VOLUME),
+        MonitoredDetector("放量启动", launch, "1m", 366, VolumeRange(1_000_000)),
+        MonitoredDetector("K 线趋势", trend, "1m", 331, VolumeRange(3_000_000)),
+    ]
+    launch.add_symbol("AAA_USDT", [], 1e9)
+    trend.add_symbol("ZZZ_USDT", [], 1e9)
+    launch.stale, trend.stale = {"AAA_USDT"}, {"ZZZ_USDT"}
+    rest = IntervalRest([], [])
+
+    asyncio.run(monitor(detectors, rest, sem=asyncio.Semaphore(1)).resync_stale_symbols())
+
+    assert [symbol for symbol, _, _ in rest.requests] == ["ZZZ_USDT", "AAA_USDT"]
+
+
 def test_earlier_detectors_are_subscribed_before_later_ones_finish_warming():
     """首次初始化时，秒级异动的合约预热完就订阅，不必等放量启动的几百个合约。"""
 

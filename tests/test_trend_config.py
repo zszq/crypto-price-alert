@@ -73,7 +73,7 @@ def test_counter_candles_must_be_fewer_than_candles():
 
 
 def test_disabled_trend_is_not_built_into_monitor():
-    assert [entry.name for entry in build_detectors(AppConfig())] == ["ATR 异动", "K 线趋势", "放量启动"]
+    assert [entry.name for entry in build_detectors(AppConfig())] == ["ATR 异动", "放量启动", "K 线趋势"]
     disabled = AppConfig.model_validate({"trend": {"enabled": False}})
     assert [entry.name for entry in build_detectors(disabled)] == ["ATR 异动", "放量启动"]
 

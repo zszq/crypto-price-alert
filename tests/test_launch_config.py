@@ -23,7 +23,7 @@ def test_defaults_and_build_rule():
 def test_launch_detector_joins_monitor_with_its_own_volume_range():
     config = AppConfig.model_validate({"launch": {"min_volume_24h_quote": 50_000, "max_volume_24h_quote": 5_000_000}})
 
-    launch = build_detectors(config)[-1]
+    launch = build_detectors(config)[1]
 
     assert launch.name == "放量启动"
     assert launch.volume == VolumeRange(50_000, 5_000_000)
