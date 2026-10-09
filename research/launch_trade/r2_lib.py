@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import numba as nb
 import numpy as np
@@ -93,15 +94,16 @@ class Data:
     period: Period
 
 
-def load(period: str = "half") -> Data:
+def load(period: str = "half", source: Path = R2) -> Data:
+    """source 默认是第二轮的导出（提醒后 12 小时）；第三轮用 r3_export.py 的 48 小时导出试更长的持仓。"""
     chosen = PERIODS[period]
-    bars = np.load(R2 / "bars.npy", mmap_mode="r")
-    meta_raw = np.load(R2 / "meta.npy")
-    names = (R2 / "meta_names.txt").read_text(encoding="utf-8").split("\n")
+    bars = np.load(source / "bars.npy", mmap_mode="r")
+    meta_raw = np.load(source / "meta.npy")
+    names = (source / "meta_names.txt").read_text(encoding="utf-8").split("\n")
     keep = meta_raw[:, 0] >= chosen.start
     bars = np.ascontiguousarray(bars[keep])
     meta = {name: meta_raw[keep, k] for k, name in enumerate(names)}
-    symbol = np.load(R2 / "symbol.npy")[keep]
+    symbol = np.load(source / "symbol.npy")[keep]
     closed_at = meta["closed_at"]
     return Data(bars, meta, symbol, closed_at, meta["wave"], closed_at < chosen.split, chosen)
 
@@ -251,7 +253,7 @@ def _simulate(bars, alert_price, support0, resist, btc1h, start_price, base_q, w
                 continue
         elif int(entry_mode) == 1:
             level = wait_high * 1.001
-            for k in range(w0 + d, min(w0 + d + int(entry_window), PRE + POST)):
+            for k in range(w0 + d, min(w0 + d + int(entry_window), bars.shape[2])):
                 if np.isnan(c[k]):
                     break
                 if h[k] >= level:
@@ -262,7 +264,7 @@ def _simulate(bars, alert_price, support0, resist, btc1h, start_price, base_q, w
                 continue
         else:
             level = support * (1 + pullback)
-            for k in range(w0 + d, min(w0 + d + int(entry_window), PRE + POST)):
+            for k in range(w0 + d, min(w0 + d + int(entry_window), bars.shape[2])):
                 if np.isnan(c[k]):
                     break
                 if lo[k] <= level:
@@ -322,7 +324,7 @@ def _simulate(bars, alert_price, support0, resist, btc1h, start_price, base_q, w
         tight_hit = False
         be_hit = False
         for k in range(e, e + int(hold)):
-            if k >= PRE + POST or np.isnan(c[k]):
+            if k >= bars.shape[2] or np.isnan(c[k]):
                 exit_k = -2
                 break
             line = stop_line

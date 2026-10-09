@@ -90,5 +90,20 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 | `r2_delays.py` | 各项改进在 12 种等待设置下是否都胜过基准 |
 | `r2_final.py --period half/year/two_years/three_years` | 最终排名：14 个方案在半年（选参数用）、一年、两年、三年（检验）上的结果；三年需先用 `update_data.py --start 202309` 补数据 |
 | `check_jumps.py` | 检查价格整体跳变（改面值、停牌后重新上线、旧名字给了新币），确认数据可用 |
+| `r3_export.py` | 第三轮：与 `r2_export.py` 相同，但提醒后保留的分钟数可调（`--post`，默认 48 小时），`--set 字段=值` 覆盖 `launch` 段、`--min-volume` 覆盖合约池下限，导出到 `results/<--out>` |
+| `r3_market.py` | 第三轮：全市场逐小时收盘价与成交额（上涨币占比、活跃度等市场状态的原料），输出 `results/r3_market.npz` |
+| `r3_lib.py` | 第三轮：方案定义（`Scheme`）、出场 X、邻域平均、限同时持仓、资金费率敏感性 |
+| `r3_final.py` | 第三轮最终排名：三年里比 J 更赚钱的 18 个方案 |
 
 运行顺序：`update_data.py` → `r1_export.py` / `r2_export.py` → 其余脚本。
+
+第三轮（三年，先用 `update_data.py --start 202309` 补数据）要三份导出，每份约 2 分钟、2~3.5GB：
+
+```powershell
+& $P research/launch_trade/r3_export.py --post 1200 --out v_base
+& $P research/launch_trade/r3_export.py --post 1200 --out v_nobreak --set require_breakout=false
+& $P research/launch_trade/r3_export.py --post 1200 --out v_nb_pool0_noover --set require_breakout=false --set max_change_percent=none --min-volume 0
+& $P research/launch_trade/r3_final.py
+```
+
+`r2_lib.load(period, source)` 可以读任意一份导出；模拟器按导出的列数判断持仓是否超出数据，12 小时（r2）与更长的导出通用。
