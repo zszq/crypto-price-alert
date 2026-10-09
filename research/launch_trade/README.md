@@ -53,7 +53,7 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 
 | 参数 | 含义 |
 | --- | --- |
-| `--days` | 回测最近多少天的提醒，默认 183（半年），一年 365、两年 730；更早的数据只用于预热 |
+| `--days` | 回测最近多少天的提醒，默认 183（半年），一年 365、两年 730、三年 1096（中间有 2024-02-29，1095 会晚一天开始）；更早的数据只用于预热 |
 | `--hold-hours` | 最长持仓小时数，到时按收盘价平仓 |
 | `--stop-loss` | 固定止损 |
 | `--take-profit`、`--take-fraction` | 止盈；只平一部分时剩余仓位继续按回撤止损跑 |
@@ -88,7 +88,7 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 | `r2_dip.py` | 回踩阈值的单调性与最稳组附近的平稳性 |
 | `r2_more.py` | 部分止盈、所有波次、成本压力、第二次入场、回踩守突破位、回踩缩量、再加过滤 |
 | `r2_delays.py` | 各项改进在 12 种等待设置下是否都胜过基准 |
-| `r2_final.py --period half/year/two_years` | 最终排名：14 个方案在半年（选参数用）、一年、两年（检验）上的结果 |
+| `r2_final.py --period half/year/two_years/three_years` | 最终排名：14 个方案在半年（选参数用）、一年、两年、三年（检验）上的结果；三年需先用 `update_data.py --start 202309` 补数据 |
 | `check_jumps.py` | 检查价格整体跳变（改面值、停牌后重新上线、旧名字给了新币），确认数据可用 |
 
 运行顺序：`update_data.py` → `r1_export.py` / `r2_export.py` → 其余脚本。
