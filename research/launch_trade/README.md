@@ -7,11 +7,11 @@
 ## 目录约定
 
 - 代码：本目录，进版本库；所有路径由 `paths.py` 统一给出。
-- 数据：`data/backtest/`，**不进版本库**（`.gitignore` 已忽略），合计约 2.5GB（行情约 0.85GB、缓存约 1GB、研究导出与结果约 0.4GB、虚拟环境约 0.2GB）。删掉后运行 `update_data.py` 可重新下载月度文件，但 REST 补的部分只能取回最近约 7 天，更早的要等下载站发布那个月的文件：
+- 数据：`data/backtest/`，**不进版本库**（`.gitignore` 已忽略），两年数据合计约 7.5GB（行情约 2.4GB、缓存约 3.4GB、研究导出与结果约 1.5GB、虚拟环境约 0.2GB）。删掉后运行 `update_data.py` 可重新下载月度文件，但 REST 补的部分只能取回最近约 7 天，更早的要等下载站发布那个月的文件：
   - `raw/YYYYMM/<合约>-YYYYMM.csv.gz`：Gate 历史数据下载站的月度 1 分钟 K 线（列：时间、张数、收、高、低、开，省略无成交分钟），下载过的不再请求；`raw_missing.json` 记录确认不存在的（合约, 月份）。
   - `recent/<合约>.csv`：下载站还没发布的月份用 REST 补（列：时间、开、高、低、收、计价成交额），每次只追加新分钟；`.spans` 记录每次实际覆盖的区间。
   - `contracts.json`：合约面值等（合并保存，之后下架的合约也保留）。
-  - `cache/<合约>.npz`：合并后的分钟序列缓存，来源文件变化时自动重建。
+  - `cache/<合约>.npz`：合并后的分钟序列缓存，来源文件变化或加载规则改版（`load_data.CACHE_VERSION`）时自动重建。连续一整天以上完全没有成交的空档（停牌、下架后重新上线）按无数据处理。
   - `results/`：回测与研究的输出（汇总、逐笔明细、导出的研究数据、网格结果）。
   - `.venv/`：回测专用虚拟环境。
 
@@ -34,7 +34,7 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 
 ```powershell
 & $P research/launch_trade/update_data.py            # 默认取约半年前的月份起
-& $P research/launch_trade/update_data.py --start 202604
+& $P research/launch_trade/update_data.py --start 202409 --workers 16   # 两年；补很多月份时调高下载并发
 ```
 
 - 已结束的月份从下载站取，没有计价成交额，加载时按 张数 × 合约面值 × 典型价 估算；
@@ -53,6 +53,7 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 
 | 参数 | 含义 |
 | --- | --- |
+| `--days` | 回测最近多少天的提醒，默认 183（半年），一年 365、两年 730；更早的数据只用于预热 |
 | `--hold-hours` | 最长持仓小时数，到时按收盘价平仓 |
 | `--stop-loss` | 固定止损 |
 | `--take-profit`、`--take-fraction` | 止盈；只平一部分时剩余仓位继续按回撤止损跑 |
@@ -87,6 +88,7 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 | `r2_dip.py` | 回踩阈值的单调性与最稳组附近的平稳性 |
 | `r2_more.py` | 部分止盈、所有波次、成本压力、第二次入场、回踩守突破位、回踩缩量、再加过滤 |
 | `r2_delays.py` | 各项改进在 12 种等待设置下是否都胜过基准 |
-| `r2_final.py` | 最终排名 |
+| `r2_final.py --period half/year/two_years` | 最终排名：14 个方案在半年（选参数用）、一年、两年（检验）上的结果 |
+| `check_jumps.py` | 检查价格整体跳变（改面值、停牌后重新上线、旧名字给了新币），确认数据可用 |
 
 运行顺序：`update_data.py` → `r1_export.py` / `r2_export.py` → 其余脚本。

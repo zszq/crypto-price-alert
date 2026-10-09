@@ -163,6 +163,7 @@ def main() -> None:
     default_start = (now - timedelta(days=190)).strftime("%Y%m")
     parser.add_argument("--start", default=default_start, help="最早的月份 YYYYMM，默认约半年前")
     parser.add_argument("--rate", type=float, default=15.0, help="REST 每秒请求数，给正在运行的监控留出余量")
+    parser.add_argument("--workers", type=int, default=8, help="下载站并发数；补很多月份时可调高")
     args = parser.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
 
@@ -182,7 +183,7 @@ def main() -> None:
     ]
     print(f"下载站：月份 {months[0]}~{months[-1]}，待下载 {len(jobs)} 个文件")
     results: dict[str, int] = {}
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {pool.submit(download_month, symbol, month): (symbol, month) for symbol, month in jobs}
         for done, future in enumerate(as_completed(futures), 1):
             symbol, month = futures[future]

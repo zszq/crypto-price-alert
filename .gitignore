@@ -19,5 +19,5 @@ dist/
 data/alerts/**
 !data/alerts/.gitkeep
 data/price-alert.lock
-# 回测用的历史行情、缓存、结果与虚拟环境（约 2.5GB），只保存在本机；代码与结论在 research/launch_trade/，不需要时整个目录删除即可。
+# 回测用的历史行情、缓存、结果与虚拟环境（两年数据约 7.5GB），只保存在本机；代码与结论在 research/launch_trade/，不需要时整个目录删除即可。
 data/backtest/

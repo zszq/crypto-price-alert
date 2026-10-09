@@ -112,7 +112,7 @@ python -m venv .venv
 
 ## 回测研究（research/）
 
-`research/launch_trade/` 是放量启动提醒的交易回测（提醒后做多能否盈利、用什么入场/出场规则），不参与实时监控，也不在 `ruff check src tests` 与 pytest 范围内。用法见其 README.md，结论见 FINDINGS.md。行情数据与结果在 `data/backtest/`（不进版本库，约 2.5GB），回测用单独的虚拟环境 `data/backtest/.venv`（多装 numpy、numba）。修改 `launch` 判定逻辑或默认参数后，FINDINGS.md 的数字会失效，需要按其中的步骤重跑。
+`research/launch_trade/` 是放量启动提醒的交易回测（提醒后做多能否盈利、用什么入场/出场规则），不参与实时监控，也不在 `ruff check src tests` 与 pytest 范围内。用法见其 README.md，结论见 FINDINGS.md。行情数据与结果在 `data/backtest/`（不进版本库，两年数据约 7.5GB），回测用单独的虚拟环境 `data/backtest/.venv`（多装 numpy、numba）。修改 `launch` 判定逻辑或默认参数后，FINDINGS.md 的数字会失效，需要按其中的步骤重跑。
 
 ## 约定
 

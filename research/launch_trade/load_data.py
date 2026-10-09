@@ -3,7 +3,8 @@
 序列从该合约第一根有数据的分钟开始，到最后一根结束，每分钟一个下标：
 - 有成交的分钟取原始 K 线；
 - 数据源覆盖范围内、没有成交的分钟按上一收盘价补平线、成交额 0（下载站和 REST 都省略这类分钟，与检测器口径一致）；
-- 数据源没有覆盖的分钟（月度文件缺失、REST 保留范围之外的缺口）covered=False，回测不在这里判定、不计持仓。
+- 数据源没有覆盖的分钟（月度文件缺失、REST 保留范围之外的缺口）covered=False，回测不在这里判定、不计持仓；
+  连续 DEAD_MINUTES（一天）以上完全没有成交的空档（停牌、下架后重新上线）同样 covered=False。
 """
 
 from __future__ import annotations
@@ -21,6 +22,10 @@ RAW = DATA / "raw"
 RECENT = DATA / "recent"
 CACHE = DATA / "cache"
 CONTRACTS = DATA / "contracts.json"
+# 加载规则变了就改这个版本号，旧缓存按来源文件签名判断不出来，必须整体重建。
+CACHE_VERSION = 2
+# 连续这么多分钟完全没有成交，视为停牌或下架后重新上线的空档，按无数据处理（见 _build）。
+DEAD_MINUTES = 1440
 
 
 @dataclass(slots=True)
@@ -59,7 +64,8 @@ def _sources(symbol: str) -> list[Path]:
 
 def _signature(files: list[Path]) -> str:
     # 任何来源文件新增或变化就重建缓存；recent 每次更新都会变大。
-    return "|".join(f"{path.name}:{path.stat().st_size}:{int(path.stat().st_mtime)}" for path in files)
+    parts = (f"{path.name}:{path.stat().st_size}:{int(path.stat().st_mtime)}" for path in files)
+    return f"v{CACHE_VERSION}|" + "|".join(parts)
 
 
 def _build(symbol: str, multiplier: float | None) -> Series | None:
@@ -116,6 +122,14 @@ def _build(symbol: str, multiplier: float | None) -> Series | None:
     minute_times = t0 + np.arange(size) * 60
     for start, end in spans:
         covered |= (minute_times >= start) & (minute_times < end)
+    # 月度文件存在时整月都算覆盖，合约停牌几周也会被补成平线；重新上线后检测器会把这段假平线当作基准期
+    # （基准成交额为 0 视为放量、旧价格当作要突破的高点）。实盘中交易所给不出这段历史，要像新上线一样
+    # 攒够 K 线才判定，所以整天以上没有成交的空档按无数据处理。合约池要求 24 小时成交额 > 100 万，
+    # 正常交易中的币不会整天零成交，这只影响停牌后重新上线的情况。
+    edges = np.diff(np.concatenate([[0], (~present).astype(np.int8), [0]]))
+    for begin, end in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1), strict=True):
+        if end - begin >= DEAD_MINUTES:
+            covered[begin:end] = False
     # 平线：开高低收都等于上一根收盘价（缺口之后的第一根若也无成交，同样沿用缺口前的收盘价，价格不会编造）。
     close = data[3]
     filled_index = np.where(present, np.arange(size), 0)

@@ -18,8 +18,56 @@ R2 = RESULTS / "r2"
 PRE = 1440
 POST = 720
 BEIJING = timezone(timedelta(hours=8))
-START = int(datetime(2026, 4, 10, tzinfo=BEIJING).timestamp())
-SPLIT = int(datetime(2026, 8, 1, tzinfo=BEIJING).timestamp())
+
+
+def _beijing(year: int, month: int, day: int = 1) -> int:
+    return int(datetime(year, month, day, tzinfo=BEIJING).timestamp())
+
+
+@dataclass(frozen=True)
+class Period:
+    """回测区间：起点之前的提醒只用于预热；分段用来检查每一段是否都好，split 为训练/检验的分界。"""
+
+    name: str
+    folds: tuple[tuple[str, int], ...]  # (标签, 该段起点)，第一段的起点就是整个区间的起点
+    split: int
+
+    @property
+    def start(self) -> int:
+        return self.folds[0][1]
+
+
+PERIODS = {
+    # 第二轮研究用的半年：参数在这里选出，FINDINGS.md 的排名都按它。
+    "half": Period(
+        "半年",
+        (("4~5月", _beijing(2026, 4, 10)), ("6~7月", _beijing(2026, 6, 1)), ("8月起", _beijing(2026, 8, 1))),
+        _beijing(2026, 8, 1),
+    ),
+    # 一年、两年用来检验半年里选出的方案：比半年多出来的部分是选参数时完全没用过的数据。
+    "year": Period(
+        "一年",
+        (
+            ("25年10~12月", _beijing(2025, 10, 10)),
+            ("26年1~3月", _beijing(2026, 1, 1)),
+            ("26年4~6月", _beijing(2026, 4, 1)),
+            ("26年7月起", _beijing(2026, 7, 1)),
+        ),
+        _beijing(2026, 4, 10),
+    ),
+    "two_years": Period(
+        "两年",
+        (
+            ("24年10月~25年3月", _beijing(2024, 10, 10)),
+            ("25年4~9月", _beijing(2025, 4, 1)),
+            ("25年10月~26年3月", _beijing(2025, 10, 1)),
+            ("26年4月起", _beijing(2026, 4, 1)),
+        ),
+        _beijing(2026, 4, 10),
+    ),
+}
+START = PERIODS["half"].start
+SPLIT = PERIODS["half"].split
 
 
 @dataclass
@@ -30,17 +78,20 @@ class Data:
     closed_at: np.ndarray
     wave: np.ndarray
     train: np.ndarray
+    period: Period
 
 
-def load() -> Data:
+def load(period: str = "half") -> Data:
+    chosen = PERIODS[period]
     bars = np.load(R2 / "bars.npy", mmap_mode="r")
     meta_raw = np.load(R2 / "meta.npy")
     names = (R2 / "meta_names.txt").read_text(encoding="utf-8").split("\n")
-    keep = meta_raw[:, 0] >= START
+    keep = meta_raw[:, 0] >= chosen.start
     bars = np.ascontiguousarray(bars[keep])
     meta = {name: meta_raw[keep, k] for k, name in enumerate(names)}
     symbol = np.load(R2 / "symbol.npy")[keep]
-    return Data(bars, meta, symbol, meta["closed_at"], meta["wave"], meta["closed_at"] < SPLIT)
+    closed_at = meta["closed_at"]
+    return Data(bars, meta, symbol, closed_at, meta["wave"], closed_at < chosen.split, chosen)
 
 
 @dataclass
@@ -380,24 +431,22 @@ def evaluate(net: np.ndarray, mask: np.ndarray, data: Data, stake: float = 100.0
     out["minus10"] = float(x[:-10].sum() * stake) if len(x) > 10 else np.nan
     out["t"] = float(x.mean() / x.std(ddof=1) * np.sqrt(len(x))) if len(x) > 2 else np.nan
     out["win"] = float((x > 0).mean()) if len(x) else np.nan
-    months = np.array([datetime.fromtimestamp(t, BEIJING).month for t in data.closed_at])
+    months = np.array([datetime.fromtimestamp(t, BEIJING).strftime("%Y-%m") for t in data.closed_at])
     sel = mask & ~np.isnan(net)
-    out["neg_months"] = int(sum(net[sel & (months == mo)].sum() < 0 for mo in range(4, 10)))
+    # 数据截止的当月不满一个月、持仓也没走完，正负没有可比性，不算；起点所在的月份从起点算起，照算。
+    full_months = sorted(set(months))[:-1]
+    out["neg_months"] = int(sum(net[sel & (months == mo)].sum() < 0 for mo in full_months))
     return out
 
 
-FOLDS = (
-    int(datetime(2026, 6, 1, tzinfo=BEIJING).timestamp()),
-    int(datetime(2026, 8, 1, tzinfo=BEIJING).timestamp()),
-)
-
-
-def fold_sums(net: np.ndarray, mask: np.ndarray, data: Data, stake: float = 100.0) -> tuple[float, float, float]:
-    """4~5 月、6~7 月、8 月以后三段各自的合计：要求每段都好，比只看训练/检验两段更不容易被噪声骗。"""
+def fold_sums(net: np.ndarray, mask: np.ndarray, data: Data, stake: float = 100.0) -> tuple[float, ...]:
+    """区间各段各自的合计（半年为 4~5 月、6~7 月、8 月起）：要求每段都好，比只看训练/检验两段更不容易被噪声骗。"""
     t = data.closed_at
     ok = mask & ~np.isnan(net)
-    parts = (t < FOLDS[0], (t >= FOLDS[0]) & (t < FOLDS[1]), t >= FOLDS[1])
-    return tuple(float(net[ok & part].sum() * stake) for part in parts)
+    edges = [-np.inf, *(start for _, start in data.period.folds[1:]), np.inf]
+    return tuple(
+        float(net[ok & (t >= low) & (t < high)].sum() * stake) for low, high in zip(edges[:-1], edges[1:], strict=True)
+    )
 
 
 def fmt(r: dict) -> str:
@@ -417,7 +466,8 @@ def wait_dip(data: Data, delay: int = 10) -> np.ndarray:
 
 # 止损放在等待期最低价下方 2%（支撑位止损），离入场价最多 9%；6% 只在支撑位贴着入场价时兜底。
 SUPPORT_STOP = dict(stop=0.06, stop_support=2, stop_support_gap=0.02, stop_max=0.09)
-# 第二轮的最稳组 A（需另加 wait_dip ≤ -0.25% 的回踩条件）；完整规则与选出过程见 FINDINGS.md「最稳方案 A 的完整规则」。
+# 第二轮半年里最稳的方案 A（需另加 wait_dip ≤ -0.25% 的回踩条件），规则与选出过程见 FINDINGS.md「方案 A 的完整规则」。
+# 一年、两年检验后推荐的 J 就是 BEST 不加回踩条件，见 FINDINGS.md「推荐方案 J 的规则」。
 BEST = Rule(**SUPPORT_STOP, trail_atr=5, hold=600)
 BEST_DIP = 0.0025
 
