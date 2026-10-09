@@ -417,7 +417,7 @@ def wait_dip(data: Data, delay: int = 10) -> np.ndarray:
 
 # 止损放在等待期最低价下方 2%（支撑位止损），离入场价最多 9%；6% 只在支撑位贴着入场价时兜底。
 SUPPORT_STOP = dict(stop=0.06, stop_support=2, stop_support_gap=0.02, stop_max=0.09)
-# 第二轮的最稳组 A（需另加 wait_dip ≤ -0.25% 的回踩条件）。
+# 第二轮的最稳组 A（需另加 wait_dip ≤ -0.25% 的回踩条件）；完整规则与选出过程见 FINDINGS.md「最稳方案 A 的完整规则」。
 BEST = Rule(**SUPPORT_STOP, trail_atr=5, hold=600)
 BEST_DIP = 0.0025
 
