@@ -17,6 +17,7 @@
     & $P research/launch_trade/r3_studies.py market        # 市场状态与策略近期盈亏分档（需先运行 r3_market.py）
     & $P research/launch_trade/r3_studies.py rolling       # 每月滚动重选参数
     & $P research/launch_trade/r3_studies.py short         # 做空失败的启动
+    & $P research/launch_trade/r3_studies.py regime        # 亏损期、市场状态、过热过滤与扩展类开关（需 r3_market.py）
 """
 
 from __future__ import annotations
@@ -32,7 +33,20 @@ import numpy as np
 from paths import RESULTS
 from r2_delays import DELAYS
 from r2_lib import BEIJING, BEST, PRE, alert_features, fold_sums
-from r3_lib import BAD_HOURS, ENTRIES, TRAIL_SCALE, Book, Scheme, X, capped, hood, times
+from r3_lib import (
+    BAD_HOURS,
+    ENTRIES,
+    HOT_BREADTH,
+    MARKET,
+    TRAIL_SCALE,
+    Book,
+    Scheme,
+    X,
+    capped,
+    hood,
+    hourly_breadth,
+    times,
+)
 
 # 前推检验的分界：前 18 个月（2023-10 ~ 2025-03）选参数，后 18 个月检验。
 HALF = int(datetime(2025, 4, 1, tzinfo=BEIJING).timestamp())
@@ -472,6 +486,186 @@ def study_short(args) -> None:
         )
 
 
+# 亏损期分析的「最近一个月」：2026-10-10 分析时取的区间起点，固定下来以便复现。
+RECENT = int(datetime(2026, 9, 10, tzinfo=BEIJING).timestamp())
+
+
+def _closed_before(data, net, entry_at, exit_at, mask, days):
+    """每条提醒之前 days 天内已平仓的交易：(笔数, 合计, 赚 ≥30% 的笔数)，只用提醒时已知的结果。"""
+    ok = mask & ~np.isnan(net)
+    t_out = times(data, entry_at, exit_at)[1][ok]
+    order = np.argsort(t_out)
+    ts = t_out[order]
+    cum = np.concatenate([[0], np.cumsum(net[ok][order])])
+    big = np.concatenate([[0], np.cumsum(net[ok][order] >= 0.3)])
+    hi = np.searchsorted(ts, data.closed_at)
+    lo = np.searchsorted(ts, data.closed_at - days * 86400)
+    return hi - lo, cum[hi] - cum[lo], big[hi] - big[lo]
+
+
+def _regime_monthly(cases) -> None:
+    """逐月：买了就没涨（最大浮盈 < 3%）与回吐（浮盈到过 ≥ 20% 却亏或 < 3%）的占比、赚 ≥30% 的大单数。"""
+    for name, book, rule, mask in cases:
+        bars = book.data.bars
+        net, entry_at, exit_at = book.run(rule)
+        ok = mask & ~np.isnan(net)
+        peak = np.full(len(net), np.nan)
+        for k in np.flatnonzero(ok):
+            peak[k] = np.nanmax(bars[k, 1, entry_at[k] : exit_at[k] + 1]) / bars[k, 0, entry_at[k]] - 1
+        month = np.array([datetime.fromtimestamp(t, BEIJING).strftime("%Y-%m") for t in book.data.closed_at])
+        print(f"===== {name} 逐月：合计（每笔 100）| 笔数 | 胜率 | 买了就没涨 | 回吐 | 赚≥30%的笔数")
+        for m in sorted(set(month[ok])):
+            sel = ok & (month == m)
+            x = net[sel]
+            giveback = ((peak[sel] >= 0.2) & (x < 0.03)).mean()
+            print(
+                f"  {m} {x.sum() * 100:+7.0f} {sel.sum():5d} {(x > 0).mean():5.0%} "
+                f"{(peak[sel] < 0.03).mean():6.0%} {giveback:6.0%} {(x >= 0.3).sum():4d}"
+            )
+
+
+def _regime_states(cases) -> None:
+    """长周期市场状态与策略近期大单占比，分五档看 6 段。"""
+    hours, above = hourly_breadth()
+    market = np.load(MARKET)
+    close, symbols = market["close"], list(market["symbols"])
+    with np.errstate(invalid="ignore", divide="ignore"):
+        r720 = close / np.roll(close, 720, 0) - 1
+        r720[:720] = np.nan
+        r168 = close / np.roll(close, 168, 0) - 1
+        r168[:168] = np.nan
+        states = {
+            "全市场30天中位涨幅": np.nanmedian(r720, 1),
+            "站上30天均线占比": above,
+            "BTC30天涨幅": r720[:, symbols.index("BTC_USDT")],
+            "全市场7天中位涨幅": np.nanmedian(r168, 1),
+        }
+    for name, book, rule, mask in cases:
+        data = book.data
+        net, entry_at, exit_at = book.run(rule)
+        ok = mask & ~np.isnan(net)
+        slot = (data.closed_at.astype(np.int64) - int(hours[0])) // 3600 - 1
+        # r3_market.npz 比提醒导出旧时，超出范围的提醒记为缺失，不越界。
+        inside = (slot >= 0) & (slot < len(hours))
+        slot = np.clip(slot, 0, len(hours) - 1)
+        features = {k: np.where(inside, v[slot], np.nan) for k, v in states.items()}
+        count, _, big = _closed_before(data, net, entry_at, exit_at, mask, 14)
+        features["近14天大单占比"] = np.where(count >= 20, big / np.maximum(count, 1), np.nan)
+        fold = folds_of(book)
+        print(f"===== {name} 按市场状态分档（每笔 100 合计，6 段）")
+        for k, v in features.items():
+            sel = ok & ~np.isnan(v)
+            edges = np.nanpercentile(v[sel], [20, 40, 60, 80])
+            bucket = np.searchsorted(edges, v)
+            print(f"  {k} 分位点 {np.round(edges, 3)}")
+            for q in range(5):
+                part = sel & (bucket == q)
+                per = np.array([net[part & (fold == f)].sum() * 100 for f in range(6)])
+                print(
+                    f"    档{q + 1} 每笔{np.nanmean(net[part]) * 100:+5.2f}% 合{per.sum():+6.0f} "
+                    f"正段{(per > 0).sum()}/6 | " + " ".join(f"{x:+5.0f}" for x in per)
+                )
+
+
+def _regime_hot(book: Book, rule) -> None:
+    """P3 的 J 类与扩展类在不同过热阈值下（6 段 + 最近一个月），只用前 18 个月选阈值，以及最近一个月按提醒类型。"""
+    data = book.data
+    net = book.run(rule)[0]
+    ok = ~np.isnan(net)
+    core = book.core(rule)
+    breadth = np.nan_to_num(book.breadth, nan=0.0)
+    fold = folds_of(book)
+    recent = data.closed_at >= RECENT
+    early = data.closed_at < HALF
+    print("===== P3：J 类（已突破、24h成交额>100万、入场涨≥2%）与扩展类，按过热阈值")
+    for threshold in (0.7, 0.75, 0.8, 0.85):
+        for hot_name, hot in (("过热", breadth > threshold), ("不过热", breadth <= threshold)):
+            for kind, sel in (("J类", core), ("扩展类", ~core)):
+                part = ok & hot & sel
+                per = [net[part & (fold == f)].sum() * 100 for f in range(6)]
+                r = part & recent
+                print(
+                    f"  阈值{threshold:.0%} {hot_name:3s} {kind:3s} {part.sum():5d}笔 "
+                    f"每笔{net[part].mean() * 100:+5.2f}% 正段{sum(p > 0 for p in per)}/6 | "
+                    + " ".join(f"{p:+6.0f}" for p in per)
+                    + f" | 近1月 {r.sum():3d}笔 {net[r].sum() * 100:+5.0f}"
+                )
+        hot_core = ok & core & (breadth > threshold)
+        print(
+            f"  阈值{threshold:.0%} 过热J类：前18月 {net[hot_core & early].sum() * 100:+5.0f}，"
+            f"后18月 {net[hot_core & ~early].sum() * 100:+5.0f}"
+        )
+    print("===== P3 按提醒类型：三年 笔数/每笔 | 最近一个月 笔数/合计/每笔")
+    alert_price = data.bars[:, 3, PRE - 1]
+    gain = data.bars[:, 0, PRE + int(rule.delay)] / alert_price - 1
+    kinds = {
+        "已突破": alert_price > data.meta["breakout"],
+        "未突破": ~(alert_price > data.meta["breakout"]),
+        "24h成交额>100万": data.meta["volume_24h"] > 1e6,
+        "冷门币（≤100万）": data.meta["volume_24h"] <= 1e6,
+        "入场涨0~2%": (gain >= 0) & (gain < 0.02),
+        "入场涨≥2%": gain >= 0.02,
+    }
+    for k, m in kinds.items():
+        a = ok & m
+        r = a & recent
+        print(
+            f"  {k:14s} {a.sum():6d} {net[a].mean() * 100:+5.2f}% | {r.sum():4d} {net[r].sum() * 100:+6.0f} "
+            f"{net[r].mean() * 100 if r.any() else 0:+5.2f}%"
+        )
+
+
+def _regime_switch(book: Book, rule) -> None:
+    """扩展类按近期盈亏开关：只开一个仓（每笔 1000），换等待分钟与窗口长度，看好处是否稳定。"""
+    data = book.data
+    print("===== 一个仓、每笔 1000：三年合计 / 回撤，等 5/7/10/12/15 分钟（确认 0%）；最后一列是每个提醒都买的平均")
+    p5 = Scheme("P5", "v_nb_pool0_noover", rule, all_waves=True, hot_breadth=HOT_BREADTH, hot_core_only=True)
+    variants = (
+        ("P3", None),
+        ("P5", 0),
+        ("P5+扩展类近14天开关", 14),
+        ("P5+扩展类近30天开关", 30),
+        ("P5+扩展类近60天开关", 60),
+    )
+    for label, days in variants:
+        cells = []
+        for delay in (5, 7, 10, 12, 15):
+            moved = replace(rule, delay=delay)
+            net, entry_at, exit_at = book.run(moved)
+            mask = np.ones_like(book.first) if days is None else book.mask(p5, moved)
+            if days:
+                ext = ~book.core(moved)
+                count, recent_sum, _ = _closed_before(data, net, entry_at, exit_at, ext, days)
+                # 扩展类只在它们近 days 天已平仓交易合计为正时才买；还没有记录时照买。
+                mask = mask & (~ext | (count == 0) | (recent_sum > 0))
+            ok = mask & ~np.isnan(net)
+            one = capped(data, entry_at, exit_at, ok, 1)
+            t_out = times(data, entry_at, exit_at)[1]
+            index = np.flatnonzero(one)
+            curve = np.cumsum(net[index[np.argsort(t_out[index])]] * 1000)
+            drop = np.max(np.maximum.accumulate(np.concatenate([[0], curve]))[1:] - curve)
+            cells.append((curve[-1], drop, net[ok].sum() * 1000))
+        mean = np.mean([c[0] for c in cells])
+        many = np.mean([c[2] for c in cells])
+        print(
+            f"  {label:20s}"
+            + "".join(f"{a:+8.0f}/{b:5.0f}" for a, b, _ in cells)
+            + f" | 平均 {mean:+7.0f} | 多个仓平均 {many:+8.0f}"
+        )
+
+
+def study_regime(args) -> None:
+    """J 与 P3 的亏损期：信号失效还是出场回吐、和市场状态的关系、过热过滤与扩展类开关。"""
+    jb = Book("v_base")
+    pb = Book("v_nb_pool0_noover")
+    p3 = replace(X, confirm=0.0)
+    cases = (("J", jb, BEST, jb.first), ("P3", pb, p3, np.ones_like(pb.first)))
+    _regime_monthly(cases)
+    _regime_states(cases)
+    _regime_hot(pb, p3)
+    _regime_switch(pb, p3)
+
+
 STUDIES = {
     "waves": (study_waves, "r3"),
     "exits": (study_exits, "r3"),
@@ -486,6 +680,7 @@ STUDIES = {
     "market": (study_market, None),
     "rolling": (study_rolling, None),
     "short": (study_short, "r3"),
+    "regime": (study_regime, None),
 }
 
 

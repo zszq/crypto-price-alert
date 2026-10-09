@@ -29,6 +29,32 @@ WAIT_DELAYS = (3, 5, 7, 10, 12, 15, 20)
 FUNDING_PER_8H = 0.0003
 # 同时持仓上限（笔）：J 三年里高峰约 30 笔，持仓更久、提醒更多的方案高峰可到 100 笔，只看合计对它们偏乐观。
 CAPS = (10, 20)
+# 市场过热：全市场站上 30 天均线的合约占比超过这个值。三年里过热时 J 类提醒（见 Book.core）6 段全亏，
+# 越热亏得越多（70%/75%/80%/85% 时每笔 -0.32%/-0.52%/-0.73%/-1.05%）；只用前 18 个月选阈值，后 18 个月也成立。
+# 取 85% 而不是 80%：三年里 85% 对 J、J3、P3 的改进都更大，只用前 18 个月选也会选 85%；80% 还会滤掉 2026-09 下旬
+# J 赚钱的几天。阈值附近很敏感：2026-09-23 宽度到过 84.9%。见 FINDINGS.md「亏损期分析与过热过滤」。
+HOT_BREADTH = 0.85
+MARKET = RESULTS / "r3_market.npz"
+_breadth_cache: tuple[np.ndarray, np.ndarray] | None = None
+
+
+def hourly_breadth() -> tuple[np.ndarray, np.ndarray]:
+    """(每小时开盘时间, 该小时收盘时站上 30 天均线的合约占比)，由 r3_market.py 的输出算出，进程内只算一次。"""
+    global _breadth_cache
+    if _breadth_cache is None:
+        market = np.load(MARKET)
+        close = market["close"]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            # 30 天（720 小时）均线只用有数据的小时：缺数据的小时既不计入和，也不计入个数。
+            values = np.cumsum(np.nan_to_num(close), 0)
+            counts = np.cumsum(~np.isnan(close), 0)
+            sma = (values - np.roll(values, 720, 0)) / np.maximum(counts - np.roll(counts, 720, 0), 1)
+            sma[:720] = np.nan
+            above = np.where(np.isnan(close) | np.isnan(sma), np.nan, close > sma)
+            valid = ~np.isnan(above)
+            ratio = np.where(valid.sum(1) > 20, np.nansum(above, 1) / np.maximum(valid.sum(1), 1), np.nan)
+        _breadth_cache = (market["hours"], ratio)
+    return _breadth_cache
 
 
 @dataclass(frozen=True)
@@ -40,6 +66,10 @@ class Scheme:
     rule: Rule
     all_waves: bool = False
     skip_hours: tuple[int, ...] = ()
+    # 市场过热（站上 30 天均线的合约占比超过这个值）时不买；None 不过滤。
+    hot_breadth: float | None = None
+    # 过热时只跳过 J 类提醒（Book.core），其余照买：过热时失效的是已突破的追高类提醒，区间内放量的反而还赚钱。
+    hot_core_only: bool = False
 
 
 class Book:
@@ -50,11 +80,37 @@ class Book:
         self.engine = Engine(self.data)
         self.hour = ((self.data.closed_at // 3600) + 8) % 24
         self.first = self.data.wave == 1
+        self._breadth: np.ndarray | None = None
 
-    def mask(self, scheme: Scheme) -> np.ndarray:
+    @property
+    def breadth(self) -> np.ndarray:
+        """每条提醒之前最后一个已收盘小时的市场宽度（站上 30 天均线的合约占比），只用提醒时已知的数据。"""
+        if self._breadth is None:
+            hours, ratio = hourly_breadth()
+            slot = (self.data.closed_at.astype(np.int64) - int(hours[0])) // 3600 - 1
+            inside = (slot >= 0) & (slot < len(ratio))
+            self._breadth = np.where(inside, ratio[np.clip(slot, 0, len(ratio) - 1)], np.nan)
+        return self._breadth
+
+    def core(self, rule: Rule) -> np.ndarray:
+        """J 类提醒：已突破基准期高点、24h 成交额 > 100 万、入场开盘价比提醒价高 ≥ 2%（按 rule 的等待分钟）。"""
+        bars, meta = self.data.bars, self.data.meta
+        alert_price = bars[:, 3, PRE - 1]
+        with np.errstate(invalid="ignore"):
+            gain = bars[:, 0, PRE + int(rule.delay)] / alert_price - 1
+            return (alert_price > meta["breakout"]) & (meta["volume_24h"] > 1e6) & (gain >= 0.02)
+
+    def mask(self, scheme: Scheme, rule: Rule | None = None) -> np.ndarray:
+        """方案选中的提醒；rule 换了等待分钟时（邻域、换等待）按它判断 J 类。"""
         mask = np.ones_like(self.first) if scheme.all_waves else self.first.copy()
         if scheme.skip_hours:
             mask &= ~np.isin(self.hour, scheme.skip_hours)
+        if scheme.hot_breadth is not None:
+            # 宽度缺失（市场数据没覆盖到）按不过热处理，与不过滤时一致。
+            hot = np.nan_to_num(self.breadth, nan=0.0) > scheme.hot_breadth
+            if scheme.hot_core_only:
+                hot &= self.core(rule or scheme.rule)
+            mask &= ~hot
         return mask
 
     def run(self, rule: Rule) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -99,20 +155,22 @@ def drawdown(data: Data, net: np.ndarray, exit_at: np.ndarray, mask: np.ndarray)
 
 def hood(book: Book, scheme: Scheme) -> tuple[float, float]:
     """邻域平均与 10 分位：入场与回撤一起扰动，排除单个参数点的运气。"""
-    mask = book.mask(scheme)
     values = []
     for delay, confirm in ENTRIES:
         for scale in TRAIL_SCALE:
             rule = replace(scheme.rule, delay=delay, confirm=confirm, trail=scheme.rule.trail * scale)
-            values.append(np.nansum(book.run(rule)[0][mask]) * 100)
+            values.append(np.nansum(book.run(rule)[0][book.mask(scheme, rule)]) * 100)
     values = np.array(values)
     return float(values.mean()), float(np.percentile(values, 10))
 
 
 def wait_sums(book: Book, scheme: Scheme) -> np.ndarray:
     """方案自己的确认涨幅不变，只换等待分钟后的合计。"""
-    mask = book.mask(scheme)
-    return np.array([np.nansum(book.run(replace(scheme.rule, delay=d))[0][mask]) * 100 for d in WAIT_DELAYS])
+    sums = []
+    for delay in WAIT_DELAYS:
+        rule = replace(scheme.rule, delay=delay)
+        sums.append(np.nansum(book.run(rule)[0][book.mask(scheme, rule)]) * 100)
+    return np.array(sums)
 
 
 def report(book: Book, scheme: Scheme, reference_wait: np.ndarray | None = None) -> dict:

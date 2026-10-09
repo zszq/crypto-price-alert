@@ -92,9 +92,9 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 | `check_jumps.py` | 检查价格整体跳变（改面值、停牌后重新上线、旧名字给了新币），确认数据可用 |
 | `r3_export.py` | 第三轮：与 `r2_export.py` 相同，但提醒后保留的分钟数可调（`--post`，默认 48 小时），`--set 字段=值` 覆盖 `launch` 段、`--min-volume` 覆盖合约池下限，导出到 `results/<--out>` |
 | `r3_market.py` | 第三轮：全市场逐小时收盘价与成交额（上涨币占比、活跃度等市场状态的原料），输出 `results/r3_market.npz` |
-| `r3_lib.py` | 第三轮：方案定义（`Scheme`）、出场 X、邻域平均、限同时持仓、资金费率敏感性 |
-| `r3_final.py` | 第三轮最终排名：三年里比 J 更赚钱的 18 个方案 |
-| `r3_studies.py <研究>` | 第三轮排名表以外的研究：波次、出场网格、持仓、出场形态、特征与时段分档、前推检验、提醒门槛变体、突破拆分、随机对照、确认扫描、市场状态、滚动重选、做空（子命令见脚本开头） |
+| `r3_lib.py` | 第三轮：方案定义（`Scheme`）、出场 X、过热过滤（全市场站上 30 天均线占比）、邻域平均、限同时持仓、资金费率敏感性 |
+| `r3_final.py` | 第三轮最终排名：三年里比 J 更赚钱的 21 个方案（含过热过滤的 J4、J5、P5） |
+| `r3_studies.py <研究>` | 第三轮排名表以外的研究：波次、出场网格、持仓、出场形态、特征与时段分档、前推检验、提醒门槛变体、突破拆分、随机对照、确认扫描、市场状态、滚动重选、做空、亏损期与过热过滤（子命令见脚本开头） |
 
 运行顺序：`update_data.py` → `r1_export.py` / `r2_export.py` → 其余脚本。
 
@@ -104,9 +104,10 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 & $P research/launch_trade/r3_export.py --post 1200 --out v_base
 & $P research/launch_trade/r3_export.py --post 1200 --out v_nobreak --set require_breakout=false
 & $P research/launch_trade/r3_export.py --post 1200 --out v_nb_pool0_noover --set require_breakout=false --set max_change_percent=none --min-volume 0
+& $P research/launch_trade/r3_market.py   # 过热过滤要用的全市场逐小时数据
 & $P research/launch_trade/r3_final.py
 ```
 
-`r3_studies.py` 的多数研究用 48 小时的默认导出 `r3`（`r3_export.py` 不带参数），`control`、`market` 还要先运行 `r3_market.py`，`variants` 要先按其中 `VARIANTS` 的目录名导出各门槛变体（如 `--out v_step3 --set realert_step_percent=3`）。
+`r3_studies.py` 的多数研究用 48 小时的默认导出 `r3`（`r3_export.py` 不带参数），`control`、`market`、`regime` 还要先运行 `r3_market.py`，`variants` 要先按其中 `VARIANTS` 的目录名导出各门槛变体（如 `--out v_step3 --set realert_step_percent=3`）。
 
 `r2_lib.load(period, source)` 可以读任意一份导出；模拟器按导出的列数判断持仓是否超出数据，12 小时（r2）与更长的导出通用。
