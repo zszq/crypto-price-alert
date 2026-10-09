@@ -2,7 +2,7 @@
 
 bars 第 PRE-1 列是提醒所在分钟（提醒价 = 它的收盘价），第 PRE 列是提醒后第一分钟。
 所有规则只用当时已经能看到的数据：入场判断只看入场那一分钟开盘之前收盘的 K 线和这一分钟的开盘价，
-持仓中每分钟先按开盘价/最低价检查亏损的线、再检查止盈，最后才用这一分钟的高点更新最高价。
+持仓中每分钟先成交开盘就越过的止盈，再按开盘价/最低价检查亏损的线、再检查盘中止盈，最后才用这一分钟的高点更新最高价。
 """
 
 from __future__ import annotations
@@ -334,6 +334,13 @@ def _simulate(bars, alert_price, support0, resist, btc1h, start_price, base_q, w
                 trail_line = peak * (1 - cur_tr)
                 if int(trail_on_close) == 0:
                     line = max(line, trail_line)
+            # 开盘就越过止盈价时，止盈在开盘那一刻按开盘价成交，先于本分钟之后的任何下跌，不能被止损吞掉。
+            if not np.isnan(tp) and remaining == 1.0 and o[k] >= tp:
+                realized += take_fraction * (o[k] / price - 1 - fee * o[k] / price)
+                remaining -= take_fraction
+                if remaining <= 1e-9:
+                    exit_k = k
+                    break
             if o[k] <= line:
                 realized += remaining * (o[k] / price - 1 - fee * o[k] / price)
                 remaining = 0.0

@@ -11,8 +11,9 @@
 交易假设：
 - 入场：默认在提醒所在分钟收盘后的下一分钟开盘价买入；设了 --entry-delay 时等这么多分钟再按那一分钟开盘价买，
   未满足 --confirm / --min-dip / --max-extension 的提醒放弃（skipped）。
-- 出场：每分钟先看亏损的线（固定或支撑位止损、从最高价回撤），开盘就越过按开盘价成交，否则按线价成交；
-  再看止盈（--take-fraction 小于 100 时只平一部分，剩余继续跑）；回撤线只用上一分钟为止的最高价；
+- 出场：每分钟开盘就越过止盈价的先按开盘价止盈；再看亏损的线（固定或支撑位止损、从最高价回撤），
+  开盘就越过按开盘价成交，否则按线价成交；最后看盘中止盈（--take-fraction 小于 100 时只平一部分，
+  剩余继续跑）；回撤线只用上一分钟为止的最高价；
   满 N 小时按最后一分钟收盘价平仓。
 - 手续费按双边吃单计；不计资金费率与滑点。
 
@@ -170,8 +171,9 @@ def detect(series: Series, rule: LaunchRule, pool: PoolRule) -> list[Alert]:
     last: tuple[int, float, int] | None = None  # (时间, 价格, 波次)
     for pos in np.flatnonzero(candidate):
         i = int(idx[pos])
-        # 突破：收盘严格高于基准期最高价（只对候选分钟算，免得对每一分钟取 360 根的最大值）。
-        if not c[i] > h[i - history + 1 : i - window + 1].max():
+        # 突破：收盘严格高于基准期最高价（只对候选分钟算，免得对每一分钟取 360 根的最大值）；
+        # 与 evaluate_launch 一致，require_breakout 关闭时不要求。
+        if rule.require_breakout and not c[i] > h[i - history + 1 : i - window + 1].max():
             continue
         closed_at = series.t0 + (i + 1) * 60
         overshoot = rule.overshoots(float(change[pos]))
@@ -266,7 +268,14 @@ def simulate_trade(series: Series, alert: Alert, trade: TradeRule) -> Trade:
         line, reason = stop, "stop"
         if trail is not None and best * (1 - trail) > stop:
             line, reason = best * (1 - trail), "trail"
-        # 先看亏损的线（开盘跳空按开盘价），再看止盈：同一分钟两条线都碰到时按保守的一边算。
+        # 开盘就越过止盈价时，止盈在开盘那一刻按开盘价成交，先于本分钟之后的任何下跌，不能被止损吞掉。
+        if take is not None and remaining == 1.0 and opened >= take:
+            if trade.take_fraction >= 1.0:
+                return _closed(result, closed_at, opened, "take", best, trade)
+            banked += trade.take_fraction * opened
+            result.partial_take = True
+            remaining -= trade.take_fraction
+        # 先看亏损的线（开盘跳空按开盘价），再看止盈：开盘之后同一分钟两条线都碰到时，看不出先后，按保守的一边算。
         if opened <= line:
             return _closed(result, closed_at, banked + remaining * opened, reason, best, trade)
         if series.low[k] <= line:
