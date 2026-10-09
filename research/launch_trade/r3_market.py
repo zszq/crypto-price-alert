@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -19,19 +20,18 @@ from load_data import load_contracts, load_series  # noqa: E402
 from paths import RESULTS  # noqa: E402
 
 START = 1688169600  # 2023-07-01 UTC：三年区间起点之前留出 30 天以上的预热
-END = 1791590400  # 2026-10-10 UTC
 
 
 def _hourly(args):
-    symbol, multiplier = args
+    symbol, multiplier, end = args
     series = load_series(symbol, multiplier)
-    n_hours = (END - START) // 3600
+    n_hours = (end - START) // 3600
     close = np.full(n_hours, np.nan)
     quote = np.zeros(n_hours)
     if series is None:
         return close, quote
     minute = series.t0 + np.arange(len(series)) * 60
-    ok = series.covered & (minute >= START) & (minute < END)
+    ok = series.covered & (minute >= START) & (minute < end)
     slot = (minute[ok] - START) // 3600
     np.add.at(quote, slot, series.quote[ok])
     # 每小时最后一根有数据的分钟的收盘价：slot 单调不减，按 slot 取最后一个位置。
@@ -51,8 +51,11 @@ def main() -> None:
         return value if value > 0 else None
 
     symbols = sorted(contracts)
+    # 取到运行时的整点：数据更新后重跑就包含新的小时。由主进程算好传给子进程，
+    # 子进程各自取时间的话跨过整点时小时数会不一致。
+    end = int(time.time()) // 3600 * 3600
     with ProcessPoolExecutor(max_workers=10) as executor:
-        results = list(executor.map(_hourly, [(s, multiplier(s)) for s in symbols], chunksize=4))
+        results = list(executor.map(_hourly, [(s, multiplier(s), end) for s in symbols], chunksize=4))
     close = np.stack([r[0] for r in results], axis=1)
     quote = np.stack([r[1] for r in results], axis=1)
     hours = START + np.arange(close.shape[0]) * 3600

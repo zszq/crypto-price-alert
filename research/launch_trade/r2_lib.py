@@ -95,7 +95,7 @@ class Data:
 
 
 def load(period: str = "half", source: Path = R2) -> Data:
-    """source 默认是第二轮的导出（提醒后 12 小时）；第三轮用 r3_export.py 的 48 小时导出试更长的持仓。"""
+    """source 默认是第二轮的导出（提醒后 12 小时）；第三轮用 r3_export.py 的更长导出（20 / 48 小时）与其他提醒规则。"""
     chosen = PERIODS[period]
     bars = np.load(source / "bars.npy", mmap_mode="r")
     meta_raw = np.load(source / "meta.npy")

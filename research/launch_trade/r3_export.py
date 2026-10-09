@@ -82,6 +82,8 @@ def main() -> None:
             bars.extend(b)
             meta.extend(m)
             names.extend(s)
+    if not bars:
+        raise SystemExit("没有提醒，检查 --set / --min-volume 与数据")
     # 直接写进预分配的 memmap，避免 np.stack 再复制一份几 GB。
     shape = (len(bars), *bars[0].shape)
     stacked = np.lib.format.open_memmap(out / "bars.npy", mode="w+", dtype=np.float64, shape=shape)

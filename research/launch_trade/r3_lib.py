@@ -18,7 +18,8 @@ from r2_lib import BEST, PRE, Data, Engine, Rule, evaluate, fold_sums, load
 # 三年里按 30 种入场的平均选出，见 FINDINGS.md「第三轮」。
 EXIT_X = dict(stop_support_gap=0.05, stop_max=0.2, trail_atr=3, hold=1080)
 X = replace(BEST, **EXIT_X)
-# 北京时间 7~10 点（UTC 23 点到次日 2 点，跨过日线开盘与资金费率结算）的提醒三年里稳定亏钱，前推检验也成立。
+# 北京时间 7~10 点（UTC 23 点到次日 2 点，跨过日线开盘与资金费率结算）：按提醒 K 线的收盘时刻判断。
+# 当前提醒规则下三年里稳定亏钱、前推检验也成立；不要求突破时（v_nobreak）不成立，见 FINDINGS.md。
 BAD_HOURS = (7, 8, 9)
 # 邻域：入场等待 × 确认涨幅，与回撤幅度 × 倍数。
 ENTRIES = [(delay, confirm) for delay in (5, 7, 8, 10, 12, 15) for confirm in (0.0, 0.005, 0.01, 0.015, 0.02)]
