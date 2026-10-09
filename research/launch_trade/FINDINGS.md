@@ -312,7 +312,7 @@ data/backtest/.venv/Scripts/python.exe research/launch_trade/launch_trade_backte
 - **限同时持仓**：同时最多持 10 / 20 笔，满仓时跳过新提醒，按同样本金（1000 / 2000 USDT）比较。提醒多、持仓久的方案高峰同时持仓能到 100 笔以上，只看合计对它们偏乐观。
 - **资金费率**：每 8 小时持仓扣 0.03%（Gate 正常 0.01%，启动中的币多头常付得更多）。
 - **前推检验**：只用前 18 个月（2023-10 ~ 2025-03）选参数，看后 18 个月是否还成立。
-- **正式回测复核**：N2、P2、P3 用 `launch_trade_backtest.py --config <改过 launch 段的配置>` 重跑，笔数与合计逐笔一致（2026-10-09 的数据：N2 3994 笔 +3811，P2 10886 笔 +8103，P3 15839 笔 +12378）。
+- **正式回测复核**：N2、P2、P3 用 `launch_trade_backtest.py --config <改过 launch 段的配置>` 重跑，笔数与合计逐笔一致（2026-10-09 的数据：N2 3994 笔 +3811，P2 10886 笔 +8103，P3 15839 笔 +12378）；J4、P5 加 `--hot-breadth 85`（P5 再加 `--hot-core-only`）重跑也一致（2026-10-10 的数据：J4 2254 笔 +1973，P5 15151 笔 +13117）。J5 还要避开 7~10 点，正式回测不支持。
 
 ### 排名（三年，每笔 100 USDT，扣费）
 
@@ -469,7 +469,13 @@ P3 的正式回测（配置为把 `launch` 段改成上面三项的副本）：
 & $P research/launch_trade/launch_trade_backtest.py --config <配置> --days 1096 --entry-delay 10 --confirm 0 --stop-loss 6 --stop-wait-low 5 --stop-max 20 --trail 15 --trail-atr 3 --hold-hours 18
 ```
 
-输出中「参照：所有波次都买入」一段就是 P3，第 1 波一段是 P2。正式回测脚本没有过热过滤，J4、J5、P5 只能用 `r3_final.py` 跑。
+输出中「参照：所有波次都买入」一段就是 P3，第 1 波一段是 P2。P5 在同样的命令后加过热过滤（需先运行 `r3_market.py`），「参照：所有波次都买入」一段就是 P5：
+
+```powershell
+& $P research/launch_trade/launch_trade_backtest.py --config <配置> --days 1096 --entry-delay 10 --confirm 0 --stop-loss 6 --stop-wait-low 5 --stop-max 20 --trail 15 --trail-atr 3 --hold-hours 18 --hot-breadth 85 --hot-core-only
+```
+
+J4 是 J 的命令（见「推荐方案 J 的规则」，`--days 1096`）加 `--hot-breadth 85`，看第 1 波一段。J5 还要避开 7~10 点，只能用 `r3_final.py` 跑。
 
 ## 风险与使用建议
 

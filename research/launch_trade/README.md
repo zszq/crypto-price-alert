@@ -62,6 +62,7 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 | `--min-dip` | 等待期最低价须比提醒价至少低这么多（先回踩）才买 |
 | `--stop-wait-low`、`--stop-max` | 止损放在等待期最低价下方这么多，离入场价最多 `--stop-max` |
 | `--max-extension` | 入场价比启动前（窗口开始前一根收盘）高出超过这么多就不追 |
+| `--hot-breadth`、`--hot-core-only` | 市场过热（全市场站上 30 天均线的合约占比，取提醒前最后一个已收盘小时）超过这个百分比时不买；`--hot-core-only` 只跳过 J 类提醒（已突破基准期高点、24h 成交额 > 100 万、入场价比提醒价高 ≥ 2%）。需先运行 `r3_market.py` |
 | `--fee` | 单边手续费，默认 0.05 |
 | `--all-waves` | 月度与逐笔明细按所有波次统计（默认只看第 1 波） |
 | `--no-pool` | 不按合约池筛选 |

@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 from paths import RESULTS
 from r2_lib import BEST, PRE, Data, Engine, Rule, evaluate, fold_sums, load
+from r3_market import hourly_breadth
 
 # 第三轮的出场 X：在 J（BEST）基础上止损放宽到等待期最低价下方 5%（最多 20%）、回撤 ≥ 3 倍振幅、持仓 18 小时。
 # 三年里按 30 种入场的平均选出，见 FINDINGS.md「第三轮」。
@@ -34,27 +35,6 @@ CAPS = (10, 20)
 # 取 85% 而不是 80%：三年里 85% 对 J、J3、P3 的改进都更大，只用前 18 个月选也会选 85%；80% 还会滤掉 2026-09 下旬
 # J 赚钱的几天。阈值附近很敏感：2026-09-23 宽度到过 84.9%。见 FINDINGS.md「亏损期分析与过热过滤」。
 HOT_BREADTH = 0.85
-MARKET = RESULTS / "r3_market.npz"
-_breadth_cache: tuple[np.ndarray, np.ndarray] | None = None
-
-
-def hourly_breadth() -> tuple[np.ndarray, np.ndarray]:
-    """(每小时开盘时间, 该小时收盘时站上 30 天均线的合约占比)，由 r3_market.py 的输出算出，进程内只算一次。"""
-    global _breadth_cache
-    if _breadth_cache is None:
-        market = np.load(MARKET)
-        close = market["close"]
-        with np.errstate(invalid="ignore", divide="ignore"):
-            # 30 天（720 小时）均线只用有数据的小时：缺数据的小时既不计入和，也不计入个数。
-            values = np.cumsum(np.nan_to_num(close), 0)
-            counts = np.cumsum(~np.isnan(close), 0)
-            sma = (values - np.roll(values, 720, 0)) / np.maximum(counts - np.roll(counts, 720, 0), 1)
-            sma[:720] = np.nan
-            above = np.where(np.isnan(close) | np.isnan(sma), np.nan, close > sma)
-            valid = ~np.isnan(above)
-            ratio = np.where(valid.sum(1) > 20, np.nansum(above, 1) / np.maximum(valid.sum(1), 1), np.nan)
-        _breadth_cache = (market["hours"], ratio)
-    return _breadth_cache
 
 
 @dataclass(frozen=True)

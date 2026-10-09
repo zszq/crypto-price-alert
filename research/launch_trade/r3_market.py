@@ -4,6 +4,7 @@
 所以先把这些环境量算成逐小时序列，提醒时只取提醒之前已经收盘的那个小时，不会用到未来数据。
 输出 data/backtest/results/r3_market.npz：
 - hours：每小时的开盘时间（秒）；close / quote：(小时数, 合约数) 每小时收盘价与成交额，无数据为 NaN / 0。
+hourly_breadth() 由它算出每小时站上 30 天均线的合约占比（市场宽度），供过热过滤使用。
 """
 
 from __future__ import annotations
@@ -20,6 +21,30 @@ from load_data import load_contracts, load_series  # noqa: E402
 from paths import RESULTS  # noqa: E402
 
 START = 1688169600  # 2023-07-01 UTC：三年区间起点之前留出 30 天以上的预热
+MARKET = RESULTS / "r3_market.npz"
+_breadth_cache: tuple[np.ndarray, np.ndarray] | None = None
+
+
+def hourly_breadth() -> tuple[np.ndarray, np.ndarray]:
+    """(每小时开盘时间, 该小时收盘时站上 30 天均线的合约占比)，由 main() 的输出算出，进程内只算一次。
+
+    过热过滤（r3_lib 与 launch_trade_backtest.py --hot-breadth）都用它，两边判断一致。
+    """
+    global _breadth_cache
+    if _breadth_cache is None:
+        market = np.load(MARKET)
+        close = market["close"]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            # 30 天（720 小时）均线只用有数据的小时：缺数据的小时既不计入和，也不计入个数。
+            values = np.cumsum(np.nan_to_num(close), 0)
+            counts = np.cumsum(~np.isnan(close), 0)
+            sma = (values - np.roll(values, 720, 0)) / np.maximum(counts - np.roll(counts, 720, 0), 1)
+            sma[:720] = np.nan
+            above = np.where(np.isnan(close) | np.isnan(sma), np.nan, close > sma)
+            valid = ~np.isnan(above)
+            ratio = np.where(valid.sum(1) > 20, np.nansum(above, 1) / np.maximum(valid.sum(1), 1), np.nan)
+        _breadth_cache = (market["hours"], ratio)
+    return _breadth_cache
 
 
 def _hourly(args):
@@ -59,7 +84,7 @@ def main() -> None:
     close = np.stack([r[0] for r in results], axis=1)
     quote = np.stack([r[1] for r in results], axis=1)
     hours = START + np.arange(close.shape[0]) * 3600
-    np.savez(RESULTS / "r3_market.npz", hours=hours, close=close, quote=quote, symbols=np.array(symbols))
+    np.savez(MARKET, hours=hours, close=close, quote=quote, symbols=np.array(symbols))
     print(f"{len(symbols)} 个合约，{close.shape[0]} 小时")
 
 

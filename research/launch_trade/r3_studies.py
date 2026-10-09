@@ -37,16 +37,15 @@ from r3_lib import (
     BAD_HOURS,
     ENTRIES,
     HOT_BREADTH,
-    MARKET,
     TRAIL_SCALE,
     Book,
     Scheme,
     X,
     capped,
     hood,
-    hourly_breadth,
     times,
 )
+from r3_market import MARKET, hourly_breadth
 
 # 前推检验的分界：前 18 个月（2023-10 ~ 2025-03）选参数，后 18 个月检验。
 HALF = int(datetime(2025, 4, 1, tzinfo=BEIJING).timestamp())

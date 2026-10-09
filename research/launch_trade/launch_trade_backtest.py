@@ -16,6 +16,8 @@
   剩余继续跑）；回撤线只用上一分钟为止的最高价；
   满 N 小时按最后一分钟收盘价平仓。
 - 手续费按双边吃单计；不计资金费率与滑点。
+- --hot-breadth：市场过热（全市场站上 30 天均线的合约占比，取提醒前最后一个已收盘小时）时不买，
+  --hot-core-only 时只跳过 J 类提醒；与 r3_lib 的过热过滤判断相同，需先运行 r3_market.py。
 
 用法（在仓库根目录，先运行 update_data.py）：
     data/backtest/.venv/Scripts/python.exe research/launch_trade/launch_trade_backtest.py
@@ -77,6 +79,11 @@ class TradeRule:
     take_fraction: float = 1.0
     # 不追高：入场价相对启动前（窗口开始前一根收盘）最多涨这么多，太高的放弃。
     max_extension: float | None = None
+    # 市场过热（提醒前最后一个已收盘小时，全市场站上 30 天均线的合约占比超过这个值）时不买；None 不过滤。
+    # 三年里过热时已突破的追高类提醒稳定亏钱，见 FINDINGS.md「亏损期分析与过热过滤」。
+    hot_breadth: float | None = None
+    # 过热时只跳过 J 类提醒（已突破基准期高点、24h 成交额 > 100 万、入场价比提醒价高 ≥ 2%），其余照买。
+    hot_core_only: bool = False
 
 
 @dataclass(slots=True)
@@ -88,6 +95,8 @@ class Alert:
     change_percent: float
     window_quote: float
     volume_24h: float
+    # 收盘是否高于基准期最高价：require_breakout 关闭时提醒不一定突破，过热过滤判断 J 类要用。
+    above_baseline: bool = True
 
 
 @dataclass(slots=True)
@@ -99,7 +108,7 @@ class Trade:
     entry: float
     exit_at: int | None
     exit: float | None
-    reason: str  # stop / trail / take / time / incomplete / skipped（未通过确认入场）
+    reason: str  # stop / trail / take / time / incomplete / skipped（未通过确认入场）/ hot（市场过热没买）
     gross: float | None
     net: float | None
     max_gain: float | None
@@ -172,8 +181,9 @@ def detect(series: Series, rule: LaunchRule, pool: PoolRule) -> list[Alert]:
     for pos in np.flatnonzero(candidate):
         i = int(idx[pos])
         # 突破：收盘严格高于基准期最高价（只对候选分钟算，免得对每一分钟取 360 根的最大值）；
-        # 与 evaluate_launch 一致，require_breakout 关闭时不要求。
-        if rule.require_breakout and not c[i] > h[i - history + 1 : i - window + 1].max():
+        # 与 evaluate_launch 一致，require_breakout 关闭时不要求，但仍记下来给过热过滤判断 J 类。
+        above_baseline = bool(c[i] > h[i - history + 1 : i - window + 1].max())
+        if rule.require_breakout and not above_baseline:
             continue
         closed_at = series.t0 + (i + 1) * 60
         overshoot = rule.overshoots(float(change[pos]))
@@ -200,12 +210,22 @@ def detect(series: Series, rule: LaunchRule, pool: PoolRule) -> list[Alert]:
                 float(change[pos]),
                 float(window_quote[pos]),
                 volume_24h_at(series, cq, i),
+                above_baseline,
             )
         )
     return alerts
 
 
-def simulate_trade(series: Series, alert: Alert, trade: TradeRule) -> Trade:
+def breadth_at(market: tuple[int, np.ndarray] | None, closed_at: int) -> float:
+    """提醒前最后一个已收盘小时的市场宽度；没有市场数据或超出范围时为 NaN（按不过热处理）。"""
+    if market is None:
+        return float("nan")
+    first_hour, ratio = market
+    slot = (closed_at - first_hour) // 3600 - 1
+    return float(ratio[slot]) if 0 <= slot < len(ratio) else float("nan")
+
+
+def simulate_trade(series: Series, alert: Alert, trade: TradeRule, breadth: float = float("nan")) -> Trade:
     i = (alert.closed_at - series.t0) // 60 - 1
     e = i + 1 + trade.entry_delay
     entry_at = series.t0 + e * 60
@@ -232,6 +252,12 @@ def simulate_trade(series: Series, alert: Alert, trade: TradeRule) -> Trade:
     if trade.confirm is not None and entry < alert.price * (1 + trade.confirm):
         result.reason = "skipped"
         return result
+    # 写法与 r3_lib.Book.core / mask 相同（涨幅按 entry / price - 1 算），两边在边界上判断一致，才能逐笔对照。
+    if trade.hot_breadth is not None and breadth > trade.hot_breadth:
+        core = alert.above_baseline and alert.volume_24h > 1e6 and entry / alert.price - 1 >= 0.02
+        if core or not trade.hot_core_only:
+            result.reason = "hot"
+            return result
     start_price = alert.price / (1 + alert.change_percent / 100)
     if trade.max_extension is not None and entry > start_price * (1 + trade.max_extension):
         result.reason = "skipped"
@@ -303,13 +329,15 @@ def _closed(result: Trade, at: int, price: float, reason: str, best: float, trad
     return result
 
 
-def run_symbol(args: tuple[str, float | None, LaunchRule, PoolRule, TradeRule]) -> tuple[list[Alert], list[Trade], int]:
-    symbol, multiplier, rule, pool, trade = args
+def run_symbol(
+    args: tuple[str, float | None, LaunchRule, PoolRule, TradeRule, tuple[int, np.ndarray] | None],
+) -> tuple[list[Alert], list[Trade], int]:
+    symbol, multiplier, rule, pool, trade, market = args
     series = load_series(symbol, multiplier)
     if series is None:
         return [], [], 0
     alerts = detect(series, rule, pool)
-    trades = [simulate_trade(series, alert, trade) for alert in alerts]
+    trades = [simulate_trade(series, alert, trade, breadth_at(market, alert.closed_at)) for alert in alerts]
     return alerts, trades, len(series)
 
 
@@ -359,7 +387,8 @@ def beijing(ts: int) -> str:
 
 def summarize(title: str, trades: list[Trade], stake: float) -> list[str]:
     skipped = sum(1 for t in trades if t.reason == "skipped")
-    trades = [t for t in trades if t.reason != "skipped"]
+    hot = sum(1 for t in trades if t.reason == "hot")
+    trades = [t for t in trades if t.reason not in ("skipped", "hot")]
     done = [t for t in trades if t.net is not None]
     if not done:
         return [f"{title}：没有完成的交易"]
@@ -380,6 +409,7 @@ def summarize(title: str, trades: list[Trade], stake: float) -> list[str]:
     return [
         f"{title}：{len(done)} 笔（另有 {len(trades) - len(done)} 笔持仓期内数据不全未计"
         + (f"，{skipped} 次提醒未通过确认入场、没有买" if skipped else "")
+        + (f"，{hot} 次因市场过热没买" if hot else "")
         + "）",
         f"  胜率 {wins / len(done):.1%}，止损 {len(stops)} 笔（{len(stops) / len(done):.1%}），"
         f"回撤平仓 {len(trails)} 笔（{len(trails) / len(done):.1%}），"
@@ -413,6 +443,9 @@ def describe_trade(args: argparse.Namespace, pool: PoolRule) -> str:
         parts.append(f"止损在等待期低点下 {args.stop_wait_low:g}%（最多 {args.stop_max:g}%）")
     if args.max_extension is not None:
         parts.append(f"入场价比启动前高超过 {args.max_extension:g}% 不追")
+    if args.hot_breadth is not None:
+        target = " J 类提醒" if args.hot_core_only else ""
+        parts.append(f"全市场站上 30 天均线的合约占比 > {args.hot_breadth:g}% 时不买{target}")
     parts.append(f"单边手续费 {args.fee:g}%")
     return "，".join(parts)
 
@@ -443,6 +476,17 @@ def main() -> None:
         "--max-extension", type=float, default=None, help="入场价相对启动前最多涨这么多百分比，太高不追"
     )
     parser.add_argument("--take-fraction", type=float, default=100, help="止盈时平掉的百分比，其余继续按回撤止损跑")
+    parser.add_argument(
+        "--hot-breadth",
+        type=float,
+        default=None,
+        help="市场过热过滤：全市场站上 30 天均线的合约占比超过这么多百分比时不买（需先运行 r3_market.py）",
+    )
+    parser.add_argument(
+        "--hot-core-only",
+        action="store_true",
+        help="过热时只跳过 J 类提醒（已突破基准期高点、24h 成交额 > 100 万、入场价比提醒价高 ≥ 2%%）",
+    )
     parser.add_argument("--fee", type=float, default=0.05, help="单边手续费百分比，Gate 合约吃单默认 0.05")
     parser.add_argument("--stake", type=float, default=100, help="每笔开仓金额（USDT），只影响金额展示")
     parser.add_argument("--no-pool", action="store_true", help="不按合约池筛选（成交额下限视为 0）")
@@ -488,8 +532,21 @@ def main() -> None:
         args.trail_atr,
         args.take_fraction / 100,
         None if args.max_extension is None else args.max_extension / 100,
+        None if args.hot_breadth is None else args.hot_breadth / 100,
+        args.hot_core_only,
     )
-    jobs = [(symbol, multiplier(symbol), rule, pool, trade_rule) for symbol in sorted(contracts)]
+    if args.hot_core_only and args.hot_breadth is None:
+        raise SystemExit("--hot-core-only 要和 --hot-breadth 一起用")
+    market = None
+    if args.hot_breadth is not None:
+        # 宽度在主进程算一次再分给子进程（每小时一个数），免得每个子进程都加载几百 MB 的全市场数据。
+        from r3_market import MARKET, hourly_breadth
+
+        if not MARKET.exists():
+            raise SystemExit(f"缺少 {MARKET}，先运行 research/launch_trade/r3_market.py")
+        hours, ratio = hourly_breadth()
+        market = (int(hours[0]), ratio)
+    jobs = [(symbol, multiplier(symbol), rule, pool, trade_rule, market) for symbol in sorted(contracts)]
     alerts: list[Alert] = []
     trades: list[Trade] = []
     minutes = 0
