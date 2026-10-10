@@ -15,6 +15,7 @@ from typing import Protocol
 
 from colorama import Fore, Style, just_fix_windows_console
 
+from price_alert import streak as streak_alerts
 from price_alert.config import AlertConfig
 from price_alert.detection import Alert
 from price_alert.formatting import beijing_time, describe_window, format_price
@@ -22,6 +23,7 @@ from price_alert.gate import futures_trade_url
 from price_alert.launch import alerts as launch_alerts
 from price_alert.launch.alerts import LaunchAlert
 from price_alert.models import PriceAlert
+from price_alert.streak import StreakAlert
 from price_alert.trend import alerts as trend_alerts
 from price_alert.trend.alerts import TrendAlert
 
@@ -45,6 +47,8 @@ LONG_WINDOW_COLOR = Fore.LIGHTCYAN_EX
 TREND_LABEL_COLOR = Fore.LIGHTMAGENTA_EX
 # 放量启动提醒的标签（[放量拉升] 等）：亮蓝色，与秒级异动、趋势提醒区分。
 LAUNCH_LABEL_COLOR = Fore.LIGHTBLUE_EX
+# 连续提醒的标签（[连续急涨] 等）：亮白色，与它前面那条普通短窗口提醒区分开。
+STREAK_LABEL_COLOR = Fore.LIGHTWHITE_EX
 
 
 class Notifier(Protocol):
@@ -56,6 +60,8 @@ def format_alert(alert: Alert) -> str:
         return trend_alerts.format_trend_alert(alert)
     if isinstance(alert, LaunchAlert):
         return launch_alerts.format_launch_alert(alert)
+    if isinstance(alert, StreakAlert):
+        return streak_alerts.format_streak_alert(alert)
     label = "急涨" if alert.direction == "surge" else "急跌"
     move_label = "上涨" if alert.direction == "surge" else "下跌"
     reference = format_price(alert.reference_price, alert.price_decimals)
@@ -89,14 +95,21 @@ def colorize_alert(alert: Alert, text: str, enabled: bool = True) -> str:
         change = trend_alerts.format_change(alert)
     elif isinstance(alert, LaunchAlert):
         change = launch_alerts.format_change(alert)
+    elif isinstance(alert, StreakAlert):
+        change = streak_alerts.format_change(alert)
     else:
         change = format_change(alert)
     highlighted_change = f"{bright}{change}{Style.RESET_ALL}{color}"
     text = text.replace(alert.symbol, symbol, 1).replace(change, highlighted_change, 1)
-    if isinstance(alert, TrendAlert | LaunchAlert):
+    if isinstance(alert, TrendAlert | LaunchAlert | StreakAlert):
         # 标签在行首，按首次出现替换不会误伤正文。
         label = f"[{alert.label}]"
-        label_color = TREND_LABEL_COLOR if isinstance(alert, TrendAlert) else LAUNCH_LABEL_COLOR
+        if isinstance(alert, TrendAlert):
+            label_color = TREND_LABEL_COLOR
+        elif isinstance(alert, LaunchAlert):
+            label_color = LAUNCH_LABEL_COLOR
+        else:
+            label_color = STREAK_LABEL_COLOR
         text = text.replace(label, f"{label_color}{label}{Style.RESET_ALL}{color}", 1)
     elif alert.window == "long":
         # 只高亮长窗口，短窗口保持正文色。窗口字样带“秒”或“分钟”，按首次出现替换不会误伤。

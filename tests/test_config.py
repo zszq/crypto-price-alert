@@ -136,3 +136,15 @@ def test_short_window_cooldown_is_configured_inside_the_window():
 def test_rejects_unknown_long_window_keys():
     with pytest.raises(ValidationError, match="long_window"):
         AppConfig.model_validate({"indicator": {"long_window": {"lookback": 300}}})
+
+
+def test_streak_defaults_and_validation():
+    streak = AppConfig().indicator.streak
+    assert (streak.enabled, streak.min_alerts, streak.gap_tolerance_seconds) == (True, 3, 30)
+
+    # 连续提醒不能反过来卡住原有参数：调大短窗口冷却仍然是合法配置。
+    AppConfig.model_validate({"indicator": {"short_window": {"cooldown_seconds": 600}}})
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate({"indicator": {"streak": {"min_alerts": 1}}})
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate({"indicator": {"streak": {"gap_tolerance_seconds": 0}}})

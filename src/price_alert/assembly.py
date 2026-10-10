@@ -15,6 +15,7 @@ from price_alert.gate import GateRestClient, RateLimiter
 from price_alert.launch.config import LaunchConfig
 from price_alert.launch.detector import LaunchDetector, LaunchEvaluation
 from price_alert.launch.rule import LaunchRule
+from price_alert.streak import StreakRule
 from price_alert.trend.config import TrendConfig
 from price_alert.trend.detector import TrendDetector, TrendEvaluation
 from price_alert.trend.pattern import TrendRule
@@ -51,14 +52,25 @@ def build_detector(
     *,
     windows: Sequence[MoveWindow] | None = None,
     observer: Callable[[WindowEvaluation], None] | None = None,
+    streak: bool = True,
 ) -> AtrMoveDetector:
+    """streak=False 不追加连续提醒，供 simulate 这类只验证单个窗口门槛的场景使用。"""
     indicator = config.indicator
+    streak_config = indicator.streak
     return AtrMoveDetector(
         atr_period=indicator.atr_period,
         candle_interval_seconds=INTERVAL_SECONDS[indicator.candle_interval],
         max_atr_age_seconds=indicator.max_atr_age_seconds,
         windows=build_windows(config, cooldown_seconds) if windows is None else windows,
         observer=observer,
+        streak=(
+            StreakRule(
+                streak_config.min_alerts,
+                indicator.short_window.cooldown_seconds + streak_config.gap_tolerance_seconds,
+            )
+            if streak and streak_config.enabled
+            else None
+        ),
     )
 
 

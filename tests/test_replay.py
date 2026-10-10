@@ -4,7 +4,7 @@ import pytest
 
 from price_alert.config import AppConfig
 from price_alert.formatting import BEIJING_TIME
-from price_alert.models import Candle, PriceTick
+from price_alert.models import Candle, PriceAlert, PriceTick
 from price_alert.replay import (
     SETTLE_MARGIN,
     SETTLE_SEARCH_LIMIT,
@@ -245,3 +245,24 @@ def test_parse_time_keeps_explicit_offsets():
     moment = parse_time("2026-09-29 09:27:00+09:00")
 
     assert moment.utcoffset() == timezone(timedelta(hours=9)).utcoffset(None)
+
+
+def test_replay_keeps_streak_alert_right_after_its_short_alert():
+    plan = plan_replay("QNT_USDT", START, END, AppConfig())
+    # 自 START 起每秒涨 0.1：短窗口冷却一过又达标，同向短窗口提醒一条接一条。
+    trades = trades_per_second(
+        plan.feed_start,
+        END + SETTLE_MARGIN,
+        lambda moment: 100.0 + max(0.0, (moment - START).total_seconds()) * 0.1,
+    )
+
+    result = run_replay(AppConfig(), plan, ReplayData(flat_candles(plan), trades, price_decimals=2))
+
+    kinds = [alert.window if isinstance(alert, PriceAlert) else "streak" for alert in result.alerts]
+    assert kinds.count("streak") == 1
+    index = kinds.index("streak")
+    assert [kind for kind in kinds[:index] if kind == "short"] == ["short"] * 3
+    assert kinds[index - 1] == "short" and result.alerts[index].timestamp == result.alerts[index - 1].timestamp
+    text = "\n".join(render_replay(result))
+    assert "连续提醒：短窗口同方向提醒连续 3 次" in text
+    assert "[连续急涨]" in text

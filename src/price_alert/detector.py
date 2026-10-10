@@ -11,6 +11,7 @@ from typing import Literal
 
 from price_alert.indicators import WilderAtr
 from price_alert.models import Candle, PriceAlert, PriceTick
+from price_alert.streak import StreakAlert, StreakRule, StreakTracker
 from price_alert.windows import MoveWindow, Outcome, WindowEvaluation, WindowName
 
 # 基准桶允许比目标时刻早的秒数：成交稀疏时恰好落在目标秒上的桶未必存在，差一两秒不影响位移的含义。
@@ -132,6 +133,7 @@ class AtrMoveDetector:
         max_atr_age_seconds: int,
         windows: Sequence[MoveWindow],
         observer: Callable[[WindowEvaluation], None] | None = None,
+        streak: StreakRule | None = None,
     ) -> None:
         if not windows:
             raise ValueError("至少需要一个观察窗口")
@@ -153,6 +155,9 @@ class AtrMoveDetector:
         self._states: dict[str, _SymbolState] = {}
         # 按（合约, 窗口）记录上次提醒：短窗口频繁提醒不能把长窗口的冷却一直续上。
         self._last_alert: dict[tuple[str, WindowName], datetime] = {}
+        # 只串联短窗口提醒：长窗口冷却等于窗口长度，本身就在描述持续行情，不需要再串。
+        self.streak_rule = streak
+        self._streaks = StreakTracker(streak) if streak is not None else None
 
     @property
     def symbols(self) -> list[str]:
@@ -253,7 +258,7 @@ class AtrMoveDetector:
         state.atr_stale = False
         return True
 
-    def add_tick(self, tick: PriceTick) -> list[PriceAlert]:
+    def add_tick(self, tick: PriceTick) -> list[PriceAlert | StreakAlert]:
         symbol = tick.symbol.upper()
         state = self._states.get(symbol)
         if state is None:
@@ -266,7 +271,7 @@ class AtrMoveDetector:
         state.last_tick_time = timestamp
 
         second = timestamp.replace(microsecond=0)
-        alerts: list[PriceAlert] = []
+        alerts: list[PriceAlert | StreakAlert] = []
         if state.buckets and state.buckets[-1].timestamp == second:
             state.buckets[-1].add(tick.price, tick.size)
         else:
@@ -287,7 +292,7 @@ class AtrMoveDetector:
         second: datetime,
         price: float,
         timestamp: datetime,
-        alerts: list[PriceAlert],
+        alerts: list[PriceAlert | StreakAlert],
     ) -> None:
         """结算新一秒之前已结束的秒：上一个有成交的秒，以及空档中需要补齐的秒。"""
         if not state.buckets:
@@ -329,7 +334,7 @@ class AtrMoveDetector:
         state: _SymbolState,
         bucket: _SecondBucket,
         timestamp: datetime,
-        alerts: list[PriceAlert],
+        alerts: list[PriceAlert | StreakAlert],
         latest_price: float | None,
         atr: WilderAtr | None,
     ) -> None:
@@ -409,14 +414,14 @@ class AtrMoveDetector:
         timestamp: datetime,
         latest_price: float | None,
         atr_state: WilderAtr | None,
-    ) -> list[PriceAlert]:
+    ) -> list[PriceAlert | StreakAlert]:
         """在所有窗口上评估一个已结束的秒；各窗口的冷却与确认进度互不影响，同一秒可以各报一条。"""
         evaluations = [
             self._evaluate_window(symbol, state, window, candidate, current, latest_price, atr_state)
             for window, candidate in zip(self.windows, state.candidates, strict=True)
         ]
 
-        alerts: list[PriceAlert] = []
+        alerts: list[PriceAlert | StreakAlert] = []
         for index, evaluation in enumerate(evaluations):
             if evaluation.outcome is not Outcome.ALERT:
                 continue
@@ -426,8 +431,14 @@ class AtrMoveDetector:
             if previous_alert is not None and timestamp - previous_alert < self._cooldowns[index]:
                 evaluations[index] = replace(evaluation, outcome=Outcome.COOLDOWN)
             else:
-                alerts.append(self._build_alert(symbol, state, window, evaluation, timestamp))
+                alert = self._build_alert(symbol, state, window, evaluation, timestamp)
+                alerts.append(alert)
                 self._last_alert[key] = timestamp
+                if self._streaks is not None and window.name == "short":
+                    # 紧跟在触发它的那条短窗口提醒之后，读者先看到这一波，再看到“已经连续几波”。
+                    streak_alert = self._streaks.observe(alert)
+                    if streak_alert is not None:
+                        alerts.append(streak_alert)
             state.candidates[index].reset()
 
         if self._observer is not None:

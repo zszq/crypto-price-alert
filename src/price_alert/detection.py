@@ -1,6 +1,7 @@
 """服务主循环对检测器的约定。
 
-实时监控可以同时运行多个检测器（ATR 秒级异动、K 线形态趋势、放量启动），它们共用同一路成交，各自按成交额范围筛选合约池。
+实时监控可以同时运行多个检测器（ATR 秒级异动及其连续提醒、K 线形态趋势、放量启动），
+它们共用同一路成交，各自按成交额范围筛选合约池。
 服务只依赖这里的接口：新增或移除一种检测器只改 assembly.build_detectors，不必改动服务编排。
 """
 
@@ -13,10 +14,11 @@ from typing import Protocol
 
 from price_alert.launch.alerts import LaunchAlert
 from price_alert.models import Candle, PriceAlert, PriceTick
+from price_alert.streak import StreakAlert
 from price_alert.trend.alerts import TrendAlert
 from price_alert.universe import VolumeRange
 
-Alert = PriceAlert | TrendAlert | LaunchAlert
+Alert = PriceAlert | StreakAlert | TrendAlert | LaunchAlert
 
 
 class Detector(Protocol):

@@ -60,6 +60,7 @@ python -m venv .venv
 - 多窗口互不影响（`_evaluate`）：每秒各窗口独立评估、独立提醒，同一秒多个窗口满足就各报一条（按窗口顺序，短窗口在前）；冷却按（合约, 窗口）记录 `_last_alert`，只从本窗口自己的上次提醒算起、按本窗口的冷却计时长（`indicator.short_window.cooldown_seconds`、`indicator.long_window.cooldown_seconds`，后者 ≥ 其窗口长度，配置层强制；冷却属于判定逻辑，不在 `alerts` 下）；提醒或冷却拦下后只重置该窗口自己的候选。
 - 秒级桶按最长窗口保留；空秒补齐上限是**最短**窗口的 lookback，保证短窗口行为与单窗口时一致。窗口起点落在更长的空档里时，`_find_baseline` 沿用空档前最后成交价作基准，前提是空档不长于该窗口（短窗口的这类空档都已补齐，走不到这里）。基准定位用二分查找，窗口笔数用桶上的累计笔数 `trades_before` 相减，长窗口不必逐桶扫描。
 - 构造时可传 `observer`，每秒每个窗口回调一条 `WindowEvaluation`（含 `Outcome` 判定结果与涨跌幅、ATR 倍数、笔数等指标），回放靠它解释原因；实时监控不传。
+- 连续提醒（`streak.py`）：构造时传 `streak: StreakRule`（`assembly.build_detector` 按 `indicator.streak` 生成，`simulate` 传 `streak=False`）后，每条**短窗口**提醒交给 `StreakTracker.observe`：同一合约同方向、相邻间隔 ≤ `StreakRule.max_gap_seconds`（= `short_window.cooldown_seconds + streak.gap_tolerance_seconds`，跟随冷却，没有跨字段校验）的短窗口提醒连成一串，第 `min_alerts` 条时紧跟其后追加一条 `StreakAlert`（`kind: "streak"`，累计涨跌幅从第一条提醒的窗口起点算），每串只报一次；累计涨跌方向与提醒方向不一致（冷却期内急跌又拉回没触发反向提醒）时先不报、计数照常累加，之后某条提醒让方向一致时再报；反向短窗口提醒或间隔超限重新计数，长窗口提醒不参与也不打断，记录不随合约移出清除。默认值（3 条、容差 30 秒即间隔 ≤ 60 秒）来自实际提醒日志，README「连续提醒」一节有数据。`replay` 的连续提醒随触发它的短窗口提醒一起按区间取舍。
 - `remove_symbols` 不清除冷却记录。`mark_stream_gap` 清空秒级窗口和确认进度并置 `atr_stale`：失效期间不判定、不向 ATR 喂 K 线（也不补平线），直到 `resync_symbol` 用 REST K 线重建 ATR。重建时若本地实时 K 线与交易所当前 K 线同一周期，高低点取并集；若本地已跨入新周期，交易所的“当前 K 线”按已收盘计入 ATR。`resync_symbol` 只作用于仍处于失效状态的合约。回补保留秒级桶，回补前还没结算、且早于重建后实时 K 线周期的秒，其所在周期的 ATR 已被替换，`_atr_before` 返回 None，按 `ATR_UNAVAILABLE` 放弃判定，不拿含之后周期的 ATR 充数。
 
 ### K 线形态趋势（trend/）
@@ -108,7 +109,7 @@ python -m venv .venv
 
 ### 通知（notifier.py）
 
-提醒类型是 `detection.Alert = PriceAlert | TrendAlert | LaunchAlert`，`format_alert`/`colorize_alert` 按类型分派（趋势提醒的标签用亮紫色 `TREND_LABEL_COLOR`，放量启动用亮蓝色 `LAUNCH_LABEL_COLOR`）。`AlertDispatcher` 为每个通道建立独立的有界队列（`alerts.queue_size`）和后台任务：`publish` 非阻塞，队列满时丢弃并记错误日志；单个通道失败只记日志；退出时最多等待 `drain_timeout` 秒把积压发完。`build_notifiers` 按配置返回通道列表。`JsonlNotifier` 按 `jsonl_max_bytes` 整文件轮转。价格、窗口长度（整分钟显示为「N分钟」）和北京时间的格式都在 `formatting.py`，提醒与回放共用；价格按合约报价精度显示，缺失时按 8 位有效数字、不截断整数部分。提醒时间统一转为北京时间；控制台急涨绿色、急跌红色，涨跌幅用同方向亮色高亮，长窗口提醒的窗口长度用不分方向的亮青色（`LONG_WINDOW_COLOR`）高亮（短窗口保持正文色）；JSONL/Webhook 保留完整结构化字段（`PriceAlert.to_dict()`）。控制台提醒附带的交易地址由 `gate.futures_trade_url` 生成，Gate 网页地址只维护在 `gate.py`。修改提醒文本格式时注意 README 中的示例。
+提醒类型是 `detection.Alert = PriceAlert | StreakAlert | TrendAlert | LaunchAlert`，`format_alert`/`colorize_alert` 按类型分派（趋势提醒的标签用亮紫色 `TREND_LABEL_COLOR`，放量启动用亮蓝色 `LAUNCH_LABEL_COLOR`，连续提醒用亮白色 `STREAK_LABEL_COLOR`）。`AlertDispatcher` 为每个通道建立独立的有界队列（`alerts.queue_size`）和后台任务：`publish` 非阻塞，队列满时丢弃并记错误日志；单个通道失败只记日志；退出时最多等待 `drain_timeout` 秒把积压发完。`build_notifiers` 按配置返回通道列表。`JsonlNotifier` 按 `jsonl_max_bytes` 整文件轮转。价格、窗口长度（整分钟显示为「N分钟」）和北京时间的格式都在 `formatting.py`，提醒与回放共用；价格按合约报价精度显示，缺失时按 8 位有效数字、不截断整数部分。提醒时间统一转为北京时间；控制台急涨绿色、急跌红色，涨跌幅用同方向亮色高亮，长窗口提醒的窗口长度用不分方向的亮青色（`LONG_WINDOW_COLOR`）高亮（短窗口保持正文色）；JSONL/Webhook 保留完整结构化字段（`PriceAlert.to_dict()`）。控制台提醒附带的交易地址由 `gate.futures_trade_url` 生成，Gate 网页地址只维护在 `gate.py`。修改提醒文本格式时注意 README 中的示例。
 
 ## 回测研究（research/）
 

@@ -211,3 +211,13 @@ def test_launch_replay_runs_against_fake_exchange(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "放量启动回放 RLC_USDT：2026-10-05 17:30:00 ～ 2026-10-05 23:30:00" in output
     assert "区间内没有放量启动提醒" in output
+
+
+def test_check_config_lists_streak_rule_with_gap_following_cooldown(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "config.yaml"
+    path.write_text("indicator:\n  short_window:\n    cooldown_seconds: 45\n", encoding="utf-8")
+    monkeypatch.setattr("sys.argv", ["price-alert", "check-config", "--config", str(path)])
+
+    cli.main()
+
+    assert "连续提醒：短窗口同方向提醒连续 3 次、相邻间隔 ≤ 75 秒" in capsys.readouterr().out

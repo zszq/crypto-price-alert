@@ -38,6 +38,7 @@ from price_alert.replay import (
     run_replay,
 )
 from price_alert.service import run_monitor
+from price_alert.streak import describe_streak_rule
 from price_alert.trend.alerts import describe_trend_rule
 from price_alert.trend.replay import plan_trend_replay, render_trend_replay, run_trend_replay
 from price_alert.trend.simulate import simulate_trend
@@ -134,7 +135,7 @@ async def _simulate_window(config: AppConfig, window: MoveWindow, notifier: Cons
     indicator = config.indicator
     interval_seconds = INTERVAL_SECONDS[indicator.candle_interval]
     # 每个窗口用只含它自己的检测器：要验证的是这个窗口的门槛能否被满足，不能让另一个窗口先提醒掩盖问题。
-    detector = build_detector(config, windows=[window])
+    detector = build_detector(config, windows=[window], streak=False)
 
     # 让异动恰好从 K 线边界开始：异动秒全部落在同一根未收盘 K 线里，不会被提前计入 ATR 而削弱倍数，
     # 同时之前的平稳 K 线按时收盘，ATR 始终新鲜，结果不随 lookback 等参数变化而失效。
@@ -288,6 +289,9 @@ def main() -> None:
         print(f"配置有效：Gate.io USDT 永续，24h 计价成交额范围：{ranges}")
         for window in build_windows(config):
             print(f"  {describe_rule(window)}")
+        streak_rule = build_detector(config).streak_rule
+        if streak_rule is not None:
+            print(f"  {describe_streak_rule(streak_rule)}")
         if config.trend.enabled:
             for rule in config.trend.rules():
                 print(f"  {describe_trend_rule(rule)}")

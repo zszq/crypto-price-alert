@@ -35,6 +35,18 @@ ATR 异动强度 = |当前完整秒 VWAP - N 秒前完整秒 VWAP| / Wilder ATR
 
 长窗口的提醒文本以分钟描述，例如「3分钟内价格下跌 2.51%」；JSONL/Webhook 中 `window` 字段为 `short` 或 `long`。设置 `long_window.enabled: false` 即可关闭。
 
+### 连续提醒：短窗口同向连发
+
+短窗口有 30 秒冷却，一段持续拉升在提醒里表现为同一合约一串同方向的短窗口提醒，间隔是冷却加上冷却后重新确认的几秒，单看其中一条分不出它与一次性插针。为此在短窗口同方向提醒连续 3 条（`indicator.streak.min_alerts`）、相邻两条间隔都不超过冷却 + 30 秒（`gap_tolerance_seconds`，默认即 60 秒）时，紧跟在第 3 条之后追加一条 `[连续急涨]` / `[连续急跌]`，累计涨跌幅从第 1 条提醒的窗口起点算到当前价：
+
+- 只串联短窗口提醒；中间出现反向的短窗口提醒或间隔超过上限都从头计数，长窗口提醒不参与也不打断；被冷却拦下的秒不算提醒，不计数；
+- 每串只报一次，之后同一串里的短窗口提醒照常发出，不再追加；
+- 每条短窗口提醒只看自己的 30 秒，提醒之间的冷却期里价格可能急跌又拉回而没触发反向提醒，所以第 3 条时还要核对整段累计涨跌与提醒方向一致才报；不一致就先不报、计数照常累加，等之后某条提醒让整段方向一致时再报（条数如实写成第 N 次）；
+- 计数不随合约移出合约池清除，靠间隔上限自然失效；`replay` 回放会一并列出连续提醒；
+- 间隔上限跟随 `short_window.cooldown_seconds` 计算，调冷却时不用同步改连续提醒；设置 `streak.enabled: false` 关闭；`check-config` 与 `replay` 会列出实际的间隔上限。
+
+默认值来自 2026-09-23 至 10-10 的实际提醒日志（822 条短窗口提醒，当时 YAML 为冷却 30 秒、连续确认 2 秒）：同向相邻提醒的间隔集中在 30~45 秒（冷却 30 秒加确认），45~60 秒仍多是同一段行情。按「间隔 ≤ 60 秒、反向打断」串联，连发 2 条的有 72 串，不少只是一次急动的余波；连发 3 条及以上的 12 串（约每天 0.7 次），从第 1 条的起点算累计涨跌 3.4%~14.3%，全部是持续单边行情；连发 4~5 条的只有 2 串，作门槛几乎碰不到。
+
 成交稀疏的合约在快速行情中常出现没有成交的空秒。空秒（不超过观察窗口长度）会沿用最后成交价参与连续确认，但提醒只会在有真实成交的秒触发，所以一笔离群成交后恰好无人成交，不会被误判为持续异动。实时连接断开重连后，秒级窗口和确认进度会清空，不会把断线前后的价格当作连续行情比较；同时全部合约暂停异动判定，连接恢复后自动从 REST 回补最近的 K 线并重建 ATR，回补完成的合约才恢复判定（失败的合约按退避重试）。连接正常时，某个 K 线周期内没有成交，会像 Gate 官方 K 线一样按上一收盘价补一根平线，保证实时 ATR 与预热数据口径一致。每一秒都只用它所在 K 线周期之前已收盘的 K 线计算的 ATR 判定：一秒要等下一笔成交到来才结算，这笔成交即使已属于后面的周期，也不会让被结算的旧秒提前用上之后的 K 线。
 
 交易所返回的价格、数量、成交额和 K 线数值中出现 NaN 或 Infinity 时一律视为无效数据丢弃。ATR 预热时，REST 返回的当前未收盘 K 线会作为实时 K 线的起点，避免第一根实时 K 线只包含订阅之后的成交而低估 ATR。
@@ -222,6 +234,13 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 交易地址：https://www.gate.com/zh/futures/USDT/QNT_USDT
 ```
 
+连续提醒以亮白色的标签开头，紧跟在触发它的那条短窗口提醒之后：
+
+```text
+[急涨提醒] 2026-10-09 13:55:43 | RLC_USDT | 30秒内价格上涨 2.59% | 0.9150 → 0.9386 | 异动强度 2.73 ATR
+[连续急涨] 2026-10-09 13:55:43 | RLC_USDT | 30秒窗口连续 3 次急涨，近1分32秒累计上涨 7.33% | 0.8745 → 0.9386
+```
+
 趋势提醒以亮紫色的标签开头，例如：
 
 ```text
@@ -239,11 +258,11 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 [放量拉升·第2波] 2026-10-05 20:10:00 | RLC_USDT | 5分钟上涨 3.45%，成交额 11.28万 USDT，为近6小时均量的 8.7 倍，突破近6小时高点 0.4832 | 0.4815 → 0.4981
 ```
 
-JSONL/Webhook 中趋势提醒带 `kind: "trend"`，并有 `period`、`candles`、`continuing`（是否为延续提醒）、`started_at`、`start_price`、`price`、`change_percent`、`counter_candles`、`rebound_ratio`、`body_ratio`、`single_candle_ratio` 等字段；放量启动提醒带 `kind: "launch"`，并有 `wave`（第几波）、`window_minutes`、`baseline_minutes`、`started_at`、`start_price`、`price`、`change_percent`、`window_quote_volume`、`baseline_quote_volume`、`volume_ratio`（基准期无成交时为 null）、`breakout_price` 等字段；秒级异动提醒没有 `kind` 字段。
+JSONL/Webhook 中趋势提醒带 `kind: "trend"`，并有 `period`、`candles`、`continuing`（是否为延续提醒）、`started_at`、`start_price`、`price`、`change_percent`、`counter_candles`、`rebound_ratio`、`body_ratio`、`single_candle_ratio` 等字段；连续提醒带 `kind: "streak"`，并有 `alert_count`（这一串的短窗口提醒条数）、`started_at`、`start_price`、`price`、`change_percent`、`lookback_seconds` 等字段；放量启动提醒带 `kind: "launch"`，并有 `wave`（第几波）、`window_minutes`、`baseline_minutes`、`started_at`、`start_price`、`price`、`change_percent`、`window_quote_volume`、`baseline_quote_volume`、`volume_ratio`（基准期无成交时为 null）、`breakout_price` 等字段；秒级异动提醒没有 `kind` 字段。
 
 价格按合约的报价精度（Gate 合约的 `order_price_round`）显示，高价币不会再被截掉小数；取不到精度时按 8 位有效数字显示。
 
-提醒时间使用北京时间，格式为 `YYYY-MM-DD HH:MM:SS`。控制台中急涨提醒显示为绿色，急跌提醒显示为红色，交易对以亮黄色突出，涨跌幅百分比以同方向的亮绿/亮红色突出，长窗口提醒的窗口长度（如「3分钟」）以亮青色突出（短窗口的「30秒」保持正文颜色）；`alerts.beep` 开启时，macOS 使用系统 `Glass` 音效，其他平台使用终端响铃。文本明确显示价格涨跌百分比，不显示原始 ATR 数值和 24 小时成交额。JSONL 和 Webhook 记录仍保留完整结构化字段，并包含值为 `green` 或 `red` 的 `color` 字段。
+提醒时间使用北京时间，格式为 `YYYY-MM-DD HH:MM:SS`。控制台中急涨提醒显示为绿色，急跌提醒显示为红色，交易对以亮黄色突出，涨跌幅百分比以同方向的亮绿/亮红色突出，长窗口提醒的窗口长度（如「3分钟」）以亮青色突出（短窗口的「30秒」保持正文颜色），连续提醒的标签以亮白色突出；`alerts.beep` 开启时，macOS 使用系统 `Glass` 音效，其他平台使用终端响铃。文本明确显示价格涨跌百分比，不显示原始 ATR 数值和 24 小时成交额。JSONL 和 Webhook 记录仍保留完整结构化字段，并包含值为 `green` 或 `red` 的 `color` 字段。
 
 控制台每条提醒下方会以灰色显示对应合约的 Gate 中文交易页完整地址。支持网址识别的终端可点击打开（部分终端需要按住 `Ctrl` 或 `Cmd` 再点击）；不支持时可复制到浏览器打开。交易地址仅附加在控制台输出中。
 
@@ -290,6 +309,7 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 - `indicator.long_window.trigger_atr_multiple` / `min_change_percent`：长窗口的 ATR 倍数与最低涨跌幅，默认 2 与 2%，两者同时满足；
 - `indicator.long_window.confirmation_seconds` / `min_window_trades`：长窗口的连续确认秒数与窗口最低成交笔数，默认 3 秒、30 笔；
 - `indicator.long_window.cooldown_seconds`：不能小于长窗口长度，不填写时等于长窗口长度（短窗口冷却没有这条限制，默认 30 秒）；
+- `indicator.streak.enabled` / `min_alerts` / `gap_tolerance_seconds`：短窗口同向连发时的连续提醒，默认开启、连续 3 条、相邻间隔 ≤ 短窗口冷却 + 30 秒，见上文「连续提醒」；
 - `trend.enabled`：是否启用 K 线形态趋势提醒，默认开启；关闭后不创建趋势检测器，也不会多拉 K 线；
 - `trend.alert_continuing`：形态持续成立时是否每根周期 K 线收盘都报一条「延续」提醒，默认开启；关闭后同一段走势只报一次；
 - `trend.min_volume_24h_quote` / `trend.max_volume_24h_quote`：趋势提醒的合约池范围，与秒级异动分开设置。成交额严格大于下限（默认 10M）且不超过上限才监控；上限默认不设，即下限以上全部纳入，设置时须大于下限。两个合约池各自增删，只在其中一个池里的合约只做对应的判定，行情订阅取两者并集；`universe` 命令分别列出两个合约池；
@@ -322,6 +342,7 @@ src/price_alert/
 ├── indicators.py            Wilder ATR
 ├── windows.py               观察窗口规则与逐秒判定记录
 ├── detector.py              ATR 标准化异动检测（多窗口）
+├── streak.py                短窗口同向连发的连续提醒
 ├── formatting.py            价格、窗口长度与北京时间的展示格式
 ├── replay.py                历史成交回放与逐秒判定解释
 ├── trend/                   K 线形态趋势提醒（独立模块，只经 assembly 接入）

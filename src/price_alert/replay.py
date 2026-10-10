@@ -19,6 +19,7 @@ from price_alert.formatting import BEIJING_TIME, beijing_time, format_price
 from price_alert.gate import GateRestClient, price_decimals
 from price_alert.models import Candle, PriceAlert, PriceTick
 from price_alert.notifier import format_alert
+from price_alert.streak import StreakAlert, StreakRule, describe_streak_rule
 from price_alert.windows import (
     OUTCOME_LABELS,
     WINDOW_LABELS,
@@ -64,10 +65,11 @@ class ReplayResult:
     plan: ReplayPlan
     windows: tuple[MoveWindow, ...]
     evaluations: list[WindowEvaluation]
-    alerts: list[PriceAlert]
+    alerts: list[PriceAlert | StreakAlert]
     trades_fed: int
     warmup_candles: int
     price_decimals: int | None = None
+    streak_rule: StreakRule | None = None
     # 区间内最后一个有成交的秒，没有后续成交来结算、因而缺少判定时才有值。
     unsettled_second: datetime | None = None
 
@@ -167,7 +169,7 @@ def run_replay(config: AppConfig, plan: ReplayPlan, data: ReplayData) -> ReplayR
     # 历史 24h 成交额无从得知，回放也不依赖它，填 0 即可。
     detector.add_symbol(plan.symbol, seed, 0.0, price_decimals=data.price_decimals)
 
-    alerts: list[PriceAlert] = []
+    alerts: list[PriceAlert | StreakAlert] = []
     fed = 0
     last_tick: PriceTick | None = None
     for tick in data.trades:
@@ -186,16 +188,25 @@ def run_replay(config: AppConfig, plan: ReplayPlan, data: ReplayData) -> ReplayR
 
     # 提醒与 ALERT 判定一一对应且顺序相同；按判定所属的秒筛选，而不是按结算它的那笔成交的时间，
     # 否则区间末尾之后才结算的秒会被算进来，区间开头之前的秒也可能漏掉。
-    fired = [item for item in evaluations if item.outcome is Outcome.ALERT]
+    fired = iter(item for item in evaluations if item.outcome is Outcome.ALERT)
+    kept: list[PriceAlert | StreakAlert] = []
+    keep = False
+    for alert in alerts:
+        # 连续提醒没有自己的判定，紧跟在触发它的短窗口提醒之后，随那条提醒一起取舍。
+        if isinstance(alert, PriceAlert):
+            keep = in_range(next(fired).second)
+        if keep:
+            kept.append(alert)
     return ReplayResult(
         plan=plan,
         windows=detector.windows,
         evaluations=[item for item in evaluations if in_range(item.second)],
-        alerts=[alert for alert, item in zip(alerts, fired, strict=True) if in_range(item.second)],
+        alerts=kept,
         trades_fed=fed,
         warmup_candles=len(seed),
         price_decimals=data.price_decimals,
         unsettled_second=unsettled if unsettled is not None and in_range(unsettled) else None,
+        streak_rule=detector.streak_rule,
     )
 
 
@@ -269,6 +280,7 @@ def render_replay(result: ReplayResult, show_all: bool = False) -> list[str]:
         f"数据：预热 K 线 {result.warmup_candles} 根，成交 {result.trades_fed:,} 笔"
         f"（自 {beijing_time(plan.feed_start, '%H:%M:%S')} 起喂入，为最长窗口预留历史）",
         *(describe_rule(window) for window in result.windows),
+        *([describe_streak_rule(result.streak_rule)] if result.streak_rule is not None else []),
         "说明：回放从空白冷却开始，也不含断线；实时进程当时若未运行、断线或处于冷却，结果会与回放不同。",
         "",
     ]

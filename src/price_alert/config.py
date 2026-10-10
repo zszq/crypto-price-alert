@@ -99,6 +99,20 @@ class LongWindowConfig(WindowConfig):
         return self
 
 
+class StreakConfig(BaseModel):
+    """短窗口同方向提醒连成串时追加的连续提醒。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    # 实际日志中同向连发 3 条的几乎都是累计 5% 以上的单边行情，2 条则大量是一次插针的余波。
+    min_alerts: int = Field(default=3, ge=2, le=10)
+    # 相邻同向提醒至少隔一个短窗口冷却，这里只配冷却之外还能容忍多少秒（重新确认、行情短暂停顿）。
+    # 按冷却加容差而不是写死间隔上限：调短窗口冷却时不会让连续提醒失效或校验失败。
+    # 实际日志里冷却 30 秒时，一段持续行情的间隔在 30~60 秒之间。
+    gap_tolerance_seconds: int = Field(default=30, ge=1, le=3600)
+
+
 class IndicatorConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -109,6 +123,7 @@ class IndicatorConfig(BaseModel):
     # 各窗口共用 K 线、ATR 与秒级数据，门槛、确认与冷却按窗口独立配置。
     short_window: ShortWindowConfig = Field(default_factory=ShortWindowConfig)
     long_window: LongWindowConfig = Field(default_factory=LongWindowConfig)
+    streak: StreakConfig = Field(default_factory=StreakConfig)
 
     @model_validator(mode="after")
     def validate_warmup_and_freshness(self) -> IndicatorConfig:

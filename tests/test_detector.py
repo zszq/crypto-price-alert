@@ -3,7 +3,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from price_alert.detector import AtrMoveDetector
-from price_alert.models import Candle, PriceTick
+from price_alert.models import Candle, PriceAlert, PriceTick
+from price_alert.streak import StreakAlert, StreakRule
 from price_alert.windows import MoveWindow, Outcome
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
@@ -699,3 +700,44 @@ def test_mark_symbol_gap_only_invalidates_that_symbol():
     assert feed_window(instance, "LOW_USDT", 101.0) == []
     assert instance.resync_symbol("LOW_USDT", history(1.0), None, BASE + timedelta(minutes=3))
     assert instance.stale_symbols == []
+
+
+def test_consecutive_short_alerts_add_a_streak_alert_and_long_alerts_do_not_count():
+    instance = AtrMoveDetector(
+        atr_period=3,
+        candle_interval_seconds=60,
+        max_atr_age_seconds=180,
+        windows=[
+            short_window(cooldown_seconds=0),
+            long_window(lookback_seconds=11, min_change_percent=0.5, trigger_atr_multiple=0.8),
+        ],
+        streak=StreakRule(min_alerts=3, max_gap_seconds=5),
+    )
+    instance.add_symbol("BTC_USDT", history(1.0), 1_000_000_000)
+
+    prices = {second: 100.0 for second in range(12)} | {second: 101.0 for second in range(12, 19)}
+    alerts = feed_prices(instance, "BTC_USDT", prices)
+
+    # 长窗口提醒夹在中间既不计数也不打断；第 3 条短窗口提醒之后紧跟一条连续提醒，同一串不再重复。
+    kinds = [alert.window if isinstance(alert, PriceAlert) else "streak" for alert in alerts]
+    assert kinds == ["short", "long", "short", "short", "streak"]
+    streak = alerts[-1]
+    assert isinstance(streak, StreakAlert)
+    assert streak.alert_count == 3
+    assert streak.timestamp == alerts[-2].timestamp
+
+
+def test_detector_without_streak_rule_never_adds_streak_alerts():
+    instance = AtrMoveDetector(
+        atr_period=3,
+        candle_interval_seconds=60,
+        max_atr_age_seconds=180,
+        windows=[short_window(cooldown_seconds=0)],
+    )
+    instance.add_symbol("BTC_USDT", history(1.0), 1_000_000_000)
+
+    prices = {second: 100.0 for second in range(11)} | {second: 101.0 for second in range(11, 30)}
+    alerts = feed_prices(instance, "BTC_USDT", prices)
+
+    assert len(alerts) > 3
+    assert all(isinstance(alert, PriceAlert) for alert in alerts)
