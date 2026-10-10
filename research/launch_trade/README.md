@@ -35,7 +35,11 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 ```powershell
 & $P research/launch_trade/update_data.py            # 默认取约半年前的月份起
 & $P research/launch_trade/update_data.py --start 202409 --workers 16   # 两年；补很多月份时调高下载并发
+& $P research/launch_trade/update_data.py --start 202109 --workers 16 --discover   # 五年，并补进期间已下架的币
 ```
+
+- 下载站的 1 分钟 K 线最早到 2020-01（BTC_USDT；各合约从上线月份开始），另有 5 分钟 / 1 小时 K 线、逐笔成交（`trades`）、资金费率结算（`funding_applies`）、标记价格（`mark_prices`），本研究只用 1 分钟 K 线；
+- `--discover`：合约列表默认只取当前还在交易的合约（再合并此前下载过的），期间下架的币不会进样本。加上它会按下载站背后 S3 存储桶的月度文件列表，把 `--start` 以来存在过、合约列表里没有的币类合约（合约详情接口对已下架合约仍返回面值，按 `contract_type` 为空筛掉股票等）补进 `contracts.json` 再下载。只算币类合约，2021-10 ~ 2025-04 每个月有 39%~47% 原来不在样本里（全是之后下架的），2025-10 约 28%，2026 年以后 2%~11%；补齐后 1145 个合约（原 588 个），各月全部覆盖。面值按当前值，期间改过面值的合约要用 `check_jumps.py` 检查；
 
 - 已结束的月份从下载站取，没有计价成交额，加载时按 张数 × 合约面值 × 典型价 估算；
 - 下载站还没有的月份用 REST 补，带精确成交额。REST 只保留最近 10000 根 1 分钟 K 线（约 6.9 天），**至少每周更新一次**，否则会留下缺口（回测把缺口当作无数据，不判定、不持仓）；
@@ -94,7 +98,7 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 | `r3_export.py` | 第三轮：与 `r2_export.py` 相同，但提醒后保留的分钟数可调（`--post`，默认 48 小时），`--set 字段=值` 覆盖 `launch` 段、`--min-volume` 覆盖合约池下限，导出到 `results/<--out>` |
 | `r3_market.py` | 第三轮：全市场逐小时收盘价与成交额（上涨币占比、活跃度等市场状态的原料），输出 `results/r3_market.npz` |
 | `r3_lib.py` | 第三轮：方案定义（`Scheme`）、出场 X、过热过滤（全市场站上 30 天均线占比）、邻域平均、限同时持仓、资金费率敏感性 |
-| `r3_final.py` | 第三轮最终排名：三年里比 J 更赚钱的 21 个方案（含过热过滤的 J4、J5、P5） |
+| `r3_final.py [--period three_years/five_years]` | 第三轮最终排名：比 J 更赚钱的 21 个方案（含过热过滤的 J4、J5、P5）；五年要先用 `update_data.py --start 202109 --discover` 补数据 |
 | `r3_studies.py <研究>` | 第三轮排名表以外的研究：波次、出场网格、持仓、出场形态、特征与时段分档、前推检验、提醒门槛变体、突破拆分、随机对照、确认扫描、市场状态、滚动重选、做空、亏损期与过热过滤（子命令见脚本开头） |
 
 运行顺序：`update_data.py` → `r1_export.py` / `r2_export.py` → 其余脚本。

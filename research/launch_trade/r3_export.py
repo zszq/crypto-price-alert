@@ -76,20 +76,30 @@ def main() -> None:
     jobs = [(symbol, multiplier(symbol), rule, pool) for symbol in sorted(contracts)]
     out = RESULTS / args.out
     out.mkdir(parents=True, exist_ok=True)
-    bars, meta, names = [], [], []
-    with ProcessPoolExecutor(max_workers=10) as executor:
+    meta, names = [], []
+    # 边收边写进临时文件，最后再转成 .npy：五年、补齐已下架合约后一份导出有 3~6 GB，
+    # 全部攒在内存里再写要占同样多的内存，再加上进程池的结果缓冲。
+    scratch = out / "bars.bin.part"
+    row_shape: tuple[int, ...] | None = None
+    with scratch.open("wb") as handle, ProcessPoolExecutor(max_workers=10) as executor:
         for b, m, s in executor.map(r2_export.run, jobs, chunksize=4):
-            bars.extend(b)
+            for item in b:
+                row_shape = item.shape
+                handle.write(np.ascontiguousarray(item, dtype=np.float64).tobytes())
             meta.extend(m)
             names.extend(s)
-    if not bars:
+    if row_shape is None:
+        scratch.unlink()
         raise SystemExit("没有提醒，检查 --set / --min-volume 与数据")
-    # 直接写进预分配的 memmap，避免 np.stack 再复制一份几 GB。
-    shape = (len(bars), *bars[0].shape)
+    shape = (len(meta), *row_shape)
+    raw = np.memmap(scratch, dtype=np.float64, mode="r", shape=shape)
     stacked = np.lib.format.open_memmap(out / "bars.npy", mode="w+", dtype=np.float64, shape=shape)
-    for k, b in enumerate(bars):
-        stacked[k] = b
+    # 分块复制，内存里每次只有几千条。
+    for start in range(0, len(meta), 2000):
+        stacked[start : start + 2000] = raw[start : start + 2000]
     stacked.flush()
+    del raw, stacked
+    scratch.unlink()
     np.save(out / "meta.npy", np.array(meta))
     np.save(out / "symbol.npy", np.array(names))
     (out / "meta_names.txt").write_text("\n".join(r2_export.META), encoding="utf-8")

@@ -1,21 +1,24 @@
-"""第三轮最终排名：三年（2023-10-10 起）里比 J（第二轮推荐方案，三年 +1397）更赚钱的方案。
+"""第三轮最终排名：比 J（第二轮推荐方案）更赚钱的方案，--period 选三年（2023-10-10 起，默认）或五年（2021-10-10 起）。
 
 数据先用 r3_export.py 导出（--post 1200，见 README），提醒规则不同的方案用不同的导出目录：
 - v_base：当前 config/default.yaml 的 launch 段；
 - v_nobreak：同上但 require_breakout=false（不要求收盘突破基准期最高价）；
 - v_nb_pool0_noover：再加合约池成交额下限 0、max_change_percent=null（不设插针上限）。
-J4、J5、P5 的过热过滤还要先运行 r3_market.py（全市场逐小时数据）。
-除单点合计外给出 6 段、去掉最好 10 笔、t 值、最大回撤、最多同时持仓、资金费率敏感性、
+J4、J5、P5 的过热过滤还要先运行 r3_market.py（全市场逐小时数据）；
+五年要先用 update_data.py --start 202109 --discover 补数据。
+除单点合计外给出各段（三年 6 段、五年 10 段，每段半年）、去掉最好 10 笔、t 值、最大回撤、最多同时持仓、资金费率敏感性、
 换等待分钟（确认涨幅不变）的平均与胜过同等待 J 的次数，以及入场 × 回撤的邻域平均（见 r3_lib.hood）。
 """
 
 from __future__ import annotations
 
+import argparse
+import gc
 import sys
 from dataclasses import replace
 
 from r2_final import display_width, pad
-from r2_lib import BEST
+from r2_lib import BEST, PERIODS
 from r3_lib import BAD_HOURS, CAPS, FUNDING_PER_8H, HOT_BREADTH, Book, Scheme, X, report
 
 X0 = replace(X, confirm=0.0)
@@ -62,19 +65,32 @@ LEGEND = (
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--period", choices=("three_years", "five_years"), default="three_years")
+    args = parser.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
-    books: dict[str, Book] = {}
-    rows = []
+    # 按数据集分组、一次只留一份在内存里：补齐已下架合约后五年的三份导出合计约 15 GB，同时加载占用太大。
+    # 第一组是 J 所在的 v_base，换等待的参照 reference_wait 先算出来。
+    datasets = list(dict.fromkeys(scheme.dataset for scheme in SCHEMES))
+    rows: dict[int, dict] = {}
     reference_wait = None
-    for scheme in SCHEMES:
-        book = books.setdefault(scheme.dataset, Book(scheme.dataset))
-        row = report(book, scheme, reference_wait)
-        if reference_wait is None:
-            reference_wait = row["waits"]
+    labels: list[str] = []
+    for dataset in datasets:
+        book = Book(dataset, args.period)
+        labels = labels or [label for label, _ in book.data.period.folds]
+        for index, scheme in enumerate(SCHEMES):
+            if scheme.dataset != dataset:
+                continue
             row = report(book, scheme, reference_wait)
-        rows.append(row)
-        print(f"  已算 {scheme.name}", file=sys.stderr, flush=True)
-    labels = [label for label, _ in books["v_base"].data.period.folds]
+            if reference_wait is None:
+                reference_wait = row["waits"]
+                row = report(book, scheme, reference_wait)
+            rows[index] = row
+            print(f"  已算 {scheme.name}", file=sys.stderr, flush=True)
+        del book
+        gc.collect()
+    rows = [rows[index] for index in range(len(SCHEMES))]
+    print(f"区间：{PERIODS[args.period].name}")
     print(LEGEND)
     print(f"资金费率：每 8 小时持仓按 {FUNDING_PER_8H:.2%} 扣除后的合计见「扣资金费」列")
     width = max(display_width(r["name"]) for r in rows) + 1

@@ -82,6 +82,10 @@ def _build(symbol: str, multiplier: float | None) -> Series | None:
             for record in csv.reader(handle):
                 # 下载站列顺序：时间、张数、收、高、低、开。
                 t = int(record[0])
+                # 下载站个别文件有字段为空的行（2021~2023 年 24 个文件各一行，缺高低价或张数），
+                # 无法还原，按这一分钟无成交跳过；只影响一分钟，不值得为它猜补数值。
+                if "" in record[1:6]:
+                    continue
                 volume, close, high, low, open_ = (float(value) for value in record[1:6])
                 # 没有计价成交额，按面值 × 典型价估算；面值缺失的合约无法换算，与实时检测器一样不判定。
                 quote = volume * multiplier * (high + low + close) / 3 if multiplier else 0.0

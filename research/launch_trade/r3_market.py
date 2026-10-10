@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from load_data import load_contracts, load_series  # noqa: E402
 from paths import RESULTS  # noqa: E402
 
-START = 1688169600  # 2023-07-01 UTC：三年区间起点之前留出 30 天以上的预热
+START = 1630454400  # 2021-09-01 UTC：五年区间（2021-10-10 起）之前留出 30 天以上，30 天均线才算得出
 MARKET = RESULTS / "r3_market.npz"
 _breadth_cache: tuple[np.ndarray, np.ndarray] | None = None
 
