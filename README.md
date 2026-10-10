@@ -190,6 +190,12 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 
 模拟会为每个启用的观察窗口、趋势周期和放量启动各跑一遍，正常时每个窗口、每个趋势周期、放量启动各产生一条提醒；数量不符时命令以非零退出码结束并给出提示。配置文件缺失或校验失败时，会列出出错的配置键路径。
 
+依次试听各类提醒的提示音（见下文「提示音」，只支持 Windows 与 macOS）：
+
+```powershell
+.\.venv\Scripts\python.exe -m price_alert.cli sounds
+```
+
 ## 回放历史行情
 
 想知道某段时间为什么提醒或没有提醒，可以用 Gate 的历史成交把行情按当前配置逐秒重放一遍：
@@ -262,11 +268,26 @@ JSONL/Webhook 中趋势提醒带 `kind: "trend"`，并有 `period`、`candles`�
 
 价格按合约的报价精度（Gate 合约的 `order_price_round`）显示，高价币不会再被截掉小数；取不到精度时按 8 位有效数字显示。
 
-提醒时间使用北京时间，格式为 `YYYY-MM-DD HH:MM:SS`。控制台中急涨提醒显示为绿色，急跌提醒显示为红色，交易对以亮黄色突出，涨跌幅百分比以同方向的亮绿/亮红色突出，长窗口提醒的窗口长度（如「3分钟」）以亮青色突出（短窗口的「30秒」保持正文颜色），连续提醒的标签以亮白色突出；`alerts.beep` 开启时，macOS 使用系统 `Glass` 音效，其他平台使用终端响铃。文本明确显示价格涨跌百分比，不显示原始 ATR 数值和 24 小时成交额。JSONL 和 Webhook 记录仍保留完整结构化字段，并包含值为 `green` 或 `red` 的 `color` 字段。
+提醒时间使用北京时间，格式为 `YYYY-MM-DD HH:MM:SS`。控制台中急涨提醒显示为绿色，急跌提醒显示为红色，交易对以亮黄色突出，涨跌幅百分比以同方向的亮绿/亮红色突出，长窗口提醒的窗口长度（如「3分钟」）以亮青色突出（短窗口的「30秒」保持正文颜色），连续提醒的标签以亮白色突出；`alerts.beep` 开启时按提醒类型播放提示音（见下文）。文本明确显示价格涨跌百分比，不显示原始 ATR 数值和 24 小时成交额。JSONL 和 Webhook 记录仍保留完整结构化字段，并包含值为 `green` 或 `red` 的 `color` 字段。
 
 控制台每条提醒下方会以灰色显示对应合约的 Gate 中文交易页完整地址。支持网址识别的终端可点击打开（部分终端需要按住 `Ctrl` 或 `Cmd` 再点击）；不支持时可复制到浏览器打开。交易地址仅附加在控制台输出中。
 
 实时提醒默认追加到 `data/alerts/alerts.jsonl`。每行是一条完整 JSON，即使程序异常退出，也不会破坏之前的记录。文件超过 `alerts.jsonl_max_bytes` 后整体轮转为 `alerts.jsonl.1`、`alerts.jsonl.2` 等，最多保留 `alerts.jsonl_backup_count` 个历史文件。
+
+## 提示音
+
+`alerts.beep` 开启时，Windows 与 macOS 播放同一套由代码合成的提示音（`sounds.py`，启动时生成 WAV 文件放在系统临时目录的 `price-alert-sounds` 下），不依赖终端响铃设置；其他平台仍使用终端响铃。音色区分大类，敲击方式区分小类：
+
+| 提醒 | 音效 | 打断优先级 |
+|---|---|---|
+| 秒级异动·短窗口 | 木琴音，敲一下 | 0 |
+| 秒级异动·长窗口 | 木琴音，音更低（440Hz）、余音更长 | 0 |
+| 连续提醒 | 木琴音，短窗口的音连敲两下，比秒级异动稍响 | 2 |
+| 趋势提醒 | 钟音，中高音（1175Hz）敲一下 | 1 |
+| 趋势提醒·延续 | 钟音，连敲两下 | 1 |
+| 放量启动 | 号角音，快速上行琶音（大三和弦），音量最大 | 3 |
+
+「连敲两下」在两类里都表示连续/延续。秒级异动最常响，用短促的木琴音、音量最小；放量启动最重要，音量最大。每个音效都在 1 秒以内，在后台播放，不会推迟文字提醒。上一个音效还没播完时又来了新提醒：优先级更高的立即打断它，同级或更低的不再发声，所以一波集中异动只响一次，但放量启动不会因为秒级异动正在响而没有声音。用 `price_alert.cli sounds` 可以依次试听。
 
 ## Webhook
 
@@ -327,7 +348,7 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 - `launch.cooldown_minutes` / `launch.realert_step_percent`：同方向再次提醒的最小间隔（不能小于窗口）与价格须再推进的幅度，默认 15 分钟、5%；
 - `alerts.queue_size`：每个通知通道允许积压的提醒数量；
 - `alerts.console_colors`：是否启用控制台颜色，默认开启；
-- `alerts.beep`：是否在控制台提醒时播放提示音；macOS 使用系统音效，不依赖终端响铃设置；
+- `alerts.beep`：是否在控制台提醒时播放提示音；Windows 与 macOS 按提醒类型播放内置合成音效（见「提示音」），不依赖终端响铃设置，其他平台使用终端响铃；
 - `alerts.jsonl_max_bytes` / `alerts.jsonl_backup_count`：JSONL 轮转大小（0 表示不轮转）与保留的历史文件数；
 
 ## 工程结构
@@ -362,9 +383,10 @@ src/price_alert/
 ├── detection.py             服务对检测器的约定（多个检测器共用成交与合约池）
 ├── instance.py              防止重复提醒的跨平台进程锁
 ├── notifier.py              控制台、JSONL、Webhook 与独立队列分发
+├── sounds.py                按提醒类型合成提示音与打断优先级
 ├── assembly.py              按配置组装检测器与 REST 客户端（各入口共用）
 ├── service.py               预热、增量刷新、重连和服务编排
-└── cli.py                   run/universe/check-config/simulate/replay/trend-replay/launch-replay
+└── cli.py                   run/universe/check-config/simulate/replay/trend-replay/launch-replay/sounds
 tests/                       指标、筛选、解析、检测、通知、服务编排和命令行测试
 data/alerts/                 本地告警记录
 ```

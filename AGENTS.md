@@ -26,6 +26,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m price_alert.cli replay QNT --start "2026-09-29 09:25" --end "2026-09-29 09:36"  # 历史成交逐秒回放，解释为什么提醒/没提醒（--all 输出每一秒）
 .\.venv\Scripts\python.exe -m price_alert.cli trend-replay ARK --start "2026-09-30 21:30" --end "2026-10-01 00:30"  # 用历史 1 分钟 K 线回放趋势提醒（--all 输出每根 K 线）
 .\.venv\Scripts\python.exe -m price_alert.cli launch-replay RLC --start "2026-10-05 17:30" --end "2026-10-06 03:00"  # 用历史 1 分钟 K 线回放放量启动提醒（--all 输出每一分钟）
+.\.venv\Scripts\python.exe -m price_alert.cli sounds        # 依次试听六种提示音（Windows/macOS）
 .\.venv\Scripts\python.exe -m price_alert.cli run           # 实时监控（或双击 start-monitor.bat）
 ```
 
@@ -110,6 +111,8 @@ python -m venv .venv
 ### 通知（notifier.py）
 
 提醒类型是 `detection.Alert = PriceAlert | StreakAlert | TrendAlert | LaunchAlert`，`format_alert`/`colorize_alert` 按类型分派（趋势提醒的标签用亮紫色 `TREND_LABEL_COLOR`，放量启动用亮蓝色 `LAUNCH_LABEL_COLOR`，连续提醒用亮白色 `STREAK_LABEL_COLOR`）。`AlertDispatcher` 为每个通道建立独立的有界队列（`alerts.queue_size`）和后台任务：`publish` 非阻塞，队列满时丢弃并记错误日志；单个通道失败只记日志；退出时最多等待 `drain_timeout` 秒把积压发完。`build_notifiers` 按配置返回通道列表。`JsonlNotifier` 按 `jsonl_max_bytes` 整文件轮转。价格、窗口长度（整分钟显示为「N分钟」）和北京时间的格式都在 `formatting.py`，提醒与回放共用；价格按合约报价精度显示，缺失时按 8 位有效数字、不截断整数部分。提醒时间统一转为北京时间；控制台急涨绿色、急跌红色，涨跌幅用同方向亮色高亮，长窗口提醒的窗口长度用不分方向的亮青色（`LONG_WINDOW_COLOR`）高亮（短窗口保持正文色）；JSONL/Webhook 保留完整结构化字段（`PriceAlert.to_dict()`）。控制台提醒附带的交易地址由 `gate.futures_trade_url` 生成，Gate 网页地址只维护在 `gate.py`。修改提醒文本格式时注意 README 中的示例。
+
+提示音（`sounds.py`）：`beep` 开启时 Windows（`winsound` 异步播放）与 macOS（`afplay`）播放同一套代码合成的 WAV（`synthesize` 纯函数，`write_sound_files` 写到系统临时目录、文件名带内容哈希），其他平台或生成失败时退回终端响铃。`sound_for` 按提醒类型选六种音效：音色分大类（秒级异动/连续提醒为木琴且音量最小、趋势为无 4kHz 以上分音的钟音、放量为号角琶音且音量最大），敲两下表示连续/延续。正在播放时按 `SOUND_PRIORITY`（放量启动 > 连续提醒 > 趋势 > 秒级异动）只让更高优先级打断，同级或更低跳过；Windows 没有播放结束通知，按音效时长等待来判断是否仍在播放。改音效时同步 README「提示音」一节。
 
 ## 回测研究（research/）
 

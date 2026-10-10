@@ -15,6 +15,7 @@ from typing import Protocol
 
 from colorama import Fore, Style, just_fix_windows_console
 
+from price_alert import sounds
 from price_alert import streak as streak_alerts
 from price_alert.config import AlertConfig
 from price_alert.detection import Alert
@@ -27,9 +28,13 @@ from price_alert.streak import StreakAlert
 from price_alert.trend import alerts as trend_alerts
 from price_alert.trend.alerts import TrendAlert
 
+try:
+    import winsound
+except ImportError:  # 只有 Windows 有 winsound
+    winsound = None
+
 LOGGER = logging.getLogger(__name__)
 MACOS_SOUND_PLAYER = "/usr/bin/afplay"
-MACOS_ALERT_SOUND = "/System/Library/Sounds/Glass.aiff"
 # 控制台颜色只用标准 16 色，各终端都能显示。
 # 正文：急涨绿色、急跌红色。
 SURGE_COLOR = Fore.GREEN
@@ -119,16 +124,29 @@ def colorize_alert(alert: Alert, text: str, enabled: bool = True) -> str:
 
 
 class ConsoleNotifier:
-    def __init__(self, beep: bool = True, colors: bool = True) -> None:
+    def __init__(self, beep: bool = True, colors: bool = True, sound_dir: Path | None = None) -> None:
         self.beep = beep
         self.colors = colors
-        # macOS 终端通常会忽略或禁用 ASCII 响铃，直接播放系统音效才能稳定发声。
-        self._system_sound = beep and sys.platform == "darwin"
+        self._macos = sys.platform == "darwin"
+        self._sound_files = self._prepare_sounds(sound_dir) if beep else None
         # 持有引用，避免后台播放任务被垃圾回收，也用于判断上一次是否仍在播放。
         self._sound_task: asyncio.Task[None] | None = None
+        self._playing_priority = 0
         if colors:
             # Windows 控制台实现差异较大，初始化兼容层可避免直接显示转义字符。
             just_fix_windows_console()
+
+    def _prepare_sounds(self, sound_dir: Path | None) -> dict[sounds.SoundName, Path] | None:
+        # macOS 终端通常会忽略或禁用 ASCII 响铃，Windows 的响铃声由终端和系统设置决定，
+        # 两边听到的不一样，也分不出提醒类型；所以这两个平台都播放同一份合成音效。
+        # 其他平台没有可依赖的播放器，仍用终端响铃。
+        if not self._macos and not (sys.platform == "win32" and winsound is not None):
+            return None
+        try:
+            return sounds.write_sound_files(sound_dir or sounds.default_sound_dir())
+        except OSError as exc:
+            LOGGER.warning("提示音文件生成失败，改用终端响铃：%s", exc)
+            return None
 
     async def send(self, alert: Alert) -> None:
         text = colorize_alert(alert, format_alert(alert), self.colors)
@@ -137,19 +155,43 @@ class ConsoleNotifier:
         url_line = f"交易地址：{futures_trade_url(alert.symbol)}"
         if self.colors:
             url_line = f"{TRADE_URL_COLOR}{url_line}{Style.RESET_ALL}"
-        terminal_bell = "\a" if self.beep and not self._system_sound else ""
+        terminal_bell = "\a" if self.beep and self._sound_files is None else ""
         print(f"{terminal_bell}{text}\n{url_line}", flush=True)
-        # 音效约 1.65 秒，等待播完会让集中异动时的文字提醒逐条排队延迟，所以放到后台；
-        # 上一次仍在播放时直接跳过，一波异动只响一次。
-        if self._system_sound and (self._sound_task is None or self._sound_task.done()):
-            self._sound_task = asyncio.create_task(self._play_macos_sound(), name="console-alert-sound")
+        if self._sound_files is not None:
+            name = sounds.sound_for(alert)
+            self._play(name, self._sound_files[name])
+
+    async def play_and_wait(self, name: sounds.SoundName) -> bool:
+        """试听用：播放一种音效并等它播完；当前平台没有内置音效时返回 False。"""
+        if self._sound_files is None:
+            return False
+        self._play(name, self._sound_files[name])
+        if self._sound_task is not None:
+            await self._sound_task
+        return True
+
+    def _play(self, name: sounds.SoundName, path: Path) -> None:
+        # 音效不到 1 秒，但等待播完会让集中异动时的文字提醒逐条排队延迟，所以放到后台。
+        # 正在播放时只让更重要的提醒打断它，同级或更低的跳过：一波异动只响一次，
+        # 又不会因为秒级异动正在响而漏掉放量启动的声音。
+        priority = sounds.SOUND_PRIORITY[name]
+        if self._sound_task is not None and not self._sound_task.done():
+            if priority <= self._playing_priority:
+                return
+            self._sound_task.cancel()
+        if self._macos:
+            player = self._play_macos_sound(path)
+        else:
+            player = self._play_windows_sound(path, sounds.sound_duration(name))
+        self._playing_priority = priority
+        self._sound_task = asyncio.create_task(player, name="console-alert-sound")
 
     @staticmethod
-    async def _play_macos_sound() -> None:
+    async def _play_macos_sound(path: Path) -> None:
         try:
             process = await asyncio.create_subprocess_exec(
                 MACOS_SOUND_PLAYER,
-                MACOS_ALERT_SOUND,
+                str(path),
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
@@ -160,13 +202,26 @@ class ConsoleNotifier:
         try:
             return_code = await process.wait()
         except asyncio.CancelledError:
-            # 退出时事件循环会取消后台任务；结束并回收子进程，避免 afplay 脱离事件循环后成为孤儿进程。
+            # 被更高优先级的提醒打断或退出时会取消任务；结束并回收子进程，
+            # 既让声音立即停下，也避免 afplay 脱离事件循环后成为孤儿进程。
             with contextlib.suppress(ProcessLookupError):
                 process.kill()
             await process.wait()
             raise
         if return_code != 0:
             LOGGER.warning("macOS 提示音播放失败，afplay 退出码：%s", return_code)
+
+    @staticmethod
+    async def _play_windows_sound(path: Path, duration: float) -> None:
+        try:
+            # SND_ASYNC 立即返回，且新的播放会自动停掉上一个，打断时不用另外停止。
+            # 不放进 to_thread：多个线程的执行先后不确定，被打断的音效可能反而后播。
+            winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+        except RuntimeError as exc:
+            LOGGER.warning("Windows 提示音播放失败：%s", exc)
+            return
+        # winsound 没有播放结束的通知，按音效时长等待，任务存活期间即视为正在播放，供优先级判断。
+        await asyncio.sleep(duration)
 
 
 class JsonlNotifier:

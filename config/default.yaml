@@ -316,7 +316,8 @@ alerts:
   # 控制台是否着色。重定向到文件或日志系统时建议关掉。
   # 默认：true
   console_colors: true
-  # 控制台提醒时是否发声。macOS 用系统音效，其他平台用终端响铃（受终端设置影响）。
+  # 控制台提醒时是否发声。Windows 与 macOS 按提醒类型播放内置合成音效（cli sounds 可试听），
+  # 其他平台用终端响铃（受终端设置影响）。
   # 默认：true
   beep: true
   # JSONL 落盘路径，相对当前工作目录解析，每行一条完整 JSON；设为 null 关闭该通道。

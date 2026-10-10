@@ -221,3 +221,26 @@ def test_check_config_lists_streak_rule_with_gap_following_cooldown(tmp_path, mo
     cli.main()
 
     assert "连续提醒：短窗口同方向提醒连续 3 次、相邻间隔 ≤ 75 秒" in capsys.readouterr().out
+
+
+def test_preview_sounds_plays_every_kind_in_order(monkeypatch, capsys):
+    played = []
+
+    async def play_and_wait(self, name):
+        played.append(name)
+        return True
+
+    monkeypatch.setattr(cli.ConsoleNotifier, "play_and_wait", play_and_wait)
+    monkeypatch.setattr(cli, "SOUND_PREVIEW_PAUSE_SECONDS", 0)
+
+    asyncio.run(cli.preview_sounds())
+
+    assert played == list(cli.SOUND_NAMES)
+    assert "放量启动" in capsys.readouterr().out
+
+
+def test_preview_sounds_explains_unsupported_platform(monkeypatch):
+    monkeypatch.setattr("price_alert.notifier.sys.platform", "linux")
+
+    with pytest.raises(SystemExit, match="只支持 Windows 与 macOS"):
+        asyncio.run(cli.preview_sounds())

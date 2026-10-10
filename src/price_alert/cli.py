@@ -38,6 +38,7 @@ from price_alert.replay import (
     run_replay,
 )
 from price_alert.service import run_monitor
+from price_alert.sounds import SOUND_LABELS, SOUND_NAMES, SOUND_PRIORITY
 from price_alert.streak import describe_streak_rule
 from price_alert.trend.alerts import describe_trend_rule
 from price_alert.trend.replay import plan_trend_replay, render_trend_replay, run_trend_replay
@@ -53,6 +54,7 @@ DEFAULT_REPLAY_MINUTES = 15
 DEFAULT_TREND_REPLAY_HOURS = 3
 # 放量回放只给开始时间时的时长：足够看完一段启动以及之后的几波拉升。
 DEFAULT_LAUNCH_REPLAY_HOURS = 6
+SOUND_PREVIEW_PAUSE_SECONDS = 0.8
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -66,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("replay", "用历史成交回放某个合约，逐秒解释为什么提醒或没有提醒"),
         ("trend-replay", "用历史 1 分钟 K 线回放某个合约的趋势提醒，逐根解释判定结果"),
         ("launch-replay", "用历史 1 分钟 K 线回放某个合约的放量启动提醒，逐分钟解释判定结果"),
+        ("sounds", "依次试听各类提醒的提示音"),
     ):
         command = commands.add_parser(name, help=help_text)
         command.add_argument("--config", default="config/default.yaml")
@@ -175,6 +178,17 @@ async def _simulate_window(config: AppConfig, window: MoveWindow, notifier: Cons
                 alert_count += 1
                 await notifier.send(alert)
     return alert_count
+
+
+async def preview_sounds() -> None:
+    # 试听不看 alerts.beep：关掉提醒声音时也要能先听一下再决定。
+    notifier = ConsoleNotifier(beep=True, colors=False)
+    for name in SOUND_NAMES:
+        print(f"{SOUND_LABELS[name]}（打断优先级 {SOUND_PRIORITY[name]}）", flush=True)
+        if not await notifier.play_and_wait(name):
+            raise SystemExit("当前平台没有内置提示音（只支持 Windows 与 macOS），提醒时使用终端响铃")
+        # 每种之间留出停顿，前后两种不会听成一个声音。
+        await asyncio.sleep(SOUND_PREVIEW_PAUSE_SECONDS)
 
 
 def replay(config: AppConfig, args: argparse.Namespace) -> None:
@@ -322,6 +336,9 @@ def main() -> None:
         return
     if args.command == "launch-replay":
         launch_replay(config, args)
+        return
+    if args.command == "sounds":
+        asyncio.run(preview_sounds())
         return
     try:
         with ProcessLock(Path("data/price-alert.lock")):

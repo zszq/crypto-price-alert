@@ -2,16 +2,18 @@ import asyncio
 import contextlib
 import json
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from colorama import Style
 
+from price_alert.launch.alerts import LaunchAlert
+from price_alert.launch.rule import LaunchMetrics
 from price_alert.models import PriceAlert
 from price_alert.notifier import (
     DROP_CHANGE_COLOR,
     DROP_COLOR,
     LONG_WINDOW_COLOR,
-    MACOS_ALERT_SOUND,
     MACOS_SOUND_PLAYER,
     SURGE_CHANGE_COLOR,
     SURGE_COLOR,
@@ -23,6 +25,7 @@ from price_alert.notifier import (
     colorize_alert,
     format_alert,
 )
+from price_alert.sounds import sound_duration
 
 
 def test_jsonl_notifier_writes_atr_alert(tmp_path):
@@ -147,11 +150,34 @@ def patch_macos_sound(monkeypatch, return_code: int = 0) -> list[tuple[tuple, Fa
     return calls
 
 
-def test_console_notifier_uses_afplay_on_macos(monkeypatch, capsys):
+def played_sound(call: tuple[tuple, FakeSoundProcess]) -> str:
+    """从 afplay 的参数取出播放的是哪种音效（文件名为「音效名-哈希.wav」）。"""
+    args, _ = call
+    assert args[0] == MACOS_SOUND_PLAYER
+    return Path(args[1]).stem.rsplit("-", 1)[0]
+
+
+def make_launch() -> LaunchAlert:
+    metrics = LaunchMetrics(
+        direction="surge",
+        start_price=1.0,
+        end_price=1.05,
+        change_percent=5.0,
+        window_quote=200_000.0,
+        baseline_quote=10_000.0,
+        volume_ratio=20.0,
+        breakout_price=1.02,
+        failures=(),
+    )
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    return LaunchAlert("RLC_USDT", now, now - timedelta(minutes=5), 5, 360, metrics, 1_000_000)
+
+
+def test_console_notifier_plays_synthesized_sound_with_afplay_on_macos(monkeypatch, capsys, tmp_path):
     calls = patch_macos_sound(monkeypatch)
 
     async def scenario():
-        notifier = ConsoleNotifier(beep=True, colors=False)
+        notifier = ConsoleNotifier(beep=True, colors=False, sound_dir=tmp_path)
         await notifier.send(make_alert())
         await asyncio.sleep(0)
         calls[0][1].finished.set()
@@ -159,39 +185,80 @@ def test_console_notifier_uses_afplay_on_macos(monkeypatch, capsys):
 
     asyncio.run(scenario())
 
-    assert calls[0][0] == (MACOS_SOUND_PLAYER, MACOS_ALERT_SOUND)
+    assert played_sound(calls[0]) == "short"
+    assert Path(calls[0][0][1]).parent == tmp_path
     assert "\a" not in capsys.readouterr().out
 
 
-def test_macos_sound_does_not_delay_burst_and_plays_once(monkeypatch, capsys):
+def test_sound_burst_of_same_priority_plays_once_without_delaying_text(monkeypatch, capsys, tmp_path):
     calls = patch_macos_sound(monkeypatch)
+    long_alert = replace(make_alert("ETH_USDT"), window="long", lookback_seconds=180)
 
     async def scenario():
-        notifier = ConsoleNotifier(beep=True, colors=False)
-        # 声音未播完时连续提醒：文字必须立即输出，且不能叠加播放。
-        for symbol in ("BTC_USDT", "ETH_USDT", "SOL_USDT"):
-            await notifier.send(make_alert(symbol))
+        notifier = ConsoleNotifier(beep=True, colors=False, sound_dir=tmp_path)
+        # 声音未播完时连续提醒：文字必须立即输出；长短窗口同级，不能互相打断或叠加播放。
+        for alert in (make_alert("BTC_USDT"), long_alert, make_alert("SOL_USDT")):
+            await notifier.send(alert)
             await asyncio.sleep(0)
         output = capsys.readouterr().out
         assert all(symbol in output for symbol in ("BTC_USDT", "ETH_USDT", "SOL_USDT"))
         assert len(calls) == 1
+        assert not calls[0][1].killed
 
         calls[0][1].finished.set()
         await notifier._sound_task
-        await notifier.send(make_alert("XRP_USDT"))
+        await notifier.send(long_alert)
         await asyncio.sleep(0)
-        assert len(calls) == 2
+        assert [played_sound(call) for call in calls] == ["short", "long"]
         calls[1][1].finished.set()
         await notifier._sound_task
 
     asyncio.run(scenario())
 
 
-def test_macos_sound_nonzero_exit_is_logged(monkeypatch, caplog):
+def test_higher_priority_sound_interrupts_and_lower_is_skipped(monkeypatch, tmp_path):
+    calls = patch_macos_sound(monkeypatch)
+
+    async def scenario():
+        notifier = ConsoleNotifier(beep=True, colors=False, sound_dir=tmp_path)
+        await notifier.send(make_alert())
+        await asyncio.sleep(0)
+        # 放量启动打断正在播放的秒级异动，被打断的 afplay 要结束掉。
+        await notifier.send(make_launch())
+        await asyncio.sleep(0)
+        assert calls[0][1].killed
+        # 放量启动正在播放，秒级异动不能打断它。
+        await notifier.send(make_alert("ETH_USDT"))
+        await asyncio.sleep(0)
+        assert [played_sound(call) for call in calls] == ["short", "launch"]
+        assert not calls[1][1].killed
+        calls[1][1].finished.set()
+        await notifier._sound_task
+
+    asyncio.run(scenario())
+
+
+def test_interrupt_before_playback_starts_only_plays_later_sound(monkeypatch, tmp_path):
+    calls = patch_macos_sound(monkeypatch)
+
+    async def scenario():
+        notifier = ConsoleNotifier(beep=True, colors=False, sound_dir=tmp_path)
+        # 分发器连发两条时中间不让出事件循环：短窗口的播放任务还没开始就被打断，只能听到后一个。
+        await notifier.send(make_alert())
+        await notifier.send(make_launch())
+        await asyncio.sleep(0)
+        assert [played_sound(call) for call in calls] == ["launch"]
+        calls[0][1].finished.set()
+        await notifier._sound_task
+
+    asyncio.run(scenario())
+
+
+def test_macos_sound_nonzero_exit_is_logged(monkeypatch, caplog, tmp_path):
     calls = patch_macos_sound(monkeypatch, return_code=1)
 
     async def scenario():
-        notifier = ConsoleNotifier(beep=True, colors=False)
+        notifier = ConsoleNotifier(beep=True, colors=False, sound_dir=tmp_path)
         await notifier.send(make_alert())
         await asyncio.sleep(0)
         calls[0][1].finished.set()
@@ -202,11 +269,11 @@ def test_macos_sound_nonzero_exit_is_logged(monkeypatch, caplog):
     assert "afplay 退出码：1" in caplog.text
 
 
-def test_cancelled_macos_sound_kills_player(monkeypatch):
+def test_cancelled_macos_sound_kills_player(monkeypatch, tmp_path):
     calls = patch_macos_sound(monkeypatch)
 
     async def scenario():
-        notifier = ConsoleNotifier(beep=True, colors=False)
+        notifier = ConsoleNotifier(beep=True, colors=False, sound_dir=tmp_path)
         await notifier.send(make_alert())
         await asyncio.sleep(0)
         notifier._sound_task.cancel()
@@ -218,15 +285,7 @@ def test_cancelled_macos_sound_kills_player(monkeypatch):
     assert calls[0][1].killed
 
 
-def test_console_notifier_keeps_terminal_bell_off_macos(monkeypatch, capsys):
-    monkeypatch.setattr("price_alert.notifier.sys.platform", "linux")
-
-    asyncio.run(ConsoleNotifier(beep=True, colors=False).send(make_alert()))
-
-    assert capsys.readouterr().out.startswith("\a[急涨提醒]")
-
-
-def test_macos_sound_failure_does_not_hide_alert(monkeypatch, capsys, caplog):
+def test_macos_sound_failure_does_not_hide_alert(monkeypatch, capsys, caplog, tmp_path):
     async def create_subprocess_exec(*args, **kwargs):
         raise OSError("afplay 不可用")
 
@@ -234,7 +293,7 @@ def test_macos_sound_failure_does_not_hide_alert(monkeypatch, capsys, caplog):
     monkeypatch.setattr("price_alert.notifier.asyncio.create_subprocess_exec", create_subprocess_exec)
 
     async def scenario():
-        notifier = ConsoleNotifier(beep=True, colors=False)
+        notifier = ConsoleNotifier(beep=True, colors=False, sound_dir=tmp_path)
         await notifier.send(make_alert())
         await notifier._sound_task
 
@@ -242,6 +301,105 @@ def test_macos_sound_failure_does_not_hide_alert(monkeypatch, capsys, caplog):
 
     assert "[急涨提醒]" in capsys.readouterr().out
     assert "macOS 提示音播放失败" in caplog.text
+
+
+class FakeWinsound:
+    SND_FILENAME = 0x20000
+    SND_ASYNC = 0x1
+    SND_NODEFAULT = 0x2
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.calls: list[tuple[str, int]] = []
+        self.error = error
+
+    def PlaySound(self, sound: str, flags: int) -> None:  # noqa: N802 - 与 winsound 同名
+        if self.error is not None:
+            raise self.error
+        self.calls.append((sound, flags))
+
+
+def patch_windows_sound(monkeypatch, winsound: FakeWinsound) -> list[float]:
+    sleeps: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def sleep(delay, *args, **kwargs):
+        # 只记录播放任务按音效时长等待，不真的等。
+        sleeps.append(delay)
+        await real_sleep(0)
+
+    monkeypatch.setattr("price_alert.notifier.sys.platform", "win32")
+    monkeypatch.setattr("price_alert.notifier.winsound", winsound)
+    monkeypatch.setattr("price_alert.notifier.asyncio.sleep", sleep)
+    return sleeps
+
+
+def test_windows_plays_same_synthesized_sound_asynchronously(monkeypatch, capsys, tmp_path):
+    winsound = FakeWinsound()
+    sleeps = patch_windows_sound(monkeypatch, winsound)
+
+    async def scenario():
+        notifier = ConsoleNotifier(beep=True, colors=False, sound_dir=tmp_path)
+        await notifier.send(make_launch())
+        await notifier._sound_task
+
+    asyncio.run(scenario())
+
+    [(path, flags)] = winsound.calls
+    assert Path(path).parent == tmp_path
+    assert Path(path).stem.startswith("launch-")
+    assert flags == FakeWinsound.SND_FILENAME | FakeWinsound.SND_ASYNC | FakeWinsound.SND_NODEFAULT
+    assert sleeps == [sound_duration("launch")]
+    assert "\a" not in capsys.readouterr().out
+
+
+def test_windows_sound_failure_is_logged(monkeypatch, capsys, caplog, tmp_path):
+    patch_windows_sound(monkeypatch, FakeWinsound(RuntimeError("Failed to play sound")))
+
+    async def scenario():
+        notifier = ConsoleNotifier(beep=True, colors=False, sound_dir=tmp_path)
+        await notifier.send(make_alert())
+        await notifier._sound_task
+
+    asyncio.run(scenario())
+
+    assert "[急涨提醒]" in capsys.readouterr().out
+    assert "Windows 提示音播放失败" in caplog.text
+
+
+def test_console_notifier_keeps_terminal_bell_on_other_platforms(monkeypatch, capsys):
+    monkeypatch.setattr("price_alert.notifier.sys.platform", "linux")
+
+    asyncio.run(ConsoleNotifier(beep=True, colors=False).send(make_alert()))
+
+    assert capsys.readouterr().out.startswith("\a[急涨提醒]")
+
+
+def test_sound_file_failure_falls_back_to_terminal_bell(monkeypatch, capsys, caplog, tmp_path):
+    monkeypatch.setattr("price_alert.notifier.sys.platform", "darwin")
+    # 用一个普通文件占住目录位置，创建音效目录必然失败。
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("", encoding="utf-8")
+
+    asyncio.run(ConsoleNotifier(beep=True, colors=False, sound_dir=blocker).send(make_alert()))
+
+    assert capsys.readouterr().out.startswith("\a[急涨提醒]")
+    assert "提示音文件生成失败" in caplog.text
+
+
+def test_beep_disabled_plays_nothing(monkeypatch, capsys, tmp_path):
+    calls = patch_macos_sound(monkeypatch)
+
+    async def scenario():
+        notifier = ConsoleNotifier(beep=False, colors=False, sound_dir=tmp_path)
+        await notifier.send(make_alert())
+        await asyncio.sleep(0)
+        assert notifier._sound_task is None
+
+    asyncio.run(scenario())
+
+    assert calls == []
+    assert list(tmp_path.iterdir()) == []
+    assert "\a" not in capsys.readouterr().out
 
 
 class RecordingNotifier:
