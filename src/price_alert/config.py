@@ -22,7 +22,6 @@ class GateConfig(BaseModel):
     rest_url: str = "https://api.gateio.ws/api/v4"
     websocket_url: str = "wss://fx-ws.gateio.ws/v4/ws/usdt"
     settle: Literal["usdt"] = "usdt"
-    min_volume_24h_quote: float = Field(default=10_000_000, gt=0)
     universe_exit_volume_ratio: float = Field(default=0.8, gt=0, le=1)
     universe_refresh_seconds: int = Field(default=600, ge=60, le=86400)
     rest_timeout_seconds: float = Field(default=15.0, gt=0, le=60)
@@ -113,9 +112,13 @@ class StreakConfig(BaseModel):
     gap_tolerance_seconds: int = Field(default=30, ge=1, le=3600)
 
 
-class IndicatorConfig(BaseModel):
+class MoveConfig(BaseModel):
+    """秒级 ATR 异动：合约池门槛、共用的 K 线/ATR 参数与各观察窗口。"""
+
     model_config = ConfigDict(extra="forbid")
 
+    # 合约池门槛与趋势、放量启动一样放在本段：它只决定这个检测器监控哪些合约，与交易所连接无关。
+    min_volume_24h_quote: float = Field(default=10_000_000, gt=0)
     candle_interval: Literal["1m", "5m", "15m"] = "1m"
     atr_period: int = Field(default=14, ge=2, le=200)
     warmup_candles: int = Field(default=50, ge=15, le=500)
@@ -126,7 +129,7 @@ class IndicatorConfig(BaseModel):
     streak: StreakConfig = Field(default_factory=StreakConfig)
 
     @model_validator(mode="after")
-    def validate_warmup_and_freshness(self) -> IndicatorConfig:
+    def validate_warmup_and_freshness(self) -> MoveConfig:
         if self.warmup_candles <= self.atr_period:
             raise ValueError("warmup_candles 必须大于 atr_period，以便排除尚未收盘的 K 线")
         interval_seconds = INTERVAL_SECONDS[self.candle_interval]
@@ -159,7 +162,7 @@ class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     gate: GateConfig = Field(default_factory=GateConfig)
-    indicator: IndicatorConfig = Field(default_factory=IndicatorConfig)
+    move: MoveConfig = Field(default_factory=MoveConfig)
     # K 线形态趋势提醒，独立于秒级 ATR 异动检测；模型定义在 trend 包内，删除该功能时只需去掉这一项。
     trend: TrendConfig = Field(default_factory=TrendConfig)
     # 放量启动提醒，与上面两者相互独立；模型定义在 launch 包内，删除该功能时只需去掉这一项。

@@ -98,11 +98,11 @@ def parse_time(text: str, today: date | None = None) -> datetime:
 def plan_replay(symbol: str, start: datetime, end: datetime, config: AppConfig) -> ReplayPlan:
     if end <= start:
         raise ValueError("结束时间必须晚于开始时间")
-    interval = INTERVAL_SECONDS[config.indicator.candle_interval]
+    interval = INTERVAL_SECONDS[config.move.candle_interval]
     max_lookback = max(window.lookback_seconds for window in build_windows(config))
     earliest = int(start.timestamp()) - max_lookback - BASELINE_TOLERANCE_SECONDS
     feed_start = datetime.fromtimestamp(earliest // interval * interval, tz=BEIJING_TIME)
-    warmup_start = feed_start - timedelta(seconds=interval * config.indicator.warmup_candles)
+    warmup_start = feed_start - timedelta(seconds=interval * config.move.warmup_candles)
     return ReplayPlan(symbol, start, end, feed_start, warmup_start)
 
 
@@ -113,10 +113,10 @@ def fetch_replay_data(rest: GateRestClient, plan: ReplayPlan, config: AppConfig)
     except Exception as exc:
         # 精度只影响价格显示，取不到就按有效数字显示，不值得让整个回放失败。
         LOGGER.warning("%s 合约信息获取失败，价格按有效数字显示：%s", plan.symbol, exc)
-    interval = timedelta(seconds=INTERVAL_SECONDS[config.indicator.candle_interval])
+    interval = timedelta(seconds=INTERVAL_SECONDS[config.move.candle_interval])
     candles = rest.fetch_candles_between(
         plan.symbol,
-        config.indicator.candle_interval,
+        config.move.candle_interval,
         plan.warmup_start,
         plan.feed_start - interval,
     )

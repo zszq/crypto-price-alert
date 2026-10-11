@@ -28,10 +28,10 @@ def build_windows(config: AppConfig, cooldown_seconds: int | None = None) -> lis
 
     cooldown_seconds 覆盖全部窗口的冷却，供 simulate 这类不需要冷却的场景使用。
     """
-    indicator = config.indicator
-    configured: list[tuple[WindowName, WindowConfig]] = [("short", indicator.short_window)]
-    if indicator.long_window.enabled:
-        configured.append(("long", indicator.long_window))
+    move = config.move
+    configured: list[tuple[WindowName, WindowConfig]] = [("short", move.short_window)]
+    if move.long_window.enabled:
+        configured.append(("long", move.long_window))
     return [
         MoveWindow(
             name=name,
@@ -55,18 +55,18 @@ def build_detector(
     streak: bool = True,
 ) -> AtrMoveDetector:
     """streak=False 不追加连续提醒，供 simulate 这类只验证单个窗口门槛的场景使用。"""
-    indicator = config.indicator
-    streak_config = indicator.streak
+    move = config.move
+    streak_config = move.streak
     return AtrMoveDetector(
-        atr_period=indicator.atr_period,
-        candle_interval_seconds=INTERVAL_SECONDS[indicator.candle_interval],
-        max_atr_age_seconds=indicator.max_atr_age_seconds,
+        atr_period=move.atr_period,
+        candle_interval_seconds=INTERVAL_SECONDS[move.candle_interval],
+        max_atr_age_seconds=move.max_atr_age_seconds,
         windows=build_windows(config, cooldown_seconds) if windows is None else windows,
         observer=observer,
         streak=(
             StreakRule(
                 streak_config.min_alerts,
-                indicator.short_window.cooldown_seconds + streak_config.gap_tolerance_seconds,
+                move.short_window.cooldown_seconds + streak_config.gap_tolerance_seconds,
             )
             if streak and streak_config.enabled
             else None
@@ -96,14 +96,14 @@ def build_launch_detector(
 
 def build_detectors(config: AppConfig) -> list[MonitoredDetector]:
     """实时监控运行的全部检测器，顺序与 config/default.yaml 一致；放量、趋势提醒关闭时不创建，不多拉 K 线。"""
-    indicator = config.indicator
+    move = config.move
     detectors = [
         MonitoredDetector(
             "ATR 异动",
             build_detector(config),
-            indicator.candle_interval,
-            indicator.warmup_candles,
-            VolumeRange(config.gate.min_volume_24h_quote),
+            move.candle_interval,
+            move.warmup_candles,
+            VolumeRange(move.min_volume_24h_quote),
         )
     ]
     if config.launch.enabled:

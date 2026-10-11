@@ -10,9 +10,8 @@ def test_load_config_and_webhook_environment_override(tmp_path, monkeypatch):
     path = tmp_path / "config.yaml"
     path.write_text(
         """
-gate:
+move:
   min_volume_24h_quote: 10000001
-indicator:
   short_window:
     trigger_atr_multiple: 1.25
 alerts:
@@ -24,20 +23,20 @@ alerts:
 
     config = load_config(path)
 
-    assert config.gate.min_volume_24h_quote == 10_000_001
-    assert config.indicator.short_window.trigger_atr_multiple == 1.25
+    assert config.move.min_volume_24h_quote == 10_000_001
+    assert config.move.short_window.trigger_atr_multiple == 1.25
     assert config.alerts.webhook_url == "https://example.test/hook"
 
 
 def test_rejects_atr_configuration_without_enough_warmup_data():
     with pytest.raises(ValidationError, match="warmup_candles"):
-        AppConfig.model_validate({"indicator": {"atr_period": 20, "warmup_candles": 20}})
+        AppConfig.model_validate({"move": {"atr_period": 20, "warmup_candles": 20}})
 
 
 def test_noise_protection_defaults_are_enabled():
     config = AppConfig()
 
-    short = config.indicator.short_window
+    short = config.move.short_window
     assert short.trigger_atr_multiple == 1.5
     assert short.min_change_percent == 1.0
     assert short.confirmation_seconds == 3
@@ -62,14 +61,14 @@ def test_rejects_confirmation_longer_than_lookback():
     # 用精确的报错文字而不只是字段名：未知键的报错里同样会出现字段名，只匹配字段名会被误判为通过。
     # 长窗口的取值范围（窗口 ≥ 60、确认 ≤ 10）使它不可能违反此规则，只需验证短窗口。
     with pytest.raises(ValidationError, match="confirmation_seconds 不能大于 lookback_seconds"):
-        AppConfig.model_validate({"indicator": {"short_window": {"lookback_seconds": 5, "confirmation_seconds": 6}}})
+        AppConfig.model_validate({"move": {"short_window": {"lookback_seconds": 5, "confirmation_seconds": 6}}})
 
 
 def test_atr_age_default_follows_candle_interval_but_explicit_value_is_validated():
-    assert AppConfig.model_validate({"indicator": {"candle_interval": "5m"}}).indicator.max_atr_age_seconds == 900
+    assert AppConfig.model_validate({"move": {"candle_interval": "5m"}}).move.max_atr_age_seconds == 900
 
     with pytest.raises(ValidationError, match="max_atr_age_seconds"):
-        AppConfig.model_validate({"indicator": {"candle_interval": "5m", "max_atr_age_seconds": 180}})
+        AppConfig.model_validate({"move": {"candle_interval": "5m", "max_atr_age_seconds": 180}})
 
 
 def test_default_yaml_long_window_cooldown_follows_lookback(monkeypatch, tmp_path):
@@ -82,41 +81,44 @@ def test_default_yaml_long_window_cooldown_follows_lookback(monkeypatch, tmp_pat
         encoding="utf-8",
     )
 
-    assert load_config(edited).indicator.long_window.cooldown_seconds == 300
+    assert load_config(edited).move.long_window.cooldown_seconds == 300
 
 
 def test_long_window_defaults_and_cooldown_follows_lookback():
-    long_window = AppConfig().indicator.long_window
+    long_window = AppConfig().move.long_window
     assert long_window.enabled is True
     assert (long_window.lookback_seconds, long_window.cooldown_seconds) == (180, 180)
 
     # 只改观察窗口长度时冷却自动跟随，不会因为忘改冷却而重复提醒同一段行情。
-    configured = AppConfig.model_validate({"indicator": {"long_window": {"lookback_seconds": 300}}})
-    assert configured.indicator.long_window.cooldown_seconds == 300
+    configured = AppConfig.model_validate({"move": {"long_window": {"lookback_seconds": 300}}})
+    assert configured.move.long_window.cooldown_seconds == 300
 
 
 def test_rejects_long_window_cooldown_shorter_than_its_lookback():
     # 匹配完整报错文字：只匹配字段名的话，键被改名后未知键的报错同样含该字段名，测试会误判通过。
     with pytest.raises(ValidationError, match="cooldown_seconds 不能小于 lookback_seconds"):
-        AppConfig.model_validate({"indicator": {"long_window": {"lookback_seconds": 300, "cooldown_seconds": 120}}})
+        AppConfig.model_validate({"move": {"long_window": {"lookback_seconds": 300, "cooldown_seconds": 120}}})
 
 
 def test_rejects_long_window_not_longer_than_short_window():
     with pytest.raises(ValidationError, match="必须大于 short_window.lookback_seconds"):
-        AppConfig.model_validate({"indicator": {"short_window": {"lookback_seconds": 180}}})
+        AppConfig.model_validate({"move": {"short_window": {"lookback_seconds": 180}}})
 
     # 关闭长窗口后不再要求它比短窗口长。
     AppConfig.model_validate(
-        {"indicator": {"short_window": {"lookback_seconds": 180}, "long_window": {"enabled": False}}}
+        {"move": {"short_window": {"lookback_seconds": 180}, "long_window": {"enabled": False}}}
     )
 
 
 @pytest.mark.parametrize(
     "legacy",
     [
-        {"indicator": {"lookback_seconds": 30}},
-        {"indicator": {"cooldown_seconds": 30}},
+        {"move": {"lookback_seconds": 30}},
+        {"move": {"cooldown_seconds": 30}},
         {"alerts": {"cooldown_seconds": 30}},
+        # 秒级异动段由 indicator 改名为 move，合约池门槛从 gate 移到 move。
+        {"indicator": {"atr_period": 14}},
+        {"gate": {"min_volume_24h_quote": 8_000_000}},
     ],
 )
 def test_legacy_window_keys_are_rejected_instead_of_ignored(legacy):
@@ -128,23 +130,23 @@ def test_legacy_window_keys_are_rejected_instead_of_ignored(legacy):
 
 
 def test_short_window_cooldown_is_configured_inside_the_window():
-    config = AppConfig.model_validate({"indicator": {"short_window": {"cooldown_seconds": 45}}})
+    config = AppConfig.model_validate({"move": {"short_window": {"cooldown_seconds": 45}}})
 
-    assert config.indicator.short_window.cooldown_seconds == 45
+    assert config.move.short_window.cooldown_seconds == 45
 
 
 def test_rejects_unknown_long_window_keys():
     with pytest.raises(ValidationError, match="long_window"):
-        AppConfig.model_validate({"indicator": {"long_window": {"lookback": 300}}})
+        AppConfig.model_validate({"move": {"long_window": {"lookback": 300}}})
 
 
 def test_streak_defaults_and_validation():
-    streak = AppConfig().indicator.streak
+    streak = AppConfig().move.streak
     assert (streak.enabled, streak.min_alerts, streak.gap_tolerance_seconds) == (True, 3, 30)
 
     # 连续提醒不能反过来卡住原有参数：调大短窗口冷却仍然是合法配置。
-    AppConfig.model_validate({"indicator": {"short_window": {"cooldown_seconds": 600}}})
+    AppConfig.model_validate({"move": {"short_window": {"cooldown_seconds": 600}}})
     with pytest.raises(ValidationError):
-        AppConfig.model_validate({"indicator": {"streak": {"min_alerts": 1}}})
+        AppConfig.model_validate({"move": {"streak": {"min_alerts": 1}}})
     with pytest.raises(ValidationError):
-        AppConfig.model_validate({"indicator": {"streak": {"gap_tolerance_seconds": 0}}})
+        AppConfig.model_validate({"move": {"streak": {"gap_tolerance_seconds": 0}}})

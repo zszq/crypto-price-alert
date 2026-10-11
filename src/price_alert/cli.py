@@ -135,8 +135,8 @@ async def simulate(config: AppConfig) -> int:
 
 
 async def _simulate_window(config: AppConfig, window: MoveWindow, notifier: ConsoleNotifier) -> int:
-    indicator = config.indicator
-    interval_seconds = INTERVAL_SECONDS[indicator.candle_interval]
+    move = config.move
+    interval_seconds = INTERVAL_SECONDS[move.candle_interval]
     # 每个窗口用只含它自己的检测器：要验证的是这个窗口的门槛能否被满足，不能让另一个窗口先提醒掩盖问题。
     detector = build_detector(config, windows=[window], streak=False)
 
@@ -151,7 +151,7 @@ async def _simulate_window(config: AppConfig, window: MoveWindow, notifier: Cons
     )
     detector.add_symbol(
         "BTC_USDT",
-        _build_demo_candles(history_end, indicator.atr_period + 1, interval_seconds),
+        _build_demo_candles(history_end, move.atr_period + 1, interval_seconds),
         1_000_000_000,
     )
 
@@ -325,7 +325,7 @@ def main() -> None:
         if produced != expected:
             raise SystemExit(
                 f"模拟应产生 {expected} 条提醒（每个窗口、每个趋势周期、放量启动各一条），实际 {produced} 条，"
-                "请检查 indicator、trend 与 launch 配置"
+                "请检查 move、trend 与 launch 配置"
             )
         return
     if args.command == "replay":

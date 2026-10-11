@@ -53,8 +53,8 @@ def monitor(detector, rest=None, feed=None, app_config=None, sem=None) -> servic
     if isinstance(detector, list):
         detectors = tuple(detector)
     else:
-        indicator = app_config.indicator
-        entry = MonitoredDetector("ATR 异动", detector, indicator.candle_interval, indicator.warmup_candles, ANY_VOLUME)
+        move = app_config.move
+        entry = MonitoredDetector("ATR 异动", detector, move.candle_interval, move.warmup_candles, ANY_VOLUME)
         detectors = (entry,)
     return service._Monitor(
         detectors=detectors,
@@ -367,7 +367,7 @@ def test_resync_rebuilds_stale_symbols_and_retries_failures(monkeypatch):
     now = datetime.now(UTC)
     candles = [
         Candle(now - timedelta(minutes=offset), 100, 101, 99, 100)
-        for offset in range(app_config.indicator.warmup_candles, -1, -1)
+        for offset in range(app_config.move.warmup_candles, -1, -1)
     ]
     for symbol in ("BTC_USDT", "ETH_USDT"):
         detector.add_symbol(symbol, [], 1e9)
@@ -434,7 +434,7 @@ def test_resync_limits_concurrency_with_the_shared_semaphore():
     now = datetime.now(UTC)
     candles = [
         Candle(now - timedelta(minutes=offset), 100, 101, 99, 100)
-        for offset in range(app_config.indicator.warmup_candles, -1, -1)
+        for offset in range(app_config.move.warmup_candles, -1, -1)
     ]
     for symbol in ("BTC_USDT", "ETH_USDT", "SOL_USDT", "XRP_USDT"):
         detector.add_symbol(symbol, [], 1e9)

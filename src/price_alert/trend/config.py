@@ -85,7 +85,7 @@ class TrendConfig(BaseModel):
     enabled: bool = True
     # 形态持续成立时，每根周期 K 线收盘都再报一条「延续」提醒；关闭后同一段走势只在形成时报一次。
     alert_continuing: bool = True
-    # 趋势合约池的 24 小时计价成交额范围，与秒级异动的 gate.min_volume_24h_quote 分开设置：
+    # 趋势合约池的 24 小时计价成交额范围，与秒级异动的 move.min_volume_24h_quote 分开设置：
     # 严格大于下限才监控；上限可选，不填即不设上限。退出缓冲沿用 gate.universe_exit_volume_ratio。
     min_volume_24h_quote: float = Field(default=10_000_000, gt=0)
     max_volume_24h_quote: float | None = Field(default=None, gt=0)
