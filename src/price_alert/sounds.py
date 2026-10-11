@@ -46,12 +46,19 @@ SOUND_PRIORITY: dict[SoundName, int] = {
     "streak": 2,
     "launch": 3,
 }
+# 必须完整播放的音效：优先级最高，没有能打断它的；同类提醒在它播放中到达时不跳过，播完后补响一次
+# （开播即到的同一批由这一声代表，见 notifier.MUST_PLAY_MERGE_SECONDS）。
+# 放量启动最重要，又是一个合约一段行情才响一次，补响不会吵；其他类型一波异动会连发，仍只响一次。
+MUST_PLAY: frozenset[SoundName] = frozenset({"launch"})
 SAMPLE_RATE = 44_100
 # 峰值留出余量，避免叠加的分音削顶失真。
 PEAK_LEVEL = 0.7
-# 起音与收尾淡入淡出，避免波形突变产生“咔哒”声。
+# 起音淡入，避免波形突变产生“咔哒”声。
 ATTACK_SECONDS = 0.003
-FADE_OUT_SECONDS = 0.02
+# 收尾淡出：余音还没衰减完就结束时，淡出太短听起来像被掐断，要留足时间让它自然收住。
+FADE_OUT_SECONDS = 0.12
+# 钟音与号角余音更长，结尾处仍有 -20 dB 左右，淡出要更长。
+LONG_FADE_OUT_SECONDS = 0.25
 
 
 @dataclass(frozen=True)
@@ -75,6 +82,7 @@ class _SoundSpec:
     length_seconds: float
     peak_level: float = PEAK_LEVEL
     attack_seconds: float = ATTACK_SECONDS
+    fade_out_seconds: float = FADE_OUT_SECONDS
 
 
 # 木琴：第二分音约 3.9 倍、衰减很快，短促不拖尾，适合最常响的秒级异动。
@@ -104,14 +112,21 @@ DOUBLE_STRIKE_GAP = 0.11
 SOUND_SPECS: dict[SoundName, _SoundSpec] = {
     "short": _SoundSpec(WOOD, (_Strike(659.0),), 0.5, SECOND_LEVEL_PEAK),
     # 长窗口音更低、余音更长：窗口越长音越沉，同一音色仍能一听就归到秒级异动。
-    "long": _SoundSpec(WOOD, (_Strike(440.0, sustain=1.5),), 0.6, SECOND_LEVEL_PEAK),
+    "long": _SoundSpec(WOOD, (_Strike(440.0, sustain=1.5),), 0.7, SECOND_LEVEL_PEAK),
     "streak": _SoundSpec(WOOD, (_Strike(659.0), _Strike(659.0, DOUBLE_STRIKE_GAP)), 0.6, STREAK_PEAK),
-    "trend": _SoundSpec(SOFT_BELL, (_Strike(1175.0),), 0.6, attack_seconds=SOFT_ATTACK_SECONDS),
+    "trend": _SoundSpec(
+        SOFT_BELL,
+        (_Strike(1175.0),),
+        0.8,
+        attack_seconds=SOFT_ATTACK_SECONDS,
+        fade_out_seconds=LONG_FADE_OUT_SECONDS,
+    ),
     "trend_continuing": _SoundSpec(
         SOFT_BELL,
         (_Strike(1175.0), _Strike(1175.0, DOUBLE_STRIKE_GAP)),
-        0.7,
+        0.9,
         attack_seconds=SOFT_ATTACK_SECONDS,
+        fade_out_seconds=LONG_FADE_OUT_SECONDS,
     ),
     # C6-E6-G6-C7 上行琶音表示“启动”，落在人耳最敏感的 1~2kHz；顶音余音稍长、整体音量最大，
     # 放量启动最重要，要在其他提醒声中一下就听出来。
@@ -123,8 +138,9 @@ SOUND_SPECS: dict[SoundName, _SoundSpec] = {
             _Strike(1568.0, ARPEGGIO_GAP * 2),
             _Strike(2093.0, ARPEGGIO_GAP * 3, sustain=1.2),
         ),
-        0.55,
+        0.8,
         peak_level=0.95,
+        fade_out_seconds=LONG_FADE_OUT_SECONDS,
     ),
 }
 
@@ -152,7 +168,7 @@ def synthesize(name: SoundName) -> bytes:
     for strike in spec.strikes:
         _add_strike(samples, spec.timbre, strike, spec.attack_seconds)
     peak = max(abs(value) for value in samples) or 1.0
-    fade_samples = round(FADE_OUT_SECONDS * SAMPLE_RATE)
+    fade_samples = round(spec.fade_out_seconds * SAMPLE_RATE)
     pcm = array("h")
     for index, value in enumerate(samples):
         level = value / peak * spec.peak_level

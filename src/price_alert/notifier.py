@@ -35,6 +35,12 @@ except ImportError:  # 只有 Windows 有 winsound
 
 LOGGER = logging.getLogger(__name__)
 MACOS_SOUND_PLAYER = "/usr/bin/afplay"
+# winsound 按音效时长判断是否播完，但声音实际要晚一些才出来（音频设备唤醒、缓冲），
+# 不多等一会儿，紧接着的下一个 PlaySound 会切掉上一个的尾音。
+WINDOWS_PLAYBACK_MARGIN_SECONDS = 0.3
+# 必须完整播放的音效开播后这么久以内到达的同类提醒，由正在播放的这一声代表，不再补响：
+# 同一分钟结算的一批放量启动几乎同时到达，听起来就是一起响的，补响反而像重复。
+MUST_PLAY_MERGE_SECONDS = 0.3
 # 控制台颜色只用标准 16 色，各终端都能显示。
 # 正文：急涨绿色、急跌红色。
 SURGE_COLOR = Fore.GREEN
@@ -132,6 +138,8 @@ class ConsoleNotifier:
         # 持有引用，避免后台播放任务被垃圾回收，也用于判断上一次是否仍在播放。
         self._sound_task: asyncio.Task[None] | None = None
         self._playing_priority = 0
+        self._playing_since = 0.0
+        self._replay_pending = False
         if colors:
             # Windows 控制台实现差异较大，初始化兼容层可避免直接显示转义字符。
             just_fix_windows_console()
@@ -175,16 +183,31 @@ class ConsoleNotifier:
         # 正在播放时只让更重要的提醒打断它，同级或更低的跳过：一波异动只响一次，
         # 又不会因为秒级异动正在响而漏掉放量启动的声音。
         priority = sounds.SOUND_PRIORITY[name]
+        now = asyncio.get_running_loop().time()
         if self._sound_task is not None and not self._sound_task.done():
-            if priority <= self._playing_priority:
+            if priority < self._playing_priority:
+                return
+            if priority == self._playing_priority:
+                # 必须完整播放的音效不被同类打断，也不丢：播完后补响一次（多条合并成一次）。
+                if name in sounds.MUST_PLAY and now - self._playing_since >= MUST_PLAY_MERGE_SECONDS:
+                    self._replay_pending = True
                 return
             self._sound_task.cancel()
-        if self._macos:
-            player = self._play_macos_sound(path)
-        else:
-            player = self._play_windows_sound(path, sounds.sound_duration(name))
         self._playing_priority = priority
-        self._sound_task = asyncio.create_task(player, name="console-alert-sound")
+        self._playing_since = now
+        self._replay_pending = False
+        self._sound_task = asyncio.create_task(self._play_sound(name, path), name="console-alert-sound")
+
+    async def _play_sound(self, name: sounds.SoundName, path: Path) -> None:
+        while True:
+            if self._macos:
+                await self._play_macos_sound(path)
+            else:
+                await self._play_windows_sound(path, sounds.sound_duration(name))
+            if not self._replay_pending:
+                return
+            self._replay_pending = False
+            self._playing_since = asyncio.get_running_loop().time()
 
     @staticmethod
     async def _play_macos_sound(path: Path) -> None:
@@ -220,8 +243,8 @@ class ConsoleNotifier:
         except RuntimeError as exc:
             LOGGER.warning("Windows 提示音播放失败：%s", exc)
             return
-        # winsound 没有播放结束的通知，按音效时长等待，任务存活期间即视为正在播放，供优先级判断。
-        await asyncio.sleep(duration)
+        # winsound 没有播放结束的通知，按音效时长加出声延迟等待，任务存活期间即视为正在播放，供优先级判断。
+        await asyncio.sleep(duration + WINDOWS_PLAYBACK_MARGIN_SECONDS)
 
 
 class JsonlNotifier:

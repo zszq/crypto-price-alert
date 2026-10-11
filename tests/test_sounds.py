@@ -1,4 +1,5 @@
 import io
+import math
 import wave
 from array import array
 from dataclasses import replace
@@ -73,6 +74,23 @@ def test_priority_order_is_launch_streak_trend_then_second_level():
     assert priority["trend"] == priority["trend_continuing"]
     assert priority["short"] == priority["long"]
     assert set(priority) == set(sounds.SOUND_NAMES) == set(sounds.SOUND_LABELS)
+
+
+def test_must_play_sounds_cannot_be_interrupted_by_anything():
+    assert sounds.MUST_PLAY == {"launch"}
+    for name in sounds.MUST_PLAY:
+        others = [priority for other, priority in sounds.SOUND_PRIORITY.items() if other != name]
+        assert sounds.SOUND_PRIORITY[name] > max(others)
+
+
+def test_sounds_fade_out_naturally_instead_of_being_cut_off():
+    # 最后 50 毫秒已降到峰值 -30 dB 以下：余音没收住就结束，听起来像被掐断。
+    tail_frames = round(0.05 * sounds.SAMPLE_RATE)
+    for name in sounds.SOUND_NAMES:
+        _, samples = decode(name)
+        peak = max(abs(value) for value in samples)
+        tail = max(abs(value) for value in samples[-tail_frames:])
+        assert 20 * math.log10(tail / peak) <= -30, name
 
 
 def test_sounds_are_short_audible_mono_wav_without_clipping():

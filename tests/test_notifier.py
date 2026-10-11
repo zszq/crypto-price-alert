@@ -15,10 +15,12 @@ from price_alert.notifier import (
     DROP_COLOR,
     LONG_WINDOW_COLOR,
     MACOS_SOUND_PLAYER,
+    MUST_PLAY_MERGE_SECONDS,
     SURGE_CHANGE_COLOR,
     SURGE_COLOR,
     SYMBOL_COLOR,
     TRADE_URL_COLOR,
+    WINDOWS_PLAYBACK_MARGIN_SECONDS,
     AlertDispatcher,
     ConsoleNotifier,
     JsonlNotifier,
@@ -238,6 +240,36 @@ def test_higher_priority_sound_interrupts_and_lower_is_skipped(monkeypatch, tmp_
     asyncio.run(scenario())
 
 
+def test_launch_during_launch_replays_once_after_it_finishes(monkeypatch, tmp_path):
+    calls = patch_macos_sound(monkeypatch)
+
+    async def scenario():
+        notifier = ConsoleNotifier(beep=True, colors=False, sound_dir=tmp_path)
+        await notifier.send(make_launch())
+        await asyncio.sleep(0)
+        # 同一批几乎同时到达的放量启动由正在播放的这一声代表。
+        await notifier.send(make_launch())
+        await asyncio.sleep(0)
+        assert not notifier._replay_pending
+        # 开播一段时间后再来的放量启动不能丢：不打断当前这声，播完后补响一次，多条合并成一次。
+        notifier._playing_since -= MUST_PLAY_MERGE_SECONDS
+        for _ in range(3):
+            await notifier.send(make_launch())
+        await notifier.send(make_alert())
+        await asyncio.sleep(0)
+        assert len(calls) == 1 and not calls[0][1].killed
+
+        calls[0][1].finished.set()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert [played_sound(call) for call in calls] == ["launch", "launch"]
+        calls[1][1].finished.set()
+        await notifier._sound_task
+        assert len(calls) == 2
+
+    asyncio.run(scenario())
+
+
 def test_interrupt_before_playback_starts_only_plays_later_sound(monkeypatch, tmp_path):
     calls = patch_macos_sound(monkeypatch)
 
@@ -348,7 +380,8 @@ def test_windows_plays_same_synthesized_sound_asynchronously(monkeypatch, capsys
     assert Path(path).parent == tmp_path
     assert Path(path).stem.startswith("launch-")
     assert flags == FakeWinsound.SND_FILENAME | FakeWinsound.SND_ASYNC | FakeWinsound.SND_NODEFAULT
-    assert sleeps == [sound_duration("launch")]
+    # 多等出声延迟：按音效时长就判定播完，紧接着的提醒会切掉放量启动的尾音。
+    assert sleeps == [sound_duration("launch") + WINDOWS_PLAYBACK_MARGIN_SECONDS]
     assert "\a" not in capsys.readouterr().out
 
 
