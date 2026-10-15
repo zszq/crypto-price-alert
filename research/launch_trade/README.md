@@ -101,11 +101,12 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 | `r3_lib.py` | 第三轮：方案定义（`Scheme`）、出场 X、过热过滤（全市场站上 30 天均线占比）、邻域平均、限同时持仓、资金费率敏感性 |
 | `r3_final.py [--period three_years/five_years]` | 第三轮最终排名：比 J 更赚钱的 21 个方案（含过热过滤的 J4、J5、P5）；五年要先用 `update_data.py --start 202109 --discover` 补数据 |
 | `r3_studies.py <研究>` | 第三轮排名表以外的研究：波次、出场网格、持仓、出场形态、特征与时段分档、前推检验、提醒门槛变体、突破拆分、随机对照、确认扫描、市场状态、滚动重选、做空、亏损期与过热过滤（子命令见脚本开头） |
-| `r5_export.py` | 第五轮：两个方向的提醒（`--side up/down/both`，下跌方向与开启 `alert_drops` 的 `LaunchDetector` 一致），只留提醒前 60、后 `--post`（默认 1440）分钟的开高低收，提醒时的特征写进 meta；`--set`、`--min-volume` 同 `r3_export.py` |
+| `r5_export.py` | 第五轮：两个方向的提醒（`--side up/down/both`，下跌方向与开启 `alert_drops` 的 `LaunchDetector` 一致），只留提醒前 60、后 `--post`（默认 1440）分钟的开高低收，提醒时的特征写进 meta；`--set`、`--min-volume` 同 `r3_export.py`；`--ratio-by base` 量比改按成交量（币数）算（默认 `quote` 与检测器一致） |
 | `r5_lib.py` | 第五轮：多空双向逐笔模拟（与 `simulate_trade` 逐笔一致）、限仓组合（先到先买、同一币不叠仓）、季度 / 去掉最好 N 天 / 夏普 / 回撤，全市场状态（宽度、BTC 均线、中位涨跌、全市场放量） |
 | `r5_studies.py <研究>` | 第五轮：以稳定为目标的方案评估，开发期（2024-10 起）与样本外（2021-10 ~ 2024-09）分开给出；子命令 base、exits、slots、regime、filters、quality、core、hood、costs、hot、final、reference |
 | `r5_scan.py <数据集>` | 第五轮：提醒特征分档，每档在五年各半年段每笔为正的段数 |
 | `r5_regime.py` | 第五轮：开发期多空两个方向的市场状态分档（找做空何时有效时用） |
+| `r5_ratio.py diff/scan <前缀>` | 量比按成交额还是成交量：同门槛下的提醒差异与 S5 结果（`diff`），两种口径 × 量比门槛 2.5~3.5（`scan`）；导出命令见 FINDINGS.md 对应一节 |
 
 运行顺序：`update_data.py` → `r1_export.py` / `r2_export.py` → 其余脚本。
 

@@ -48,14 +48,26 @@ META = [
     "high_30d",  # 窗口开始前 30 天最高 / 最低价
     "low_30d",
     "range_60",  # 提醒前 60 分钟平均振幅（(高-低)/收）
+    "ratio_base",  # 按成交量（币数）算的量比，与 ratio 的差别只是价格变化
 ]
 
 
-def detect_both(series, rule, pool, sides=(1, -1)) -> list[tuple]:
+def base_volume(series) -> np.ndarray:
+    """每分钟成交量（币数 = 张数 × 面值）。
+
+    下载站月份的成交额本来就是 张数 × 面值 × 典型价 估出来的，除回去就是币数；REST 月份的成交额是真实值，
+    除以典型价是近似（分钟内价格变化很小）。
+    """
+    typical = (series.high + series.low + series.close) / 3
+    return np.divide(series.quote, typical, out=np.zeros_like(series.quote), where=typical > 0)
+
+
+def detect_both(series, rule, pool, sides=(1, -1), ratio_volume=None) -> list[tuple]:
     """两个方向的提醒：(分钟下标, 方向, 波次, 涨跌幅, 窗口成交额, 是否突破)，按时间排序。
 
     与 launch_trade_backtest.detect 相同的向量化预筛 + 重复提醒状态机，只是方向分开记录，下跌按最低价判突破、
     再推进按继续下跌的幅度算（LaunchDetector._repeat_outcome 的 sign）。
+    ratio_volume 给出时量比按它算（例如 base_volume 的成交量），窗口成交额门槛仍按成交额。
     """
     n = len(series)
     window, baseline, history = rule.window_minutes, rule.baseline_minutes, rule.history_minutes
@@ -63,13 +75,15 @@ def detect_both(series, rule, pool, sides=(1, -1)) -> list[tuple]:
         return []
     h, lo, c, q = series.high, series.low, series.close, series.quote
     cq = np.concatenate([[0.0], np.cumsum(q)])
+    cv = cq if ratio_volume is None else np.concatenate([[0.0], np.cumsum(ratio_volume)])
     idx = np.arange(history - 1, n)
     window_quote = cq[idx + 1] - cq[idx - window + 1]
-    baseline_sum = cq[idx - window + 1] - cq[idx - history + 1]
+    window_volume = cv[idx + 1] - cv[idx - window + 1]
+    baseline_sum = cv[idx - window + 1] - cv[idx - history + 1]
     change = (c[idx] / c[idx - window] - 1) * 100
     gaps = np.concatenate([[0], np.cumsum(~series.covered)])
     covered = gaps[idx + 1] - gaps[idx - history + 1] == 0
-    ratio_ok = (baseline_sum <= 1e-6) | (window_quote * baseline >= rule.min_volume_ratio * baseline_sum * window)
+    ratio_ok = (baseline_sum <= 1e-6) | (window_volume * baseline >= rule.min_volume_ratio * baseline_sum * window)
     base_ok = covered & ratio_ok & (window_quote >= rule.min_window_quote) & _pool_membership(series, pool)[idx]
     found = []
     for sign in sides:
@@ -100,16 +114,19 @@ def detect_both(series, rule, pool, sides=(1, -1)) -> list[tuple]:
 
 
 def run(args):
-    symbol, multiplier, rule, pool, sides = args
+    symbol, multiplier, rule, pool, sides, ratio_by = args
     series = load_series(symbol, multiplier)
     if series is None:
         return [], [], []
     n = len(series)
     o, h, lo, c, q = series.open, series.high, series.low, series.close, series.quote
     cq = np.concatenate([[0.0], np.cumsum(q)])
+    v = base_volume(series)
+    cv = np.concatenate([[0.0], np.cumsum(v)])
     w, history = rule.window_minutes, rule.history_minutes
     bars_list, meta_list = [], []
-    for i, sign, wave, change, window_quote, broke in detect_both(series, rule, pool, sides):
+    found = detect_both(series, rule, pool, sides, v if ratio_by == "base" else None)
+    for i, sign, wave, change, window_quote, broke in found:
         bars = np.full((4, PRE + POST), np.nan)
         lo_i = i - PRE + 1
         src_lo, src_hi = max(0, lo_i), min(n, i + 1 + POST)
@@ -124,6 +141,7 @@ def run(args):
             bars[:, PRE + int(np.argmax(gap)) :] = np.nan
         base = slice(i - history + 1, i - w + 1)
         base_sum = cq[i - w + 1] - cq[i - history + 1]
+        base_volume_sum = cv[i - w + 1] - cv[i - history + 1]
         pre_end = i - w + 1
         r60 = slice(max(0, i - 59), i + 1)
 
@@ -149,6 +167,9 @@ def run(args):
                 float(h[max(0, i - 43200) : pre_end].max()),
                 float(lo[max(0, i - 43200) : pre_end].min()),
                 float(np.mean((h[r60] - lo[r60]) / c[r60])),
+                float(cv[i + 1] - cv[i - w + 1]) / (base_volume_sum / rule.baseline_minutes * w)
+                if base_volume_sum > 0
+                else 1e6,
             ]
         )
         bars_list.append(bars)
@@ -163,6 +184,9 @@ def main() -> None:
     parser.add_argument("--min-volume", type=float, help="合约池 24 小时成交额下限，默认取配置")
     parser.add_argument("--side", choices=("both", "up", "down"), default="both", help="只导出一个方向可省一半空间")
     parser.add_argument("--config", type=Path, default=REPO / "config" / "default.yaml")
+    parser.add_argument(
+        "--ratio-by", choices=("quote", "base"), default="quote", help="量比按成交额（同检测器）还是成交量（币数）算"
+    )
     args = parser.parse_args()
     # Windows 下子进程重新导入本模块，按环境变量取 POST；父进程启动进程池前设好。
     os.environ["R5_POST"] = str(args.post)
@@ -181,7 +205,7 @@ def main() -> None:
         config.gate.universe_exit_volume_ratio,
         config.gate.universe_refresh_seconds,
     )
-    print(rule, pool, f"post={args.post}", flush=True)
+    print(rule, pool, f"post={args.post} ratio_by={args.ratio_by}", flush=True)
     contracts = load_contracts()
 
     def multiplier(symbol: str) -> float | None:
@@ -192,7 +216,7 @@ def main() -> None:
         return value if value > 0 else None
 
     sides = {"both": (1, -1), "up": (1,), "down": (-1,)}[args.side]
-    jobs = [(symbol, multiplier(symbol), rule, pool, sides) for symbol in sorted(contracts)]
+    jobs = [(symbol, multiplier(symbol), rule, pool, sides, args.ratio_by) for symbol in sorted(contracts)]
     out = RESULTS / args.out
     out.mkdir(parents=True, exist_ok=True)
     meta, names = [], []
