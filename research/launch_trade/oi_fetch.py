@@ -11,7 +11,8 @@ long_users / short_users（多空持仓人数）。
 合约与提醒时刻取自给定数据集里最近 180 天的上涨提醒。
 
 用法（在仓库根目录）：
-    data/backtest/.venv/Scripts/python.exe research/launch_trade/oi_fetch.py r5_p30 r5_p30_1440 r5_p r5_user r5_base
+    $P = "data/backtest/.venv/Scripts/python.exe"
+    & $P research/launch_trade/oi_fetch.py r5_p30 r5_p30_1440 r5_p r5_user r5_base r5_nobreak
 并发高时 Gate 会断开 TLS 连接（实测 24 并发约四分之一失败），默认 8 并发、每秒 8 次；失败的用 --only-missing 补。
 """
 
@@ -69,8 +70,17 @@ def merge_windows(times: np.ndarray, step: int) -> list[tuple[int, int]]:
     return spans
 
 
+def listed_at(rest: GateRestClient, symbol: str) -> int | None:
+    """合约上线时间（秒）；查不到（已下架等）为 None。"""
+    try:
+        return int(float(rest.fetch_contract(symbol)["create_time"]))
+    except (urllib.error.HTTPError, KeyError, TypeError, ValueError):
+        return None
+
+
 def fetch_span(rest: GateRestClient, symbol: str, interval: str, step: int, start: int, end: int) -> list[dict]:
     rows: list[dict] = []
+    listed_checked = False
     while start <= end:
         limit = min(PAGE, (end - start) // step + 1)
         try:
@@ -84,6 +94,13 @@ def fetch_span(rest: GateRestClient, symbol: str, interval: str, step: int, star
                 return rows
             raise
         if not isinstance(page, list) or not page:
+            # from 早于合约上线时间时接口返回空列表、不报错（180 天内新上线的合约），改从上线后的第一个统计点重取一次。
+            if not rows and not listed_checked:
+                listed_checked = True
+                listed = listed_at(rest, symbol)
+                if listed is not None and listed > start:
+                    start = -(-listed // step) * step
+                    continue
             return rows
         rows.extend(item for item in page if isinstance(item, dict) and start <= int(item["time"]) <= end)
         last = int(page[-1]["time"])
@@ -123,7 +140,9 @@ def main() -> None:
     parser.add_argument("datasets", nargs="+", help="取这些导出里最近 180 天的上涨提醒")
     parser.add_argument("--rate", type=float, default=8.0, help="每秒请求数")
     parser.add_argument("--workers", type=int, default=8)
-    parser.add_argument("--only-missing", action="store_true", help="只取上次失败、还没有 5 分钟数据文件的合约")
+    parser.add_argument(
+        "--only-missing", action="store_true", help="只取上次失败（没有 5 分钟数据文件）或 1 小时数据为空的合约"
+    )
     args = parser.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
     OI_1H.mkdir(parents=True, exist_ok=True)
@@ -131,8 +150,9 @@ def main() -> None:
     now = int(time.time())
     alerts = alerts_from(args.datasets, now - KEEP_SECONDS)
     if args.only_missing:
-        # 5 分钟粒度最后保存，文件存在就说明这个合约上次完整取完了。
-        alerts = {s: t for s, t in alerts.items() if not (OI_5M / f"{s}.npz").exists()}
+        # 5 分钟粒度最后保存，文件存在就说明这个合约上次取完了；1 小时为空的再试一次
+        # （已下架的合约每次都会重试，只多几个请求）。
+        alerts = {s: t for s, t in alerts.items() if not (OI_5M / f"{s}.npz").exists() or _empty(OI_1H / f"{s}.npz")}
     rest = GateRestClient(REST_URL, retries=5, rate_limiter=RateLimiter(args.rate, int(args.rate)))
     print(f"{len(alerts)} 个合约，{sum(len(v) for v in alerts.values())} 个提醒时刻", flush=True)
     done = 0
@@ -151,7 +171,11 @@ def main() -> None:
                 empty.append(symbol)
             if done % 50 == 0:
                 print(f"[{done}/{len(alerts)}] {symbol} 1h +{hourly} 5m +{fine}", flush=True)
-    print(f"完成；没有持仓数据的合约 {len(empty)} 个：{' '.join(sorted(empty))}", flush=True)
+    print(f"完成；1 小时持仓为空的合约 {len(empty)} 个：{' '.join(sorted(empty))}", flush=True)
+
+
+def _empty(path: Path) -> bool:
+    return not path.exists() or len(np.load(path)["time"]) == 0
 
 
 if __name__ == "__main__":
