@@ -669,7 +669,7 @@ S5 每半年（本金 %，按平仓时间）：21/10 +6、22/04 +62、22/10 +20�
 问题：同样的成交量，价格涨了成交额就变大，量比（窗口成交额 ÷ 基准期同长度均值）会不会被价格虚增？改按成交量（币数）算会不会更好？
 
 - **做法**：`r5_export.py --ratio-by base` 只把量比改按成交量算（成交额 ÷ 典型价，面值在比值里约掉），窗口成交额门槛、合约池、冷却、波次、
-  出场与组合口径都不变；`--ratio-by quote`（默认）重新导出的 `r5_p30` 与原导出逐条一致（26893 条，S5 +140% / +604%）。脚本 `r5_ratio.py`。
+  出场与组合口径都不变；`--ratio-by quote`（默认）重新导出的 `r5_p30` 与原导出提醒数、S5 结果都相同（26893 条，+140% / +604%）。脚本 `r5_ratio.py`。
 - **偏差是系统性的**：提醒前价格多半已在涨，窗口均价高于基准期均价。成交额口径的提醒里，成交量量比 ÷ 成交额量比的中位数为
   0.94（基准 360 分钟）/ 0.90（基准 1440 分钟），最偏的 5% 低于 0.78 / 0.68。但大多数提醒的量比远高于门槛，五年里两种口径约九成提醒相同。
 - **同门槛 3 倍**（S5，限 5 仓，样本外 / 开发期）：
@@ -704,7 +704,12 @@ foreach ($by in "quote", "base") {
         & $P research/launch_trade/r5_export.py --out rv_p30_${by}_r$r @P30 --set min_volume_ratio=$r --ratio-by $by
     }
 }
-& $P research/launch_trade/r5_ratio.py diff rv_p30   # 基准 1440、日常配置同理导出 rv_p30_1440_<口径>、rv_user_<口径>
+foreach ($by in "quote", "base") {
+    & $P research/launch_trade/r5_export.py --out rv_p30_1440_$by @P30 --set baseline_minutes=1440 --ratio-by $by
+    # 表中第三行：default.yaml 的 launch 段（池 50 万、不要求突破、上限 15%），基准与窗口按当时的取值覆盖。
+    & $P research/launch_trade/r5_export.py --out rv_user_$by --side up --set baseline_minutes=360 --set min_window_quote=100000 --ratio-by $by
+}
+& $P research/launch_trade/r5_ratio.py diff rv_p30 rv_p30_1440 rv_user
 & $P research/launch_trade/r5_ratio.py scan rv_p30
 ```
 
