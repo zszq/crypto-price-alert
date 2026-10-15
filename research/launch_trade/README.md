@@ -1,6 +1,6 @@
 # 放量启动提醒的交易回测
 
-研究「放量启动」提醒（`src/price_alert/launch/`）能不能直接拿来做多：提醒后买入，按不同的入场确认、止损、回撤、止盈与持仓时间平仓，统计半年的收益。**结论见 [FINDINGS.md](FINDINGS.md)。**
+研究「放量启动」提醒（`src/price_alert/launch/`）能不能直接拿来做多（第五轮还试了做空下跌放量）：提醒后买入，按不同的入场确认、止损、回撤、止盈与持仓时间平仓，统计半年的收益。**结论见 [FINDINGS.md](FINDINGS.md)。**
 
 只是研究代码，不参与实时监控，也不在 `ruff check src tests` 与 pytest 的范围内（提交前可单独运行 `ruff check research`）。
 
@@ -40,6 +40,7 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 
 - 下载站的 1 分钟 K 线最早到 2020-01（BTC_USDT；各合约从上线月份开始），另有 5 分钟 / 1 小时 K 线、逐笔成交（`trades`）、资金费率结算（`funding_applies`）、标记价格（`mark_prices`），本研究只用 1 分钟 K 线；
 - `--discover`：合约列表默认只取当前还在交易的合约（再合并此前下载过的），期间下架的币不会进样本。加上它会按下载站背后 S3 存储桶的月度文件列表，把 `--start` 以来存在过、合约列表里没有的币类合约（合约详情接口对已下架合约仍返回面值，按 `contract_type` 为空筛掉股票等）补进 `contracts.json` 再下载。只算币类合约，2021-10 ~ 2025-04 每个月有 39%~47% 原来不在样本里（全是之后下架的），2025-10 约 28%，2026 年以后 2%~11%；补齐后 1145 个合约（原 588 个），各月全部覆盖。面值按当前值，期间改过面值的合约要用 `check_jumps.py` 检查；
+- 已结束的月份先按存储桶的月度文件列表把不存在的（合约, 月份）记入 `raw_missing.json`，只请求实际存在的文件（补五年时请求从约 4.4 万降到约 1 万）；列表取不到时退回逐个请求；
 
 - 已结束的月份从下载站取，没有计价成交额，加载时按 张数 × 合约面值 × 典型价 估算；
 - 下载站还没有的月份用 REST 补，带精确成交额。REST 只保留最近 10000 根 1 分钟 K 线（约 6.9 天），**至少每周更新一次**，否则会留下缺口（回测把缺口当作无数据，不判定、不持仓）；
@@ -100,6 +101,11 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 | `r3_lib.py` | 第三轮：方案定义（`Scheme`）、出场 X、过热过滤（全市场站上 30 天均线占比）、邻域平均、限同时持仓、资金费率敏感性 |
 | `r3_final.py [--period three_years/five_years]` | 第三轮最终排名：比 J 更赚钱的 21 个方案（含过热过滤的 J4、J5、P5）；五年要先用 `update_data.py --start 202109 --discover` 补数据 |
 | `r3_studies.py <研究>` | 第三轮排名表以外的研究：波次、出场网格、持仓、出场形态、特征与时段分档、前推检验、提醒门槛变体、突破拆分、随机对照、确认扫描、市场状态、滚动重选、做空、亏损期与过热过滤（子命令见脚本开头） |
+| `r5_export.py` | 第五轮：两个方向的提醒（`--side up/down/both`，下跌方向与开启 `alert_drops` 的 `LaunchDetector` 一致），只留提醒前 60、后 `--post`（默认 1440）分钟的开高低收，提醒时的特征写进 meta；`--set`、`--min-volume` 同 `r3_export.py` |
+| `r5_lib.py` | 第五轮：多空双向逐笔模拟（与 `simulate_trade` 逐笔一致）、限仓组合（先到先买、同一币不叠仓）、季度 / 去掉最好 N 天 / 夏普 / 回撤，全市场状态（宽度、BTC 均线、中位涨跌、全市场放量） |
+| `r5_studies.py <研究>` | 第五轮：以稳定为目标的方案评估，开发期（2024-10 起）与样本外（2021-10 ~ 2024-09）分开给出；子命令 base、exits、slots、regime、filters、quality、core、hood、costs、hot、final、reference |
+| `r5_scan.py <数据集>` | 第五轮：提醒特征分档，每档在五年各半年段每笔为正的段数 |
+| `r5_regime.py` | 第五轮：开发期多空两个方向的市场状态分档（找做空何时有效时用） |
 
 运行顺序：`update_data.py` → `r1_export.py` / `r2_export.py` → 其余脚本。
 
@@ -114,5 +120,16 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 ```
 
 `r3_studies.py` 的多数研究用 48 小时的默认导出 `r3`（`r3_export.py` 不带参数），`control`、`market`、`regime` 还要先运行 `r3_market.py`，`variants` 要先按其中 `VARIANTS` 的目录名导出各门槛变体（如 `--out v_step3 --set realert_step_percent=3`）。
+
+第五轮（五年，先 `update_data.py --start 202109`、`r3_market.py`）的导出，每份约 1 分钟、1.4~2.8GB：
+
+```powershell
+& $P research/launch_trade/r5_export.py --out r5_p30 --side up --set baseline_minutes=360 --set min_window_quote=300000 --set require_breakout=false --set max_change_percent=none --min-volume 0
+& $P research/launch_trade/r5_export.py --out r5_p30_1440 --side up --set baseline_minutes=1440 --set min_window_quote=300000 --set require_breakout=false --set max_change_percent=none --min-volume 0
+& $P research/launch_trade/r5_export.py --out r5_p --side up --set baseline_minutes=360 --set min_window_quote=100000 --set require_breakout=false --set max_change_percent=none --min-volume 0
+& $P research/launch_trade/r5_export.py --out r5_base --side up --set baseline_minutes=360 --set min_window_quote=100000 --set require_breakout=true
+& $P research/launch_trade/r5_export.py --out r5_user --side up   # 当前 config/default.yaml 的 launch 段
+& $P research/launch_trade/r5_studies.py final --dataset r5_p30
+```
 
 `r2_lib.load(period, source)` 可以读任意一份导出；模拟器按导出的列数判断持仓是否超出数据，12 小时（r2）与更长的导出通用。

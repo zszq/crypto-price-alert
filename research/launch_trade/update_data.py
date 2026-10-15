@@ -243,6 +243,18 @@ def main() -> None:
     print(f"合约 {len(symbols)} 个（含已下架但此前下载过的）")
 
     missing: set[str] = set(json.loads(MISSING.read_text(encoding="utf-8"))) if MISSING.exists() else set()
+    # 先按存储桶的月度文件列表把确定不存在的（合约, 月份）记入 MISSING：补很多年时九成以上的请求是 404，
+    # 逐个请求既慢又容易被限流（并发高了会断 SSL）。列表取不到时退回逐个请求。
+    for month in months:
+        if any(f"{month}/{symbol}" not in missing and not raw_path(symbol, month).exists() for symbol in symbols):
+            if now - month_start(next_month(month)) <= PUBLISH_GRACE:
+                continue
+            try:
+                listed = listed_symbols(month)
+            except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+                print(f"  {month} 文件列表获取失败，逐个请求：{exc}")
+                continue
+            missing.update(f"{month}/{symbol}" for symbol in symbols if symbol not in listed)
     jobs = [
         (symbol, month)
         for month in months
