@@ -286,7 +286,7 @@ JSONL/Webhook 中趋势提醒带 `kind: "trend"`，并有 `period`、`candles`�
 
 ## 提示音
 
-`alerts.beep` 开启时，Windows 与 macOS 播放同一套由代码合成的提示音（`sounds.py`，启动时生成 WAV 文件放在系统临时目录的 `price-alert-sounds` 下），不依赖终端响铃设置；其他平台仍使用终端响铃。音色区分大类，敲击方式区分小类：
+`alerts.beep` 开启时，Windows 与 macOS 播放同一套由代码合成的提示音（`sounds.py`，启动时生成 WAV 文件，Windows 放在 `%LOCALAPPDATA%\price-alert\sounds`、macOS 放在 `~/Library/Caches/price-alert/sounds`，不放系统临时目录，以免运行中被存储感知等清理工具删掉；文件仍被删除时，下一次提醒发声前会自动重新生成并记一条警告日志），不依赖终端响铃设置；其他平台仍使用终端响铃。音色区分大类，敲击方式区分小类：
 
 | 提醒 | 音效 | 打断优先级 |
 |---|---|---|

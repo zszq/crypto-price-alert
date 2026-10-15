@@ -27,7 +27,7 @@ from price_alert.notifier import (
     colorize_alert,
     format_alert,
 )
-from price_alert.sounds import sound_duration
+from price_alert.sounds import sound_duration, synthesize
 
 
 def test_jsonl_notifier_writes_atr_alert(tmp_path):
@@ -397,6 +397,72 @@ def test_windows_sound_failure_is_logged(monkeypatch, capsys, caplog, tmp_path):
 
     assert "[急涨提醒]" in capsys.readouterr().out
     assert "Windows 提示音播放失败" in caplog.text
+
+
+def test_deleted_sound_file_is_regenerated_before_playing(monkeypatch, caplog, tmp_path):
+    winsound = FakeWinsound()
+    patch_windows_sound(monkeypatch, winsound)
+    sound_dir = tmp_path / "sounds"
+
+    async def scenario():
+        notifier = ConsoleNotifier(beep=True, colors=False, sound_dir=sound_dir)
+        await notifier.send(make_alert())
+        await notifier._sound_task
+        # 运行中整个目录被系统清理掉：winsound 找不到文件时静默不出声，必须在播放前补上。
+        for path in sound_dir.iterdir():
+            path.unlink()
+        sound_dir.rmdir()
+        await notifier.send(make_alert())
+        await notifier._sound_task
+
+    asyncio.run(scenario())
+
+    first, second = (Path(path) for path, _ in winsound.calls)
+    assert first == second
+    assert second.read_bytes() == synthesize("short")
+    assert "已重新生成" in caplog.text
+
+
+def test_sound_regeneration_failure_skips_sound_and_throttles_warning(monkeypatch, capsys, caplog, tmp_path):
+    winsound = FakeWinsound()
+    patch_windows_sound(monkeypatch, winsound)
+    sound_dir = tmp_path / "sounds"
+
+    async def scenario():
+        notifier = ConsoleNotifier(beep=True, colors=False, sound_dir=sound_dir)
+        for path in sound_dir.iterdir():
+            path.unlink()
+        sound_dir.rmdir()
+        # 用一个普通文件占住目录位置，重新生成必然失败。
+        sound_dir.write_text("", encoding="utf-8")
+        for _ in range(3):
+            await notifier.send(make_alert())
+
+    asyncio.run(scenario())
+
+    assert winsound.calls == []
+    assert capsys.readouterr().out.count("[急涨提醒]") == 3
+    assert caplog.text.count("重新生成失败") == 1
+
+
+def test_play_and_wait_reports_failure_when_sound_file_cannot_be_regenerated(monkeypatch, tmp_path):
+    winsound = FakeWinsound()
+    patch_windows_sound(monkeypatch, winsound)
+    sound_dir = tmp_path / "sounds"
+
+    async def scenario():
+        notifier = ConsoleNotifier(beep=True, colors=False, sound_dir=sound_dir)
+        assert await notifier.play_and_wait("short")
+        for path in sound_dir.iterdir():
+            path.unlink()
+        sound_dir.rmdir()
+        sound_dir.write_text("", encoding="utf-8")
+        # 上一个任务已结束，不能把它当成这次的播放而报告成功。
+        assert not await notifier.play_and_wait("trend")
+
+    asyncio.run(scenario())
+
+    assert len(winsound.calls) == 1
 
 
 def test_console_notifier_keeps_terminal_bell_on_other_platforms(monkeypatch, capsys):

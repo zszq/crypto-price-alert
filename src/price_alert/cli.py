@@ -187,7 +187,7 @@ async def preview_sounds() -> None:
     for name in SOUND_NAMES:
         print(f"{SOUND_LABELS[name]}（打断优先级 {SOUND_PRIORITY[name]}）", flush=True)
         if not await notifier.play_and_wait(name):
-            raise SystemExit("当前平台没有内置提示音（只支持 Windows 与 macOS），提醒时使用终端响铃")
+            raise SystemExit("无法播放内置提示音：只支持 Windows 与 macOS，或音效文件生成失败（见上方日志）")
         # 每种之间留出停顿，前后两种不会听成一个声音。
         await asyncio.sleep(SOUND_PREVIEW_PAUSE_SECONDS)
 

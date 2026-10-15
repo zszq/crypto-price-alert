@@ -1,9 +1,11 @@
 import io
 import math
+import tempfile
 import wave
 from array import array
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from price_alert import sounds
 from price_alert.launch.alerts import LaunchAlert
@@ -143,6 +145,20 @@ def test_families_share_timbre_so_each_kind_is_recognizable():
     # 「敲两下」在两类里都表示连续/延续。
     assert len(specs["streak"].strikes) == len(specs["trend_continuing"].strikes) == 2
     assert len(specs["short"].strikes) == len(specs["trend"].strikes) == 1
+
+
+def test_default_sound_dir_avoids_system_temp(monkeypatch, tmp_path):
+    # 系统临时目录会被存储感知等清理工具在运行中清空，导致提示音静默失效。
+    monkeypatch.setattr("price_alert.sounds.sys.platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    assert sounds.default_sound_dir() == tmp_path / "price-alert" / "sounds"
+
+    monkeypatch.delenv("LOCALAPPDATA")
+    assert sounds.default_sound_dir() == Path(tempfile.gettempdir()) / "price-alert-sounds"
+
+    monkeypatch.setattr("price_alert.sounds.sys.platform", "darwin")
+    monkeypatch.setattr("price_alert.sounds.Path.home", lambda: tmp_path)
+    assert sounds.default_sound_dir() == tmp_path / "Library" / "Caches" / "price-alert" / "sounds"
 
 
 def test_sound_files_are_written_once_and_named_by_content(tmp_path):

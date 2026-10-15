@@ -14,6 +14,7 @@ import hashlib
 import io
 import math
 import os
+import sys
 import tempfile
 import wave
 from array import array
@@ -202,6 +203,14 @@ def _add_strike(
 
 
 def default_sound_dir() -> Path:
+    # 不放系统临时目录：Windows 的存储感知、各种清理工具会在程序运行中删掉那里的文件，
+    # 而 winsound 找不到文件时不报错也不出声，提示音会悄无声息地失效。
+    if sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            return Path(local_app_data) / "price-alert" / "sounds"
+    elif sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "price-alert" / "sounds"
     return Path(tempfile.gettempdir()) / "price-alert-sounds"
 
 

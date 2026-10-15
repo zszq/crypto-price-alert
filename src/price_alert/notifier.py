@@ -41,6 +41,8 @@ WINDOWS_PLAYBACK_MARGIN_SECONDS = 0.3
 # 必须完整播放的音效开播后这么久以内到达的同类提醒，由正在播放的这一声代表，不再补响：
 # 同一分钟结算的一批放量启动几乎同时到达，听起来就是一起响的，补响反而像重复。
 MUST_PLAY_MERGE_SECONDS = 0.3
+# 提示音文件重新生成失败的警告最短间隔：失败通常是持续性的（目录不可写），每条提醒都记一次会刷屏。
+SOUND_REGENERATE_LOG_INTERVAL_SECONDS = 60.0
 # 控制台颜色只用标准 16 色，各终端都能显示。
 # 正文：急涨绿色、急跌红色。
 SURGE_COLOR = Fore.GREEN
@@ -134,7 +136,9 @@ class ConsoleNotifier:
         self.beep = beep
         self.colors = colors
         self._macos = sys.platform == "darwin"
-        self._sound_files = self._prepare_sounds(sound_dir) if beep else None
+        self._sound_dir = sound_dir or sounds.default_sound_dir()
+        self._sound_files = self._prepare_sounds() if beep else None
+        self._last_regenerate_failure: float | None = None
         # 持有引用，避免后台播放任务被垃圾回收，也用于判断上一次是否仍在播放。
         self._sound_task: asyncio.Task[None] | None = None
         self._playing_priority = 0
@@ -144,14 +148,14 @@ class ConsoleNotifier:
             # Windows 控制台实现差异较大，初始化兼容层可避免直接显示转义字符。
             just_fix_windows_console()
 
-    def _prepare_sounds(self, sound_dir: Path | None) -> dict[sounds.SoundName, Path] | None:
+    def _prepare_sounds(self) -> dict[sounds.SoundName, Path] | None:
         # macOS 终端通常会忽略或禁用 ASCII 响铃，Windows 的响铃声由终端和系统设置决定，
         # 两边听到的不一样，也分不出提醒类型；所以这两个平台都播放同一份合成音效。
         # 其他平台没有可依赖的播放器，仍用终端响铃。
         if not self._macos and not (sys.platform == "win32" and winsound is not None):
             return None
         try:
-            return sounds.write_sound_files(sound_dir or sounds.default_sound_dir())
+            return sounds.write_sound_files(self._sound_dir)
         except OSError as exc:
             LOGGER.warning("提示音文件生成失败，改用终端响铃：%s", exc)
             return None
@@ -166,19 +170,42 @@ class ConsoleNotifier:
         terminal_bell = "\a" if self.beep and self._sound_files is None else ""
         print(f"{terminal_bell}{text}\n{url_line}", flush=True)
         if self._sound_files is not None:
-            name = sounds.sound_for(alert)
-            self._play(name, self._sound_files[name])
+            self._play(sounds.sound_for(alert))
 
     async def play_and_wait(self, name: sounds.SoundName) -> bool:
-        """试听用：播放一种音效并等它播完；当前平台没有内置音效时返回 False。"""
+        """试听用：播放一种音效并等它播完；当前平台没有内置音效或音效文件不可用时返回 False。"""
         if self._sound_files is None:
             return False
-        self._play(name, self._sound_files[name])
-        if self._sound_task is not None:
-            await self._sound_task
+        # 必须以这次是否真的开播为准：文件重新生成失败时没有新任务，
+        # 只看 _sound_task 会等到上一个早已结束的任务，误报为播放成功。
+        if not self._play(name):
+            return False
+        assert self._sound_task is not None
+        await self._sound_task
         return True
 
-    def _play(self, name: sounds.SoundName, path: Path) -> None:
+    def _sound_path(self, name: sounds.SoundName, now: float) -> Path | None:
+        """返回可播放的音效文件；文件在运行中被删掉时重新生成，生成失败返回 None。"""
+        assert self._sound_files is not None
+        path = self._sound_files[name]
+        # 每次播放前都检查：只在启动时生成一次的话，文件被清理工具删掉后 winsound 静默不出声，
+        # 日志里也没有任何痕迹，看起来就是“跑着跑着不响了”。一次 stat 的开销可以忽略。
+        if path.exists():
+            return path
+        try:
+            self._sound_files = sounds.write_sound_files(self._sound_dir)
+        except OSError as exc:
+            # 目录持续不可写时每条提醒都会走到这里，限流避免刷屏；文字提醒不受影响。
+            last = self._last_regenerate_failure
+            if last is None or now - last >= SOUND_REGENERATE_LOG_INTERVAL_SECONDS:
+                self._last_regenerate_failure = now
+                LOGGER.warning("提示音文件已被删除，重新生成失败，本次不发声：%s", exc)
+            return None
+        LOGGER.warning("提示音文件已被删除（可能是系统清理了文件），已重新生成：%s", self._sound_dir)
+        return self._sound_files[name]
+
+    def _play(self, name: sounds.SoundName) -> bool:
+        """返回这次是否开始了新的播放；被跳过、并入补响或文件不可用时返回 False。"""
         # 音效不到 1 秒，但等待播完会让集中异动时的文字提醒逐条排队延迟，所以放到后台。
         # 正在播放时只让更重要的提醒打断它，同级或更低的跳过：一波异动只响一次，
         # 又不会因为秒级异动正在响而漏掉放量启动的声音。
@@ -186,17 +213,23 @@ class ConsoleNotifier:
         now = asyncio.get_running_loop().time()
         if self._sound_task is not None and not self._sound_task.done():
             if priority < self._playing_priority:
-                return
+                return False
             if priority == self._playing_priority:
                 # 必须完整播放的音效不被同类打断，也不丢：播完后补响一次（多条合并成一次）。
                 if name in sounds.MUST_PLAY and now - self._playing_since >= MUST_PLAY_MERGE_SECONDS:
                     self._replay_pending = True
-                return
+                return False
+        # 放在优先级判断之后：被跳过的提醒不需要文件，也不必为它重新生成。
+        path = self._sound_path(name, now)
+        if path is None:
+            return False
+        if self._sound_task is not None and not self._sound_task.done():
             self._sound_task.cancel()
         self._playing_priority = priority
         self._playing_since = now
         self._replay_pending = False
         self._sound_task = asyncio.create_task(self._play_sound(name, path), name="console-alert-sound")
+        return True
 
     async def _play_sound(self, name: sounds.SoundName, path: Path) -> None:
         while True:
