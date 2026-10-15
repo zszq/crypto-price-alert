@@ -8,8 +8,8 @@
     & $P research/launch_trade/r3_studies.py exits         # 出场网格（按 30 种入场平均）与回撤幅度的尖峰
     & $P research/launch_trade/r3_studies.py holds         # 持仓 10~47 小时
     & $P research/launch_trade/r3_studies.py shapes        # 部分止盈、延迟启用回撤、时间止损、保本、收紧回撤
-    & $P research/launch_trade/r3_studies.py features      # 提醒特征分档、逐小时、距 30 天 / 7 天高点（6 段）
-    & $P research/launch_trade/r3_studies.py walkforward   # 前 18 个月选出场、最差时段、距高点阈值，后 18 个月检验
+    & $P research/launch_trade/r3_studies.py features      # 提醒特征分档、距 30 天 / 7 天高点（6 段）
+    & $P research/launch_trade/r3_studies.py walkforward   # 前 18 个月选出场、距高点阈值，后 18 个月检验
     & $P research/launch_trade/r3_studies.py variants      # 提醒门槛变体（需先导出对应目录）
     & $P research/launch_trade/r3_studies.py breakout      # 不要求突破的提醒中，已突破 / 未突破两部分
     & $P research/launch_trade/r3_studies.py control       # 随机（合约, 小时）买入对照（需先运行 r3_market.py）
@@ -34,7 +34,6 @@ from paths import RESULTS
 from r2_delays import DELAYS
 from r2_lib import BEIJING, BEST, PRE, alert_features, fold_sums
 from r3_lib import (
-    BAD_HOURS,
     ENTRIES,
     HOT_BREADTH,
     TRAIL_SCALE,
@@ -211,9 +210,6 @@ def study_features(args) -> None:
             print(f"  {name} 分位点 {np.round(edges, 3)}")
             for q in range(5):
                 print(f"    档{q + 1} " + bucket_line(nets, ok & (bucket == q), fold))
-        print("  逐小时（北京时，按提醒 K 线收盘时刻）")
-        for hour in range(24):
-            print(f"    {hour:2d}点 " + bucket_line(nets, mask & (book.hour == hour), fold))
 
 
 def study_walkforward(args) -> None:
@@ -242,14 +238,6 @@ def study_walkforward(args) -> None:
         later = np.array([g[1] for g in grid])
         print(f"{len(grid)} 组出场的后18月：中位 {np.median(later):+.0f}，胜过 J 的 {np.mean(later > j[1]):.0%}")
         nets = neighborhood_nets(book, grid[0][2])
-        by_hour = [
-            [(nets[:, waves & part & (book.hour == h)].sum(1) * 100).mean() for h in range(24)]
-            for part in (early, ~early)
-        ]
-        windows = sorted((sum(by_hour[0][(s + k) % 24] for k in range(3)), s) for s in range(24))
-        for value, s in windows[:3]:
-            hours = [(s + k) % 24 for k in range(3)]
-            print(f"前18月最差 3 小时 {hours}：前 {value:+.0f} → 后 {sum(by_hour[1][h] for h in hours):+.0f}")
         for threshold in (-0.5, -0.4, -0.3, -0.2, -0.1):
             cut = waves & (distance < threshold)
             a, b = ((nets[:, cut & part].sum(1) * 100).mean() for part in (early, ~early))
@@ -323,7 +311,7 @@ def study_confirm(args) -> None:
             span = slice(PRE - 366, PRE - 6)
             volatility = np.nanmean((bars[:, 1, span] - bars[:, 2, span]) / bars[:, 3, span], 1)
         print(f"===== {dataset}（出场 X，等 3/5/7/10/12/15/20 分钟的平均）")
-        for label, mask in (("第1波", book.first), ("所有波次 避开7~10点", ~np.isin(book.hour, BAD_HOURS))):
+        for label, mask in (("第1波", book.first), ("所有波次", np.ones_like(book.first))):
             gains = {}
             for delay in (3, 5, 7, 10, 12, 15, 20):
                 # 不设确认先全部模拟，再按入场时的涨幅筛：同一笔交易的结果与设了确认时相同。
@@ -373,7 +361,7 @@ def study_market(args) -> None:
         net, entry_at, exit_at = book.run(X)
         nets = neighborhood_nets(book, X, scales=(0.9, 1.0, 1.1))
         fold = folds_of(book)
-        for label, mask in (("第1波", book.first), ("所有波次 避开7~10点", ~np.isin(book.hour, BAD_HOURS))):
+        for label, mask in (("第1波", book.first), ("所有波次", np.ones_like(book.first))):
             ok = mask & ~np.isnan(net)
             # 策略自身反馈：提醒之前 days 天内已经平仓的交易的合计。
             t_out = times(data, entry_at, exit_at)[1][ok]
@@ -406,7 +394,7 @@ def study_rolling(args) -> None:
         months = sorted(set(month))
         nets = np.array([np.nan_to_num(book.run(c)[0]) for c in configs])
         j_net = np.nan_to_num(book.run(BEST)[0])
-        for label, mask in (("第1波", book.first), ("所有波次 避开7~10点", ~np.isin(book.hour, BAD_HOURS))):
+        for label, mask in (("第1波", book.first), ("所有波次", np.ones_like(book.first))):
             table = np.array([[nets[k, mask & (month == m)].sum() * 100 for m in months] for k in range(len(configs))])
             test = [i for i, m in enumerate(months) if m >= 202404]
             j_sum = sum(j_net[mask & (month == months[i])].sum() * 100 for i in test)

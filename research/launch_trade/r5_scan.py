@@ -22,7 +22,6 @@ f.update(
         "60分振幅": d.meta["range_60"],
         "基准区间": d.meta["base_high"] / d.meta["base_low"] - 1,
         "波次": d.wave.astype(float),
-        "北京时": (((d.closed_at // 3600) + 8) % 24).astype(float),
     }
 )
 base = (d.direction == 1) & ~np.isnan(tr.net) & (d.closed_at >= HOLDOUT_START)

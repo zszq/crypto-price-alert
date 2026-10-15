@@ -551,7 +551,6 @@ def alert_features(data: Data) -> dict[str, np.ndarray]:
         "BTC1h": m["btc_1h"],
         "BTC4h": m["btc_4h"],
         "BTC24h": m["btc_24h"],
-        "北京时": ((t // 3600) + 8) % 24,
         # 市场热度：前 60 分钟内全市场（全部波次）的提醒数。
         "前1h全市场提醒数": (np.searchsorted(ordered, t) - np.searchsorted(ordered, t - 3600)).astype(float),
         "价格": alert_price,

@@ -12,6 +12,7 @@
   - `recent/<合约>.csv`：下载站还没发布的月份用 REST 补（列：时间、开、高、低、收、计价成交额），每次只追加新分钟；`.spans` 记录每次实际覆盖的区间。
   - `contracts.json`：合约面值等（合并保存，之后下架的合约也保留）。
   - `cache/<合约>.npz`：合并后的分钟序列缓存，来源文件变化或加载规则改版（`load_data.CACHE_VERSION`）时自动重建。连续一整天以上完全没有成交的空档（停牌、下架后重新上线）按无数据处理。
+  - `oi_1h/`、`oi_5m/<合约>.npz`：历史持仓（`oi_fetch.py`），REST 只保留最近 180 天，过期的取不回来，删掉就只能从最近 180 天重新开始。
   - `results/`：回测与研究的输出（汇总、逐笔明细、导出的研究数据、网格结果）。
   - `.venv/`：回测专用虚拟环境。
 
@@ -99,14 +100,17 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 | `r3_export.py` | 第三轮：与 `r2_export.py` 相同，但提醒后保留的分钟数可调（`--post`，默认 48 小时），`--set 字段=值` 覆盖 `launch` 段、`--min-volume` 覆盖合约池下限，导出到 `results/<--out>` |
 | `r3_market.py` | 第三轮：全市场逐小时收盘价与成交额（上涨币占比、活跃度等市场状态的原料），输出 `results/r3_market.npz` |
 | `r3_lib.py` | 第三轮：方案定义（`Scheme`）、出场 X、过热过滤（全市场站上 30 天均线占比）、邻域平均、限同时持仓、资金费率敏感性 |
-| `r3_final.py [--period three_years/five_years]` | 第三轮最终排名：比 J 更赚钱的 21 个方案（含过热过滤的 J4、J5、P5）；五年要先用 `update_data.py --start 202109 --discover` 补数据 |
-| `r3_studies.py <研究>` | 第三轮排名表以外的研究：波次、出场网格、持仓、出场形态、特征与时段分档、前推检验、提醒门槛变体、突破拆分、随机对照、确认扫描、市场状态、滚动重选、做空、亏损期与过热过滤（子命令见脚本开头） |
+| `r3_final.py [--period three_years/five_years]` | 第三轮最终排名：12 个方案（含过热过滤的 J4、P5；含时段过滤的方案是过拟合，已删除）；五年要先用 `update_data.py --start 202109 --discover` 补数据 |
+| `r3_studies.py <研究>` | 第三轮排名表以外的研究：波次、出场网格、持仓、出场形态、特征分档、前推检验、提醒门槛变体、突破拆分、随机对照、确认扫描、市场状态、滚动重选、做空、亏损期与过热过滤（子命令见脚本开头） |
 | `r5_export.py` | 第五轮：两个方向的提醒（`--side up/down/both`，下跌方向与开启 `alert_drops` 的 `LaunchDetector` 一致），只留提醒前 60、后 `--post`（默认 1440）分钟的开高低收，提醒时的特征写进 meta；`--set`、`--min-volume` 同 `r3_export.py`；`--ratio-by base` 量比改按成交量（币数）算（默认 `quote` 与检测器一致） |
 | `r5_lib.py` | 第五轮：多空双向逐笔模拟（与 `simulate_trade` 逐笔一致）、限仓组合（先到先买、同一币不叠仓）、季度 / 去掉最好 N 天 / 夏普 / 回撤，全市场状态（宽度、BTC 均线、中位涨跌、全市场放量） |
-| `r5_studies.py <研究>` | 第五轮：以稳定为目标的方案评估，开发期（2024-10 起）与样本外（2021-10 ~ 2024-09）分开给出；子命令 base、exits、slots、regime、filters、quality、core、hood、costs、hot、final、reference |
+| `r5_studies.py <研究>` | 第五轮：以稳定为目标的方案评估，开发期（2024-10 起）与样本外（2021-10 ~ 2024-09）分开给出；子命令 base、exits、slots、regime、filters、quality、core、hood、costs、hot、final |
 | `r5_scan.py <数据集>` | 第五轮：提醒特征分档，每档在五年各半年段每笔为正的段数 |
 | `r5_regime.py` | 第五轮：开发期多空两个方向的市场状态分档（找做空何时有效时用） |
 | `r5_ratio.py diff/scan <前缀>` | 量比按成交额还是成交量：同门槛下的提醒差异与 S5 结果（`diff`），两种口径 × 量比门槛 2.5~3.5（`scan`）；导出命令见 FINDINGS.md 对应一节 |
+| `r5_rank.py [--dataset 数据集]` | 历次方案统一重排：第三、四轮里不含时间段条件的 12 个方案与第五轮 S5 等共 19 个，按第五轮口径排名；`--dataset` 只用一份提醒（如当前 `default.yaml` 对应的 `r5_nobreak`）比较各交易规则；需先导出 `r5_nobreak`（命令见 FINDINGS.md 对应一节） |
+| `oi_fetch.py <数据集...>` | 取导出里最近 180 天上涨提醒涉及合约的历史持仓（REST `contract_stats`，只保留 180 天）：1 小时粒度整段存 `oi_1h/`，5 分钟粒度只取提醒前 90 分钟存 `oi_5m/`；`--only-missing` 补上次失败的合约。**每周运行一次**才能积累超过 180 天的数据 |
+| `r5_oi.py <研究> [数据集...]` | 持仓价值过滤：持仓特征分档（`buckets`）、各方案加持仓过滤（`filters`）、与 24h 成交额同保留比例对照（`proxy`）、随机对照（`control`）、五年 24h 成交额对照（`volume`）；结论见 FINDINGS.md「持仓价值过滤」 |
 
 运行顺序：`update_data.py` → `r1_export.py` / `r2_export.py` → 其余脚本。
 

@@ -19,9 +19,6 @@ from r3_market import hourly_breadth
 # 三年里按 30 种入场的平均选出，见 FINDINGS.md「第三轮」。
 EXIT_X = dict(stop_support_gap=0.05, stop_max=0.2, trail_atr=3, hold=1080)
 X = replace(BEST, **EXIT_X)
-# 北京时间 7~10 点（UTC 23 点到次日 2 点，跨过日线开盘与资金费率结算）：按提醒 K 线的收盘时刻判断。
-# 当前提醒规则下三年里稳定亏钱、前推检验也成立；不要求突破时（v_nobreak）不成立，见 FINDINGS.md。
-BAD_HOURS = (7, 8, 9)
 # 邻域：入场等待 × 确认涨幅，与回撤幅度 × 倍数。
 ENTRIES = [(delay, confirm) for delay in (5, 7, 8, 10, 12, 15) for confirm in (0.0, 0.005, 0.01, 0.015, 0.02)]
 TRAIL_SCALE = (0.8, 0.9, 1.0, 1.1, 1.2)
@@ -32,7 +29,7 @@ FUNDING_PER_8H = 0.0003
 CAPS = (10, 20)
 # 市场过热：全市场站上 30 天均线的合约占比超过这个值。三年里过热时 J 类提醒（见 Book.core）6 段全亏，
 # 越热亏得越多（70%/75%/80%/85% 时每笔 -0.32%/-0.52%/-0.73%/-1.05%）；只用前 18 个月选阈值，后 18 个月也成立。
-# 取 85% 而不是 80%：三年里 85% 对 J、J3、P3 的改进都更大，只用前 18 个月选也会选 85%；80% 还会滤掉 2026-09 下旬
+# 取 85% 而不是 80%：三年里 85% 对 J、P3 的改进都更大，只用前 18 个月选也会选 85%；80% 还会滤掉 2026-09 下旬
 # J 赚钱的几天。阈值附近很敏感：2026-09-23 宽度到过 84.9%。见 FINDINGS.md「亏损期分析与过热过滤」。
 HOT_BREADTH = 0.85
 
@@ -45,7 +42,6 @@ class Scheme:
     dataset: str  # data/backtest/results 下的目录
     rule: Rule
     all_waves: bool = False
-    skip_hours: tuple[int, ...] = ()
     # 市场过热（站上 30 天均线的合约占比超过这个值）时不买；None 不过滤。
     hot_breadth: float | None = None
     # 过热时只跳过 J 类提醒（Book.core），其余照买：过热时失效的是已突破的追高类提醒，区间内放量的反而还赚钱。
@@ -58,7 +54,6 @@ class Book:
     def __init__(self, dataset: str, period: str = "three_years") -> None:
         self.data: Data = load(period, RESULTS / dataset)
         self.engine = Engine(self.data)
-        self.hour = ((self.data.closed_at // 3600) + 8) % 24
         self.first = self.data.wave == 1
         self._breadth: np.ndarray | None = None
 
@@ -83,8 +78,6 @@ class Book:
     def mask(self, scheme: Scheme, rule: Rule | None = None) -> np.ndarray:
         """方案选中的提醒；rule 换了等待分钟时（邻域、换等待）按它判断 J 类。"""
         mask = np.ones_like(self.first) if scheme.all_waves else self.first.copy()
-        if scheme.skip_hours:
-            mask &= ~np.isin(self.hour, scheme.skip_hours)
         if scheme.hot_breadth is not None:
             # 宽度缺失（市场数据没覆盖到）按不过热处理，与不过滤时一致。
             hot = np.nan_to_num(self.breadth, nan=0.0) > scheme.hot_breadth

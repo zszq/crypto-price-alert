@@ -351,24 +351,8 @@ def study_final(book: Book) -> None:
         print(monthly(book, s))
 
 
-def study_reference(book: Book) -> None:
-    """前几轮推荐在限仓口径下（在 r5_base 上运行，J5 近似：所有波次、避开 7~10 点、宽度 > 85% 不买）。"""
-    hours = ((book.data.closed_at // 3600) + 8) % 24
-    rows = []
-    for slots in (5, 10):
-        base = Scheme(f"J3 限{slots}", J, slots=slots)
-        j5 = replace(base, name=f"J5 限{slots}", filters=(("宽度30", -np.inf, 0.85),))
-        # 避开 7~10 点：用一个临时特征。
-        book.features["北京时"] = hours.astype(float)
-        for sch in (base, j5):
-            rows.append(summary(book, replace(sch, filters=(*sch.filters, ("北京时", 10, 30)))))
-            rows.append(summary(book, replace(sch, name=sch.name + "·含7~10点")))
-    show(rows)
-
-
 STUDIES = {
     "final": study_final,
-    "reference": study_reference,
     "costs": study_costs,
     "hot": study_hot,
     "core": study_core,
