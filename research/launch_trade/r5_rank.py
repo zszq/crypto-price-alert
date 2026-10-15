@@ -16,7 +16,7 @@
     & $P research/launch_trade/r5_export.py --out r5_nobreak --side up --set baseline_minutes=360 `
         --set min_window_quote=100000 --set require_breakout=false
     & $P research/launch_trade/r5_rank.py
-    & $P research/launch_trade/r5_rank.py --dataset r5_nobreak   # 当前 default.yaml 的提醒规则（与 r5_nobreak 相同）
+    & $P research/launch_trade/r5_rank.py --dataset r5_nobreak   # 基准、窗口取代码默认值（360、10 万）
 """
 
 from __future__ import annotations
@@ -117,7 +117,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--dataset",
-        help="只用这一份提醒（如按当前 default.yaml 导出的数据集）跑 12 个方案的交易规则；不给时按各方案原来的提醒规则",
+        help="只用这一份提醒（如 r5_nobreak）跑 12 个方案的交易规则；不给时按各方案原来的提醒规则",
     )
     args = parser.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")

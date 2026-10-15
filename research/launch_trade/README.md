@@ -108,9 +108,9 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 | `r5_scan.py <数据集>` | 第五轮：提醒特征分档，每档在五年各半年段每笔为正的段数 |
 | `r5_regime.py` | 第五轮：开发期多空两个方向的市场状态分档（找做空何时有效时用） |
 | `r5_ratio.py diff/scan <前缀>` | 量比按成交额还是成交量：同门槛下的提醒差异与 S5 结果（`diff`），两种口径 × 量比门槛 2.5~3.5（`scan`）；导出命令见 FINDINGS.md 对应一节 |
-| `r5_rank.py [--dataset 数据集]` | 历次方案统一重排：第三、四轮里不含时间段条件的 12 个方案与第五轮 S5 等共 19 个，按第五轮口径排名；`--dataset` 只用一份提醒（如当前 `default.yaml` 对应的 `r5_nobreak`）比较各交易规则；需先导出 `r5_nobreak`（命令见 FINDINGS.md 对应一节） |
+| `r5_rank.py [--dataset 数据集]` | 历次方案统一重排：第三、四轮里不含时间段条件的 12 个方案与第五轮 S5 等共 19 个，按第五轮口径排名；`--dataset` 只用一份提醒（如 `r5_nobreak`）比较各交易规则；需先导出 `r5_nobreak`（命令见 FINDINGS.md 对应一节） |
 | `oi_fetch.py <数据集...>` | 取导出里最近 180 天上涨提醒涉及合约的历史持仓（REST `contract_stats`，只保留 180 天）：1 小时粒度整段存 `oi_1h/`，5 分钟粒度只取提醒前 90 分钟存 `oi_5m/`；`--only-missing` 补上次失败的合约。**每周运行一次**才能积累超过 180 天的数据 |
-| `r5_oi.py <研究> [数据集...]` | 持仓价值过滤：持仓特征分档（`buckets`）、各方案加持仓过滤（`filters`）、与 24h 成交额同保留比例对照（`proxy`）、随机对照（`control`）、五年 24h 成交额对照（`volume`）；结论见 FINDINGS.md「持仓价值过滤」 |
+| `r5_oi.py <研究> [数据集...]` | 持仓价值过滤：持仓特征分档（`buckets`）、各方案加持仓过滤（`filters`）、与 24h 成交额同保留比例对照（`proxy`）、随机对照（`control`）、五年 24h 成交额对照（`volume`）、J4 与 P5（`jp`）；结论见 FINDINGS.md「持仓价值过滤」 |
 
 运行顺序：`update_data.py` → `r1_export.py` / `r2_export.py` → 其余脚本。
 
