@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -164,6 +165,20 @@ def test_trend_replay_without_enabled_periods_exits_readably():
 
     with pytest.raises(SystemExit, match="没有启用任何周期"):
         cli.trend_replay(config, args)
+
+
+def test_simulate_skips_windows_when_move_is_disabled(capsys):
+    config = AppConfig.model_validate(
+        {"move": {"enabled": False}, "trend": {"enabled": False}, "alerts": {"console_colors": False}}
+    )
+
+    assert asyncio.run(cli.simulate(config)) == 1 == cli.expected_simulated_alerts(config)
+    assert "急涨提醒" not in capsys.readouterr().out
+
+
+def test_lock_path_is_per_config_file_and_default_keeps_its_old_name():
+    assert cli.lock_path("config/default.yaml") == Path("data/price-alert.lock")
+    assert cli.lock_path("config/launch-trade.yaml") == Path("data/price-alert-launch-trade.lock")
 
 
 def test_simulate_includes_one_launch_alert(capsys):

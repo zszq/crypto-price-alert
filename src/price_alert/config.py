@@ -117,6 +117,8 @@ class MoveConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # 只跑放量启动（例如给交易单独开一个实例）时关掉，不必为用不到的合约订阅成交、预热 K 线。
+    enabled: bool = True
     # 合约池门槛与趋势、放量启动一样放在本段：它只决定这个检测器监控哪些合约，与交易所连接无关。
     min_volume_24h_quote: float = Field(default=10_000_000, gt=0)
     candle_interval: Literal["1m", "5m", "15m"] = "1m"
@@ -168,6 +170,13 @@ class AppConfig(BaseModel):
     # 放量启动提醒，与上面两者相互独立；模型定义在 launch 包内，删除该功能时只需去掉这一项。
     launch: LaunchConfig = Field(default_factory=LaunchConfig)
     alerts: AlertConfig = Field(default_factory=AlertConfig)
+
+    @model_validator(mode="after")
+    def validate_any_detector(self) -> AppConfig:
+        if not (self.move.enabled or self.trend.enabled or self.launch.enabled):
+            # 没有检测器时 run 会一直按合约池刷新失败重试，不如在加载配置时直接指出。
+            raise ValueError("move、trend、launch 至少要启用一个")
+        return self
 
 
 def load_config(path: str | Path) -> AppConfig:

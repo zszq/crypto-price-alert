@@ -95,17 +95,19 @@ def build_launch_detector(
 
 
 def build_detectors(config: AppConfig) -> list[MonitoredDetector]:
-    """实时监控运行的全部检测器，顺序与 config/default.yaml 一致；放量、趋势提醒关闭时不创建，不多拉 K 线。"""
+    """实时监控运行的全部检测器，顺序与 config/default.yaml 一致；关闭的检测器不创建，不多订阅、不多拉 K 线。"""
     move = config.move
-    detectors = [
-        MonitoredDetector(
-            "ATR 异动",
-            build_detector(config),
-            move.candle_interval,
-            move.warmup_candles,
-            VolumeRange(move.min_volume_24h_quote),
+    detectors: list[MonitoredDetector] = []
+    if move.enabled:
+        detectors.append(
+            MonitoredDetector(
+                "ATR 异动",
+                build_detector(config),
+                move.candle_interval,
+                move.warmup_candles,
+                VolumeRange(move.min_volume_24h_quote),
+            )
         )
-    ]
     if config.launch.enabled:
         launch = build_launch_detector(config.launch)
         volume = VolumeRange(config.launch.min_volume_24h_quote, config.launch.max_volume_24h_quote)

@@ -168,7 +168,17 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 
 停止监控请按 `Ctrl+C`。
 
-一个监控进程会同时订阅全部符合条件的交易对。放量启动默认监控 24 小时成交额超过 100 万 USDT 的约 100 个合约，启动时要为它们各拉一次 1 分钟 K 线（受 REST 限速约束，约十几秒；下限设为 0 时约 600 个、约 1.5 分钟）。预热按检测器分批：秒级异动与趋势用到的合约先预热、先订阅，启动几秒后就开始接收成交；只有放量启动用到的合约随后预热完再增量订阅，断线回补也按同样的顺序。程序使用进程锁阻止重复启动；如果已有监控进程运行，再次启动会直接退出，从而避免同一行情被重复提醒。
+一个监控进程会同时订阅全部符合条件的交易对。放量启动默认监控 24 小时成交额超过 100 万 USDT 的约 100 个合约，启动时要为它们各拉一次 1 分钟 K 线（受 REST 限速约束，约十几秒；下限设为 0 时约 600 个、约 1.5 分钟）。预热按检测器分批：秒级异动与趋势用到的合约先预热、先订阅，启动几秒后就开始接收成交；只有放量启动用到的合约随后预热完再增量订阅，断线回补也按同样的顺序。程序使用进程锁阻止重复启动：同一份配置文件已有进程在运行时，再次启动会直接退出，从而避免同一行情被重复提醒。锁按配置文件区分（`config/default.yaml` 用 `data/price-alert.lock`，其他配置用 `data/price-alert-<文件名>.lock`），不同配置可以同时运行。
+
+### 交易用的放量实例
+
+`config/launch-trade.yaml` 是给交易单独准备的一份配置：只开放量启动（`move`、`trend` 都关闭），参数取回测第五轮推荐的方案（窗口成交额 ≥ 30 万、不要求突破、不设涨幅上限、合约池不设下限、只做多，见 [research/launch_trade/FINDINGS.md](research/launch_trade/FINDINGS.md)「第五轮」），提醒写到 `data/alerts/launch-trade.jsonl`。与日常监控同时运行，日常监控调参不影响交易信号：
+
+```powershell
+.\.venv\Scripts\python.exe -m price_alert.cli run --config config/launch-trade.yaml
+```
+
+或双击 `start-launch-trade.bat`。本程序只发提醒、不下单；过热不买、入场确认、止损与回撤平仓、最长持有、限 5 仓这些交易规则写在该文件开头的注释里，回测数字以照做为前提。
 
 查看当前满足成交额条件的合约：
 
@@ -188,7 +198,7 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 .\.venv\Scripts\python.exe -m price_alert.cli simulate
 ```
 
-模拟会为每个启用的观察窗口、趋势周期和放量启动各跑一遍，正常时每个窗口、每个趋势周期、放量启动各产生一条提醒；数量不符时命令以非零退出码结束并给出提示。配置文件缺失或校验失败时，会列出出错的配置键路径。
+模拟会为每个启用的观察窗口（`move.enabled: false` 时没有）、趋势周期和放量启动各跑一遍，正常时每个窗口、每个趋势周期、放量启动各产生一条提醒；数量不符时命令以非零退出码结束并给出提示。配置文件缺失或校验失败时，会列出出错的配置键路径。
 
 依次试听各类提醒的提示音（见下文「提示音」，只支持 Windows 与 macOS）：
 
@@ -313,6 +323,7 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 - `gate.rest_rate_limit_per_second` / `gate.rest_rate_limit_burst`：所有 REST 请求共用的令牌桶速率与突发额度，默认 10 次/秒、突发 20 次。交易所限频按单位时间的请求数计算，而合约池大小只决定单轮请求数，因此上限必须加在时间维度上：合约池再大、断线重连再频繁，长期平均速率都收敛到该值，只会拉长一轮预热或回补的耗时。注意突发额度是瞬时放行的额度——桶攒满时可以一次发出 20 个请求，限制的是长期平均速率而非任意一秒内的绝对上限，所以突发额度不应超过交易所在一个限频窗口内的配额——Gate 公共接口的官方口径是每个端点每 10 秒 200 次（响应头 `X-Gate-RateLimit-Limit` 实测同为 200），折合平均 20 次/秒，而本项目的令牌桶是所有端点共用的，比按端点计算更保守。若日志出现 429，应下调速率而不是调高重试次数；
 - `gate.rest_retries`：单个请求的最大尝试次数。429 按交易所告知的恢复时刻等待（封顶 30 秒）：优先读 HTTP 标准头 `Retry-After`，Gate 实际不返回该头，恢复时刻放在专有头 `X-Gate-RateLimit-Reset-Timestamp`（Unix 秒级绝对时间戳）里；两者都没有时才按 2 秒起的指数退避，明显长于其他临时故障的 0.5 秒，避免在限频期间继续加码请求；
 - `gate.warmup_concurrency`：K 线预热与断线回补共用的并发上限，两者共用同一个信号量，峰值并发不会叠加；
+- `move.enabled`：是否启用秒级 ATR 异动提醒，默认开启；关闭后不创建该检测器，也不订阅、预热它的合约池。`move`、`trend`、`launch` 至少要启用一个；
 - `move.min_volume_24h_quote`：秒级 ATR 异动的 24 小时 USDT 计价成交额门槛，默认 10M；趋势、放量启动的合约池另见 `trend.min_volume_24h_quote` / `launch.min_volume_24h_quote` 等；
 - `move.candle_interval`：ATR K 线周期；
 - `move.atr_period`：Wilder ATR 周期；
@@ -355,6 +366,7 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 
 ```text
 config/default.yaml          Gate、ATR、趋势、放量启动、提醒配置
+config/launch-trade.yaml     交易用的放量启动实例（只开放量启动，回测推荐参数）
 src/price_alert/
 ├── config.py                配置模型与严格校验
 ├── models.py                领域模型

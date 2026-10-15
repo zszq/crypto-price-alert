@@ -113,15 +113,16 @@ def _build_demo_candles(end: datetime, count: int, interval_seconds: int) -> lis
 
 
 def expected_simulated_alerts(config: AppConfig) -> int:
+    windows = len(build_windows(config)) if config.move.enabled else 0
     trend_periods = len(config.trend.rules()) if config.trend.enabled else 0
-    return len(build_windows(config)) + trend_periods + int(config.launch.enabled)
+    return windows + trend_periods + int(config.launch.enabled)
 
 
 async def simulate(config: AppConfig) -> int:
     """为每个启用的观察窗口、趋势周期和放量启动各跑一遍合成行情，返回提醒总数；正常时等于 expected_simulated_alerts。"""
     notifier = ConsoleNotifier(beep=False, colors=config.alerts.console_colors)
     alert_count = 0
-    for window in build_windows(config, cooldown_seconds=0):
+    for window in build_windows(config, cooldown_seconds=0) if config.move.enabled else []:
         alert_count += await _simulate_window(config, window, notifier)
     if config.trend.enabled:
         for alert in simulate_trend(config.trend):
@@ -277,6 +278,13 @@ def print_universe(config: AppConfig) -> None:
             print(f"{ticker.symbol:<20} {ticker.volume_24h_quote / 1_000_000:>12.2f}M USDT")
 
 
+def lock_path(config_path: str) -> Path:
+    """同一份配置只允许一个实例（重复订阅、重复提醒、抢写同一个 JSONL），不同配置可以同时运行，
+    例如日常监控与给交易单独开的放量实例。默认配置沿用原来的锁文件名，升级时仍能挡住旧版本的实例。"""
+    stem = Path(config_path).stem
+    return Path("data/price-alert.lock" if stem == "default" else f"data/price-alert-{stem}.lock")
+
+
 def _load_config_or_exit(path: str) -> AppConfig:
     try:
         return load_config(path)
@@ -301,11 +309,14 @@ def main() -> None:
     if args.command == "check-config":
         ranges = "，".join(f"{entry.name} {entry.volume.describe()}" for entry in build_detectors(config))
         print(f"配置有效：Gate.io USDT 永续，24h 计价成交额范围：{ranges}")
-        for window in build_windows(config):
-            print(f"  {describe_rule(window)}")
-        streak_rule = build_detector(config).streak_rule
-        if streak_rule is not None:
-            print(f"  {describe_streak_rule(streak_rule)}")
+        if config.move.enabled:
+            for window in build_windows(config):
+                print(f"  {describe_rule(window)}")
+            streak_rule = build_detector(config).streak_rule
+            if streak_rule is not None:
+                print(f"  {describe_streak_rule(streak_rule)}")
+        else:
+            print("  秒级异动提醒：已关闭")
         if config.trend.enabled:
             for rule in config.trend.rules():
                 print(f"  {describe_trend_rule(rule)}")
@@ -341,7 +352,7 @@ def main() -> None:
         asyncio.run(preview_sounds())
         return
     try:
-        with ProcessLock(Path("data/price-alert.lock")):
+        with ProcessLock(lock_path(args.config)):
             asyncio.run(run_monitor(config))
     except AlreadyRunningError as exc:
         raise SystemExit(str(exc)) from exc

@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from price_alert.assembly import build_detectors
 from price_alert.config import AppConfig, load_config
 
 
@@ -50,6 +51,32 @@ def test_default_yaml_passes_validation(monkeypatch):
     default_yaml = Path(__file__).resolve().parents[1] / "config" / "default.yaml"
 
     load_config(default_yaml)
+
+
+def test_launch_trade_yaml_runs_only_the_launch_detector(monkeypatch):
+    # 交易用的配置与日常监控同时运行，只能有放量启动一个检测器，且不能与日常监控写同一个 JSONL。
+    monkeypatch.delenv("PRICE_ALERT_WEBHOOK_URL", raising=False)
+    config_dir = Path(__file__).resolve().parents[1] / "config"
+
+    config = load_config(config_dir / "launch-trade.yaml")
+
+    assert [entry.name for entry in build_detectors(config)] == ["放量启动"]
+    assert config.alerts.jsonl_path != load_config(config_dir / "default.yaml").alerts.jsonl_path
+    rule = config.launch.to_rule()
+    assert (rule.min_window_quote, rule.require_breakout, rule.max_change_percent, rule.alert_drops) == (
+        300_000,
+        False,
+        None,
+        False,
+    )
+
+
+def test_move_can_be_disabled_but_not_every_detector():
+    config = AppConfig.model_validate({"move": {"enabled": False}})
+
+    assert [entry.name for entry in build_detectors(config)] == ["放量启动", "K 线趋势"]
+    with pytest.raises(ValidationError, match="至少要启用一个"):
+        AppConfig.model_validate({name: {"enabled": False} for name in ("move", "trend", "launch")})
 
 
 def test_rejects_reconnect_max_below_initial_delay():

@@ -30,7 +30,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m price_alert.cli run           # 实时监控（或双击 start-monitor.bat）
 ```
 
-`run` 持有 `data/price-alert.lock` 进程锁，已有实例运行时再次启动会直接退出。
+`run` 按配置文件持有进程锁（`cli.lock_path`：`default.yaml` 用 `data/price-alert.lock`，其他配置用 `data/price-alert-<文件名>.lock`），同一份配置已有实例运行时再次启动会直接退出，不同配置可同时运行。`config/launch-trade.yaml` 是交易用的放量实例（只开放量启动，参数取回测第五轮推荐方案，交易规则写在文件开头注释里），由 `tests/test_config.py` 校验；改它的取值会让 FINDINGS.md 的数字失效。
 
 ## 架构
 
@@ -102,7 +102,7 @@ python -m venv .venv
 
 ### 新增/修改检测参数时需要同步的位置
 
-`AtrMoveDetector` 统一由 `assembly.build_detector` 组装、`TrendDetector` 由 `assembly.build_trend_detector` 组装（`run_monitor`、`cli.simulate`、`replay` 共用，REST 客户端同样由 `assembly.build_rest_client` 组装），窗口参数由 `assembly.build_windows` 从配置生成。各入口只依赖 `assembly`，不为了拿检测器去依赖实时编排模块 `service`。新增指标参数需要同时改 `config.py` 模型、`config/default.yaml`、`build_windows`/`build_detector`、README 的配置说明。`simulate` 为每个启用的窗口各用一个只含该窗口的检测器跑一遍，再为每个启用的趋势周期、放量启动各跑一遍，正常时提醒数等于窗口数加趋势周期数再加 1（放量启动启用时，`cli.expected_simulated_alerts`）。趋势参数改在 `trend/config.py`（周期子类的默认值）、`config/default.yaml` 的 `trend` 段、README；放量参数改在 `launch/config.py`、`LaunchRule`、`config/default.yaml` 的 `launch` 段、README。K 线周期到秒数的映射只有 `config.INTERVAL_SECONDS` 一份。
+`AtrMoveDetector` 统一由 `assembly.build_detector` 组装、`TrendDetector` 由 `assembly.build_trend_detector` 组装（`run_monitor`、`cli.simulate`、`replay` 共用，REST 客户端同样由 `assembly.build_rest_client` 组装），窗口参数由 `assembly.build_windows` 从配置生成。各入口只依赖 `assembly`，不为了拿检测器去依赖实时编排模块 `service`。新增指标参数需要同时改 `config.py` 模型、`config/default.yaml`、`build_windows`/`build_detector`、README 的配置说明。`simulate` 为每个启用的窗口各用一个只含该窗口的检测器跑一遍（`move.enabled: false` 时跳过），再为每个启用的趋势周期、放量启动各跑一遍，正常时提醒数等于窗口数加趋势周期数再加 1（放量启动启用时，`cli.expected_simulated_alerts`）。`build_detectors` 只创建启用的检测器，`AppConfig` 校验三者至少启用一个。趋势参数改在 `trend/config.py`（周期子类的默认值）、`config/default.yaml` 的 `trend` 段、README；放量参数改在 `launch/config.py`、`LaunchRule`、`config/default.yaml` 的 `launch` 段、README。K 线周期到秒数的映射只有 `config.INTERVAL_SECONDS` 一份。
 
 ### 合约池筛选（universe.py）
 
