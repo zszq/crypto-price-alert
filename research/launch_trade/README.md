@@ -115,8 +115,8 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 | `r6_studies.py <研究...> [--dataset r6_p30]` | 第六轮：提醒只取到数据结束前 15 天、持满 15 天市价平仓；单因素（base、trail、dyn、start、tight、lock、be、close、closetf、slots、entry、stop）、组合网格（`grid`）、12 个入场设置平均（`robust`）、候选邻域与回撤（`hood`、`drawdown`）、推荐 T6 的平原与最终检验（`plateau`、`final`）；一次可跑多个研究（数据近 10GB，只加载一次）；结论见 FINDINGS.md「第六轮」 |
 | `r7_studies.py <研究...> [--dataset r5_p30]` | 第七轮：持仓 ≤ 60 分钟的超短线，用 `r6_lib` 的出场、第五轮的导出（或 `r5_export.py --post 180` 的 `r7_*` 变体）；出场网格（`grid`）、持仓上限（`hold`）、收紧手段（`extras`）、平原（`plateau`）、入场（`entry`）、信号与提醒前特征过滤（`signal`、`features`）、限仓、成本与按 24h 成交额分档的滑点（`slots`、`costs`、`liquidity`）、推荐 U7 的单点与逐年（`final`）；`signals --datasets ...` 比较多份提醒导出；结论见 FINDINGS.md「第七轮」 |
 | `r8_sides.py <命令> [--set single/combo/final]` | 第八轮：放量上涨与放量下跌能否共用提醒参数，不看交易、只看提醒质量：直接读分钟序列，同一合约上一次跑多组 `LaunchRule`（两个方向，下跌与开启 `alert_drops` 的检测器一致），算对数对称的 ±3/5/10% 先到概率（延续率）、提醒时已走幅度与之后 4 小时顺向空间；`run` 单因素（`single`）/ 两个方向各自的组合网格（`combo`）/ 网格边界复核（`final`），`report`、`match`（与基准第 1 波同段配对看早报晚报）、`combo` 输出表格，`control` 同合约池随机时刻对照；结论见 FINDINGS.md「第八轮」 |
+| `r9_pump.py <命令>` | 第九轮：合约池下限调高、最近拉升过的币，放量提醒是否更可靠；`run` 导出各合约池下限的提醒与随机时刻，附提醒前状态（24h 成交额、活跃度、1 小时 ~ 30 天涨跌、离区间高低点、振幅），`pool`、`buckets` 按下限与五分位分档比较，`tails`、`nearlow` 看拉升过 / 贴近低点的固定阈值，`long` 算 1 / 3 / 7 天，`long-report`（顺向对数收益）、`long-arith`（按币价的算术均值、中位数、下跌占比）输出；结论见 FINDINGS.md「第九轮」 |
 
-| `r9_pump.py <命令>` | 第九轮：合约池下限调高、最近拉升过的币，放量提醒是否更可靠；`run` 导出各合约池下限的提醒与随机时刻，附提醒前状态（24h 成交额、活跃度、1 小时 ~ 30 天涨跌、离区间高低点、振幅），`pool`、`buckets` 按下限与五分位分档比较，`long`、`long-report` 看 1 / 3 / 7 天；结论见 FINDINGS.md「第九轮」 |
 运行顺序：`update_data.py` → `r1_export.py` / `r2_export.py` → 其余脚本。
 
 第三轮（三年，先用 `update_data.py --start 202309` 补数据）要三份导出，每份约 2 分钟、2~3.5GB：
