@@ -4,7 +4,22 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from price_alert.launch.rule import LaunchRule
+from price_alert.launch.rule import LaunchRule, Thresholds
+
+
+class LaunchDropConfig(BaseModel):
+    """放量下跌单独的门槛（YAML 的 launch.drop）；没写的项沿用 launch 段顶层的值，什么都不写就与上涨完全相同。
+
+    只开放量比与涨跌幅上下限：五年回测里只有它们对两个方向的作用相反或不同；窗口、基准期、成交额与冷却两边共用，
+    窗口和基准期还决定要保留多少根 K 线，分开会让两个方向的历史长度不一致。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    min_volume_ratio: float | None = Field(default=None, gt=1, le=1000)
+    min_change_percent: float | None = Field(default=None, gt=0, le=100)
+    # 显式写 null 表示下跌不设上限；不写才沿用顶层，两者靠 model_fields_set 区分。
+    max_change_percent: float | None = Field(default=None, gt=0, le=1000)
 
 
 class LaunchConfig(BaseModel):
@@ -33,6 +48,7 @@ class LaunchConfig(BaseModel):
     realert_step_percent: float = Field(default=5.0, ge=0, le=100)
     # 涨跌幅上限：窗口内就走完这么多的多是插针式拉盘，提醒时已在高点；None 表示不设上限。
     max_change_percent: float | None = Field(default=15.0, gt=0, le=1000)
+    drop: LaunchDropConfig = Field(default_factory=LaunchDropConfig)
 
     @model_validator(mode="after")
     def validate_ranges(self) -> LaunchConfig:
@@ -45,7 +61,32 @@ class LaunchConfig(BaseModel):
             raise ValueError("max_volume_24h_quote 必须大于 min_volume_24h_quote")
         if self.max_change_percent is not None and self.max_change_percent <= self.min_change_percent:
             raise ValueError("max_change_percent 必须大于 min_change_percent")
+        merged = self._drop_values()
+        if merged is not None:
+            _, low, high = merged
+            if high is not None and high <= low:
+                # 只写了一边时另一边取自顶层，报错里写明是合并后的值，免得以为是顶层两项冲突。
+                raise ValueError(
+                    f"放量下跌的 max_change_percent（{high:g}）必须大于 min_change_percent（{low:g}），"
+                    "未在 drop 中设置的项取自顶层"
+                )
         return self
+
+    def _drop_values(self) -> tuple[float, float, float | None] | None:
+        given = self.drop.model_fields_set
+        if not given:
+            return None
+        ratio, change = self.drop.min_volume_ratio, self.drop.min_change_percent
+        return (
+            self.min_volume_ratio if ratio is None else ratio,
+            self.min_change_percent if change is None else change,
+            self.drop.max_change_percent if "max_change_percent" in given else self.max_change_percent,
+        )
+
+    def drop_thresholds(self) -> Thresholds | None:
+        """合并出放量下跌的门槛；drop 段什么都没写时返回 None，规则里两个方向共用顶层门槛。"""
+        merged = self._drop_values()
+        return None if merged is None else Thresholds(*merged)
 
     def to_rule(self) -> LaunchRule:
         return LaunchRule(
@@ -59,4 +100,5 @@ class LaunchConfig(BaseModel):
             cooldown_minutes=self.cooldown_minutes,
             realert_step_percent=self.realert_step_percent,
             max_change_percent=self.max_change_percent,
+            drop=self.drop_thresholds(),
         )

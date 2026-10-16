@@ -37,6 +37,24 @@ CONDITION_LABELS: dict[Condition, str] = {
 
 
 @dataclass(frozen=True, slots=True)
+class Thresholds:
+    """一个方向的量价门槛。放量下跌之后常有恐慌盘回补，同样的门槛对两个方向的效果相反（例如涨跌幅下限调高
+    让上涨提醒更可靠，却让下跌提醒报在急跌末端、之后更容易反弹），所以下跌可以单独取一套，见 LaunchRule.drop。"""
+
+    min_volume_ratio: float
+    min_change_percent: float
+    max_change_percent: float | None
+
+    def __post_init__(self) -> None:
+        if self.max_change_percent is not None and self.max_change_percent <= self.min_change_percent:
+            raise ValueError("max_change_percent 必须大于 min_change_percent")
+
+    def overshoots(self, change_percent: float) -> bool:
+        """涨跌幅（取绝对值）超过上限：这么短时间走完这么多，提醒时已在插针的高点。"""
+        return self.max_change_percent is not None and abs(change_percent) > self.max_change_percent
+
+
+@dataclass(frozen=True, slots=True)
 class LaunchRule:
     window_minutes: int
     baseline_minutes: int
@@ -48,23 +66,30 @@ class LaunchRule:
     cooldown_minutes: int = 15
     realert_step_percent: float = 5.0
     max_change_percent: float | None = 15.0
+    # 放量下跌单独的量比、涨跌幅门槛；None 表示与上涨相同（上面三项）。窗口、基准期、成交额、突破、冷却两个方向共用。
+    drop: Thresholds | None = None
 
     def __post_init__(self) -> None:
         if self.window_minutes < 1:
             raise ValueError("window_minutes 必须至少为 1")
         if self.baseline_minutes <= self.window_minutes:
             raise ValueError("baseline_minutes 必须大于 window_minutes")
-        if self.max_change_percent is not None and self.max_change_percent <= self.min_change_percent:
-            raise ValueError("max_change_percent 必须大于 min_change_percent")
+        # 构造一次即校验上涨这套门槛的上下限。
+        self.thresholds("surge")
 
     @property
     def history_minutes(self) -> int:
         """判定一次所需的已收盘 1 分钟 K 线：基准期加观察窗口。"""
         return self.baseline_minutes + self.window_minutes
 
+    def thresholds(self, direction: Direction) -> Thresholds:
+        if direction == "drop" and self.drop is not None:
+            return self.drop
+        return Thresholds(self.min_volume_ratio, self.min_change_percent, self.max_change_percent)
+
     def overshoots(self, change_percent: float) -> bool:
-        """涨跌幅（取绝对值）超过上限：这么短时间走完这么多，提醒时已在插针的高点。"""
-        return self.max_change_percent is not None and abs(change_percent) > self.max_change_percent
+        """按涨跌幅所属方向的上限判断是否插针（与 evaluate_launch 一样，负数为下跌）。"""
+        return self.thresholds("drop" if change_percent < 0 else "surge").overshoots(change_percent)
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +122,7 @@ def still_launching(metrics: LaunchMetrics, price: float, rule: LaunchRule) -> b
     """用更新的成交价按同样的涨跌幅与突破门槛复核：空档之后才结算的分钟，收盘价已经过期，
     价格已经回落的不应再带着旧价格提醒。"""
     sign = 1 if metrics.direction == "surge" else -1
-    if (price / metrics.start_price - 1) * 100 * sign < rule.min_change_percent:
+    if (price / metrics.start_price - 1) * 100 * sign < rule.thresholds(metrics.direction).min_change_percent:
         return False
     return not rule.require_breakout or breaks_out(metrics.direction, price, metrics.breakout_price)
 
@@ -117,6 +142,7 @@ def evaluate_launch(history: Sequence[Candle], rule: LaunchRule) -> LaunchMetric
     end_price = window[-1].close
     change_percent = (end_price / start_price - 1) * 100
     direction: Direction = "surge" if change_percent >= 0 else "drop"
+    limits = rule.thresholds(direction)
 
     window_quote = sum(candle.quote_volume for candle in window)
     # 用均值而不是中位数：冷门币多数分钟零成交，中位数常为 0，任何一点成交都会显得「放量」。
@@ -133,11 +159,11 @@ def evaluate_launch(history: Sequence[Candle], rule: LaunchRule) -> LaunchMetric
     # 量比只衡量相对放大，基准接近零的冷门币一点成交就是几十倍，必须同时有绝对成交额兜底。
     if window_quote < rule.min_window_quote:
         failures.append(Condition.VOLUME)
-    if volume_ratio is not None and volume_ratio < rule.min_volume_ratio:
+    if volume_ratio is not None and volume_ratio < limits.min_volume_ratio:
         failures.append(Condition.RATIO)
-    if abs(change_percent) < rule.min_change_percent:
+    if abs(change_percent) < limits.min_change_percent:
         failures.append(Condition.CHANGE)
-    if rule.overshoots(change_percent):
+    if limits.overshoots(change_percent):
         failures.append(Condition.OVERSHOOT)
     if rule.require_breakout and not breaks_out(direction, end_price, breakout_price):
         failures.append(Condition.BREAKOUT)

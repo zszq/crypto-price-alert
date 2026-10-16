@@ -112,9 +112,10 @@ def _closeness(evaluation: LaunchEvaluation, rule: LaunchRule) -> tuple[int, flo
     # 先比未满足的条件数，再比三道数值门槛中最弱的一项达到门槛的程度。
     metrics = evaluation.metrics
     assert metrics is not None
-    ratio = metrics.volume_ratio / rule.min_volume_ratio if metrics.volume_ratio is not None else 1.0
+    limits = rule.thresholds(metrics.direction)
+    ratio = metrics.volume_ratio / limits.min_volume_ratio if metrics.volume_ratio is not None else 1.0
     quote = metrics.window_quote / rule.min_window_quote if rule.min_window_quote > 0 else 1.0
-    change = abs(metrics.change_percent) / rule.min_change_percent
+    change = abs(metrics.change_percent) / limits.min_change_percent
     return (-len(metrics.failures), min(ratio, quote, change))
 
 

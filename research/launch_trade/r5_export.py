@@ -83,11 +83,14 @@ def detect_both(series, rule, pool, sides=(1, -1), ratio_volume=None) -> list[tu
     change = (c[idx] / c[idx - window] - 1) * 100
     gaps = np.concatenate([[0], np.cumsum(~series.covered)])
     covered = gaps[idx + 1] - gaps[idx - history + 1] == 0
-    ratio_ok = (baseline_sum <= 1e-6) | (window_volume * baseline >= rule.min_volume_ratio * baseline_sum * window)
-    base_ok = covered & ratio_ok & (window_quote >= rule.min_window_quote) & _pool_membership(series, pool)[idx]
+    base_ok = covered & (window_quote >= rule.min_window_quote) & _pool_membership(series, pool)[idx]
     found = []
     for sign in sides:
-        candidate = base_ok & (change * sign >= rule.min_change_percent)
+        # 放量下跌可以有自己的量比与涨跌幅门槛（LaunchRule.drop），与检测器一样按方向取。
+        limits = rule.thresholds("surge" if sign > 0 else "drop")
+        ratio_needed = limits.min_volume_ratio * baseline_sum * window
+        ratio_ok = (baseline_sum <= 1e-6) | (window_volume * baseline >= ratio_needed)
+        candidate = base_ok & ratio_ok & (change * sign >= limits.min_change_percent)
         last: tuple[int, float, int] | None = None
         for pos in np.flatnonzero(candidate):
             i = int(idx[pos])

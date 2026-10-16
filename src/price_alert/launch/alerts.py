@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from price_alert.formatting import beijing_time, describe_minutes, format_amount, format_price
-from price_alert.launch.rule import Direction, LaunchMetrics, LaunchRule
+from price_alert.launch.rule import Direction, LaunchMetrics, LaunchRule, Thresholds
 
 LABELS: dict[Direction, str] = {"surge": "放量上涨", "drop": "放量下跌"}
 
@@ -65,16 +65,27 @@ class LaunchAlert:
         }
 
 
+def _describe_thresholds(limits: Thresholds, baseline: str) -> str:
+    change = f"涨跌幅 ≥ {limits.min_change_percent:g}%"
+    if limits.max_change_percent is not None:
+        change = f"涨跌幅 {limits.min_change_percent:g}%~{limits.max_change_percent:g}%"
+    return f"近{baseline}同长度均量的 {limits.min_volume_ratio:g} 倍，{change}"
+
+
 def describe_launch_rule(rule: LaunchRule) -> str:
     baseline = describe_minutes(rule.baseline_minutes)
     breakout = f"，收盘突破近{baseline}高低点" if rule.require_breakout else ""
-    directions = "涨跌都提醒" if rule.alert_drops else "只提醒上涨"
-    change = f"涨跌幅 ≥ {rule.min_change_percent:g}%"
-    if rule.max_change_percent is not None:
-        change = f"涨跌幅 {rule.min_change_percent:g}%~{rule.max_change_percent:g}%"
+    surge, drop = rule.thresholds("surge"), rule.thresholds("drop")
+    if not rule.alert_drops:
+        directions = "只提醒上涨"
+    elif drop == surge:
+        directions = "涨跌都提醒"
+    else:
+        # 下跌门槛不同就单独列出，check-config 与回放标题里能直接看出两边各用什么。
+        directions = f"涨跌都提醒，下跌改为 ≥ {_describe_thresholds(drop, baseline)}"
     return (
         f"放量启动：最近 {rule.window_minutes} 分钟成交额 ≥ {format_amount(rule.min_window_quote)} USDT "
-        f"且 ≥ 近{baseline}同长度均量的 {rule.min_volume_ratio:g} 倍，{change}{breakout}；"
+        f"且 ≥ {_describe_thresholds(surge, baseline)}{breakout}；"
         f"同方向再次提醒需间隔 ≥ {rule.cooldown_minutes} 分钟且价格比上次提醒再推进 ≥ {rule.realert_step_percent:g}%"
         f"（超过{baseline}重新计为启动）；{directions}"
     )

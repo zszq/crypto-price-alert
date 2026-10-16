@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from price_alert.launch.rule import Condition, LaunchRule, evaluate_launch
+from price_alert.launch.rule import Condition, LaunchRule, Thresholds, evaluate_launch, still_launching
 from price_alert.models import Candle
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
@@ -104,3 +104,45 @@ def test_history_length_must_match_rule():
         rule(baseline_minutes=3)
     with pytest.raises(ValueError, match="max_change_percent"):
         rule(max_change_percent=3.0)
+
+
+def test_drop_thresholds_apply_only_to_drops():
+    # 3 分钟跌 2.5%、量比 10：共用门槛（下限 3%）不够；下跌单独把下限降到 2% 才提醒，同样幅度的上涨仍不够。
+    falling = history([(99.0, 1000), (98.0, 1000), (97.5, 1000)])
+    rising = history([(101.0, 1000), (102.0, 1000), (102.5, 1000)])
+    split = rule(alert_drops=True, drop=Thresholds(5.0, 2.0, 10.0))
+
+    assert evaluate_launch(falling, rule(alert_drops=True)).failures == (Condition.CHANGE,)
+    assert evaluate_launch(falling, split).passed
+    assert evaluate_launch(rising, split).failures == (Condition.CHANGE,)
+    # 量比按方向取：下跌要求 12 倍时 10 倍不够，上涨照旧按 5 倍判。
+    strict = rule(alert_drops=True, drop=Thresholds(12.0, 2.0, 10.0))
+    assert evaluate_launch(falling, strict).failures == (Condition.RATIO,)
+
+
+def test_drop_cap_is_separate_from_surge_cap():
+    # 跌 12% 超过下跌上限 10% 算插针；涨 12% 仍在上涨上限 15% 以内。
+    split = rule(alert_drops=True, drop=Thresholds(5.0, 2.0, 10.0))
+    falling = history([(96.0, 1000), (92.0, 1000), (88.0, 1000)])
+    rising = history([(104.0, 1000), (108.0, 1000), (112.0, 1000)])
+
+    assert evaluate_launch(falling, split).failures == (Condition.OVERSHOOT,)
+    assert evaluate_launch(rising, split).passed
+    assert split.overshoots(-12.0) and not split.overshoots(12.0)
+    assert split.thresholds("surge") == Thresholds(5.0, 3.0, 15.0)
+    assert rule().thresholds("drop") == rule().thresholds("surge")
+
+
+def test_still_launching_uses_the_drop_threshold():
+    split = rule(alert_drops=True, drop=Thresholds(5.0, 2.0, 10.0))
+    metrics = evaluate_launch(history([(99.0, 1000), (98.0, 1000), (97.5, 1000)]), split)
+
+    # 起点 100，跌到 97.9 仍超过下跌下限 2%；回到 98.5 只跌 1.5%，按下跌门槛已不算启动。
+    assert still_launching(metrics, 97.9, split)
+    assert not still_launching(metrics, 98.5, split)
+
+
+def test_thresholds_validate_their_own_range():
+    with pytest.raises(ValueError, match="max_change_percent"):
+        Thresholds(3.0, 5.0, 5.0)
+    assert not Thresholds(3.0, 2.0, None).overshoots(-50.0)
