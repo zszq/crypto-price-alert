@@ -4,8 +4,8 @@
 - 下跌方向也判定（与 LaunchDetector 一样按（合约, 方向）分别记冷却与波次），launch_trade_backtest.detect 只做多；
 - bars 只留提醒前 PRE=60、提醒后 POST 分钟的开高低收（没有成交额）：五年、两个方向、不设池下限的提醒有十万条量级，
   r3 那样留 24 小时前序和成交额要 10GB 以上；入场前 60 分钟平均振幅只用到前 60 根，其余提醒时的特征直接算进 meta。
-输出 data/backtest/results/<--out>/：bars.npy (N, 4, PRE+POST) float64、meta.npy (N, len(META))、
-symbol.npy、meta_names.txt。
+输出 data/backtest/results/<--out>/：bars.npy (N, 4, PRE+POST) float64（--float32 时 float32）、
+meta.npy (N, len(META))、symbol.npy、meta_names.txt。
 
     $P = "data/backtest/.venv/Scripts/python.exe"
     & $P research/launch_trade/r5_export.py --out r5_p30 --side up --set min_window_quote=300000 `
@@ -184,6 +184,8 @@ def main() -> None:
     parser.add_argument("--min-volume", type=float, help="合约池 24 小时成交额下限，默认取配置")
     parser.add_argument("--side", choices=("both", "up", "down"), default="both", help="只导出一个方向可省一半空间")
     parser.add_argument("--config", type=Path, default=REPO / "config" / "default.yaml")
+    # 提醒后保留 15 天时 float64 要近 20GB、内存放不下；float32 的相对精度约 1e-7，只在价格恰好压线时可能判得不同。
+    parser.add_argument("--float32", action="store_true", help="bars 按 float32 存，体积减半")
     parser.add_argument(
         "--ratio-by", choices=("quote", "base"), default="quote", help="量比按成交额（同检测器）还是成交量（币数）算"
     )
@@ -219,13 +221,14 @@ def main() -> None:
     jobs = [(symbol, multiplier(symbol), rule, pool, sides, args.ratio_by) for symbol in sorted(contracts)]
     out = RESULTS / args.out
     out.mkdir(parents=True, exist_ok=True)
+    dtype = np.float32 if args.float32 else np.float64
     meta, names = [], []
     scratch = out / "bars.bin.part"
     count = 0
     with scratch.open("wb") as handle, ProcessPoolExecutor(max_workers=12) as executor:
         for b, m, s in executor.map(run, jobs, chunksize=4):
             for item in b:
-                handle.write(np.ascontiguousarray(item, dtype=np.float64).tobytes())
+                handle.write(np.ascontiguousarray(item, dtype=dtype).tobytes())
             count += len(b)
             meta.extend(m)
             names.extend(s)
@@ -234,8 +237,8 @@ def main() -> None:
         raise SystemExit("没有提醒")
     # 各合约内部按时间排序，合约之间不排；研究时按 closed_at 排序的地方自己排。
     shape = (count, 4, PRE + POST)
-    raw = np.memmap(scratch, dtype=np.float64, mode="r", shape=shape)
-    stacked = np.lib.format.open_memmap(out / "bars.npy", mode="w+", dtype=np.float64, shape=shape)
+    raw = np.memmap(scratch, dtype=dtype, mode="r", shape=shape)
+    stacked = np.lib.format.open_memmap(out / "bars.npy", mode="w+", dtype=dtype, shape=shape)
     for start in range(0, count, 4000):
         stacked[start : start + 4000] = raw[start : start + 4000]
     stacked.flush()

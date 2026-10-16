@@ -102,7 +102,7 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 | `r3_lib.py` | 第三轮：方案定义（`Scheme`）、出场 X、过热过滤（全市场站上 30 天均线占比）、邻域平均、限同时持仓、资金费率敏感性 |
 | `r3_final.py [--period three_years/five_years]` | 第三轮最终排名：12 个方案（含过热过滤的 J4、P5；含时段过滤的方案是过拟合，已删除）；五年要先用 `update_data.py --start 202109 --discover` 补数据 |
 | `r3_studies.py <研究>` | 第三轮排名表以外的研究：波次、出场网格、持仓、出场形态、特征分档、前推检验、提醒门槛变体、突破拆分、随机对照、确认扫描、市场状态、滚动重选、做空、亏损期与过热过滤（子命令见脚本开头） |
-| `r5_export.py` | 第五轮：两个方向的提醒（`--side up/down/both`，下跌方向与开启 `alert_drops` 的 `LaunchDetector` 一致），只留提醒前 60、后 `--post`（默认 1440）分钟的开高低收，提醒时的特征写进 meta；`--set`、`--min-volume` 同 `r3_export.py`；`--ratio-by base` 量比改按成交量（币数）算（默认 `quote` 与检测器一致） |
+| `r5_export.py` | 第五轮：两个方向的提醒（`--side up/down/both`，下跌方向与开启 `alert_drops` 的 `LaunchDetector` 一致），只留提醒前 60、后 `--post`（默认 1440）分钟的开高低收，提醒时的特征写进 meta；`--set`、`--min-volume` 同 `r3_export.py`；`--ratio-by base` 量比改按成交量（币数）算（默认 `quote` 与检测器一致）；`--float32` bars 存 float32（第六轮导出 15 天时用，体积减半） |
 | `r5_lib.py` | 第五轮：多空双向逐笔模拟（与 `simulate_trade` 逐笔一致）、限仓组合（先到先买、同一币不叠仓）、季度 / 去掉最好 N 天 / 夏普 / 回撤，全市场状态（宽度、BTC 均线、中位涨跌、全市场放量） |
 | `r5_studies.py <研究>` | 第五轮：以稳定为目标的方案评估，开发期（2024-10 起）与样本外（2021-10 ~ 2024-09）分开给出；子命令 base、exits、slots、regime、filters、quality、core、hood、costs、hot、final |
 | `r5_scan.py <数据集>` | 第五轮：提醒特征分档，每档在五年各半年段每笔为正的段数 |
@@ -111,6 +111,8 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 | `r5_rank.py [--dataset 数据集]` | 历次方案统一重排：第三、四轮里不含时间段条件的 12 个方案与第五轮 S5 等共 19 个，按第五轮口径排名；`--dataset` 只用一份提醒（如 `r5_nobreak`）比较各交易规则；需先导出 `r5_nobreak`（命令见 FINDINGS.md 对应一节） |
 | `oi_fetch.py <数据集...>` | 取导出里最近 180 天上涨提醒涉及合约的历史持仓（REST `contract_stats`，只保留 180 天）：1 小时粒度整段存 `oi_1h/`，5 分钟粒度只取提醒前 90 分钟存 `oi_5m/`；`--only-missing` 补上次失败的合约。**每周运行一次**才能积累超过 180 天的数据 |
 | `r5_oi.py <研究> [数据集...]` | 持仓价值过滤：持仓特征分档（`buckets`）、各方案加持仓过滤（`filters`）、与 24h 成交额同保留比例对照（`proxy`）、随机对照（`control`）、五年 24h 成交额对照（`volume`）、J4 与 P5（`jp`）；结论见 FINDINGS.md「持仓价值过滤」 |
+| `r6_lib.py` | 第六轮：不按时间平仓的做多模拟器，出场线为初始止损、移动止盈（盘中或按时钟对齐的 N 分钟收盘价触发，可另设盘中硬回撤；回撤幅度可按入场前或持仓中近期振幅放宽、浮盈后改变）、锁定浮盈、保本中最高的一条；S5 参数下与 `r5_lib` 逐笔一致 |
+| `r6_studies.py <研究...> [--dataset r6_p30]` | 第六轮：提醒只取到数据结束前 15 天、持满 15 天市价平仓；单因素（base、trail、dyn、start、tight、lock、be、close、closetf、slots、entry、stop）、组合网格（`grid`）、12 个入场设置平均（`robust`）、候选邻域与回撤（`hood`、`drawdown`）、推荐 T6 的平原与最终检验（`plateau`、`final`）；一次可跑多个研究（数据近 10GB，只加载一次）；结论见 FINDINGS.md「第六轮」 |
 
 运行顺序：`update_data.py` → `r1_export.py` / `r2_export.py` → 其余脚本。
 
@@ -136,5 +138,7 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 & $P research/launch_trade/r5_export.py --out r5_user --side up   # 当前 config/default.yaml 的 launch 段
 & $P research/launch_trade/r5_studies.py final --dataset r5_p30
 ```
+
+第六轮（不按时间平仓）要提醒后 15 天的数据，每份约 3 分钟、8~9GB，float32 存储，加载需约 10GB 内存，导出命令见 FINDINGS.md「第六轮」。
 
 `r2_lib.load(period, source)` 可以读任意一份导出；模拟器按导出的列数判断持仓是否超出数据，12 小时（r2）与更长的导出通用。

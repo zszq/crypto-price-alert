@@ -30,7 +30,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m price_alert.cli run           # 实时监控（或双击 start-monitor.bat）
 ```
 
-`run` 按配置文件持有进程锁（`cli.lock_path`：`default.yaml` 用 `data/price-alert.lock`，其他配置用 `data/price-alert-<文件名>.lock`），同一份配置已有实例运行时再次启动会直接退出，不同配置可同时运行。`config/launch-trade.yaml` 是交易用的放量实例（只开放量启动，参数取回测第五轮推荐方案，交易规则写在文件开头注释里），由 `tests/test_config.py` 校验；改它的取值会让 FINDINGS.md 的数字失效。
+`run` 按配置文件持有进程锁（`cli.lock_path`：`default.yaml` 用 `data/price-alert.lock`，其他配置用 `data/price-alert-<文件名>.lock`），同一份配置已有实例运行时再次启动会直接退出，不同配置可同时运行。`config/launch-trade.yaml` 是交易用的放量实例（只开放量启动，提醒参数取回测第五轮推荐方案，出场取第六轮不按时间平仓的 T6，交易规则写在文件开头注释里），由 `tests/test_config.py` 校验；改它的取值会让 FINDINGS.md 的数字失效。
 
 ## 架构
 
