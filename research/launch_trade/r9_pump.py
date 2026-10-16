@@ -285,7 +285,8 @@ def nearlow(args) -> None:
         print(f"\n== {title}（离 N 天最低价 < X，即窗口开始时价格还贴着 N 天低点）==")
         everything = [select(data, *span, sign) for span in (DEV, OOS)]
         rows = [("全部", None, None)]
-        # 阈值与特征同样写成 log(比值)：报价在最小变动单位上，比值恰好是 1.2 的不少，log1p 差一个 ulp 就分到另一侧。
+        # 阈值与特征同样写成 log(比值)：报价在最小变动单位上，比值恰好是 1.2 的提醒各尺度有 6~13 条，
+        # log1p(0.2) 比 log(1.2) 大两个 ulp，会把它们分到另一侧。
         rows += [
             (f"up_{span} < {x}%", f"up_{span}", float(np.log(1 + x / 100)))
             for span in RANGE_SPANS
