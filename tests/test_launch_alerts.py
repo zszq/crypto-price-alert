@@ -45,7 +45,7 @@ ALERT = LaunchAlert(
 
 def test_alert_text_explains_volume_ratio_and_breakout():
     assert format_launch_alert(ALERT) == (
-        "[放量拉升] 2026-10-05 17:56:00 | RLC_USDT | 5分钟上涨 4.53%，成交额 3.69万 USDT，"
+        "[放量上涨] 2026-10-05 17:56:00 | RLC_USDT | 5分钟上涨 4.53%，成交额 3.69万 USDT，"
         "为近6小时均量的 130.4 倍，突破近6小时高点 0.3914 | 0.3975 → 0.4155"
     )
     assert format_alert(ALERT) == format_launch_alert(ALERT)
@@ -53,7 +53,7 @@ def test_alert_text_explains_volume_ratio_and_breakout():
 
 def test_wave_drop_silent_baseline_and_no_breakout_texts():
     later = replace(ALERT, wave=3)
-    assert format_launch_alert(later).startswith("[放量拉升·第3波]")
+    assert format_launch_alert(later).startswith("[放量上涨·第3波]")
 
     drop_metrics = replace(METRICS, direction="drop", end_price=0.38, change_percent=-4.4, breakout_price=0.385)
     drop = format_launch_alert(replace(ALERT, metrics=drop_metrics))
@@ -79,7 +79,7 @@ def test_to_dict_is_json_ready_and_tagged_as_launch(tmp_path):
 def test_colorize_highlights_label_symbol_and_change():
     text = colorize_alert(ALERT, format_alert(ALERT))
 
-    assert text.startswith(f"{SURGE_COLOR}{LAUNCH_LABEL_COLOR}[放量拉升]{Style.RESET_ALL}{SURGE_COLOR}")
+    assert text.startswith(f"{SURGE_COLOR}{LAUNCH_LABEL_COLOR}[放量上涨]{Style.RESET_ALL}{SURGE_COLOR}")
     assert f"{SYMBOL_COLOR}RLC_USDT{Style.RESET_ALL}" in text
     assert f"{SURGE_CHANGE_COLOR}4.53%{Style.RESET_ALL}" in text
 

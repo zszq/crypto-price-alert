@@ -79,7 +79,7 @@ def test_cooldown_then_requires_price_to_extend():
     first = rally(detector, 30, [101.0, 102.5, 104.0])
     assert [alert.wave for item in first for alert in item] == [1]
 
-    # 冷却 5 分钟内继续放量拉升，条件满足也不再报。
+    # 冷却 5 分钟内继续放量上涨，条件满足也不再报。
     assert rally(detector, 33, [105.0], quote=5000.0, price=104.0) == [[]]
     assert evaluations[-1].outcome is LaunchOutcome.COOLDOWN
 
@@ -92,7 +92,7 @@ def test_cooldown_then_requires_price_to_extend():
     # 继续放量推进到比 104 高 5% 以上，就是第 2 波。
     second = [alert for item in rally(detector, 43, [107.0, 109.5], quote=8000.0, price=104.5) for alert in item]
     assert [alert.wave for alert in second] == [2]
-    assert second[0].label == "放量拉升·第2波"
+    assert second[0].label == "放量上涨·第2波"
 
 
 def test_overshoot_is_silent_but_blocks_catch_up_alert_at_the_top():
@@ -121,7 +121,7 @@ def test_after_overshoot_next_alert_must_extend_past_spike_close():
 
     # 推进到 128 才报；插针没有发出提醒，这仍是用户看到的第 1 波。
     alerts = rally(detector, 42, [128.0], quote=2000.0, price=125.8)
-    assert [(alert.wave, alert.label) for item in alerts for alert in item] == [(1, "放量拉升")]
+    assert [(alert.wave, alert.label) for item in alerts for alert in item] == [(1, "放量上涨")]
 
 
 def test_overshoot_below_last_alert_does_not_lower_next_wave_bar():

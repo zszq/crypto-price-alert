@@ -185,7 +185,7 @@ def test_simulate_includes_one_launch_alert(capsys):
     config = AppConfig.model_validate({"trend": {"enabled": False}, "alerts": {"console_colors": False}})
 
     assert asyncio.run(cli.simulate(config)) == 3 == cli.expected_simulated_alerts(config)
-    assert capsys.readouterr().out.count("[放量拉升]") == 1
+    assert capsys.readouterr().out.count("[放量上涨]") == 1
 
 
 @pytest.mark.parametrize(

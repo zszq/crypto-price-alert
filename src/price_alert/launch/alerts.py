@@ -9,7 +9,7 @@ from typing import Literal
 from price_alert.formatting import beijing_time, describe_minutes, format_amount, format_price
 from price_alert.launch.rule import Direction, LaunchMetrics, LaunchRule
 
-LABELS: dict[Direction, str] = {"surge": "放量拉升", "drop": "放量下跌"}
+LABELS: dict[Direction, str] = {"surge": "放量上涨", "drop": "放量下跌"}
 
 
 @dataclass(frozen=True, slots=True)

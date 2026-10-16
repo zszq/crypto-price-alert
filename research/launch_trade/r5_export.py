@@ -1,4 +1,4 @@
-"""第五轮研究数据：同时导出放量拉升与放量下跌两个方向的提醒，供做多 / 做空与组合层面（限仓、市场状态）研究。
+"""第五轮研究数据：同时导出放量上涨与放量下跌两个方向的提醒，供做多 / 做空与组合层面（限仓、市场状态）研究。
 
 与 r3_export.py 的区别：
 - 下跌方向也判定（与 LaunchDetector 一样按（合约, 方向）分别记冷却与波次），launch_trade_backtest.detect 只做多；
@@ -32,7 +32,7 @@ PRE = 60
 POST = int(os.environ.get("R5_POST", "1440"))
 META = [
     "closed_at",
-    "direction",  # +1 放量拉升，-1 放量下跌
+    "direction",  # +1 放量上涨，-1 放量下跌
     "wave",
     "change",  # 窗口涨跌幅（%），下跌为负
     "ratio",

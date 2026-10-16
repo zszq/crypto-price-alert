@@ -58,7 +58,7 @@ TRADE_URL_COLOR = Fore.LIGHTBLACK_EX
 LONG_WINDOW_COLOR = Fore.LIGHTBLUE_EX
 # 趋势提醒的标签（[趋势下跌] 等）：亮紫色，与秒级异动提醒一眼区分。
 TREND_LABEL_COLOR = Fore.LIGHTMAGENTA_EX
-# 放量启动提醒的标签（[放量拉升] 等）：亮青色，与秒级异动、趋势提醒区分。
+# 放量启动提醒的标签（[放量上涨] 等）：亮青色，与秒级异动、趋势提醒区分。
 LAUNCH_LABEL_COLOR = Fore.LIGHTCYAN_EX
 
 

@@ -53,7 +53,7 @@ def test_run_and_render_explain_alerts_and_failures():
     assert [alert.timestamp for alert in result.alerts] == [START + timedelta(minutes=3)]
     assert result.warmup_candles == 33 and result.candles_fed == 10
     text = "\n".join(lines)
-    assert "提醒 1 条：" in text and "[放量拉升] 2026-10-05 17:53:00 | RLC_USDT | 3分钟上涨 4.00%" in text
+    assert "提醒 1 条：" in text and "[放量上涨] 2026-10-05 17:53:00 | RLC_USDT | 3分钟上涨 4.00%" in text
     assert "满足条件，冷却中" in text
     assert "未满足的条件：" in text and "最接近触发：" in text
 
