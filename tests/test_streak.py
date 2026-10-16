@@ -1,16 +1,12 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from colorama import Style
 
 from price_alert.models import PriceAlert
 from price_alert.notifier import (
-    LAUNCH_LABEL_COLOR,
-    LONG_WINDOW_COLOR,
-    STREAK_LABEL_COLOR,
+    DROP_COLOR,
     SURGE_COLOR,
     SYMBOL_COLOR,
-    TREND_LABEL_COLOR,
     colorize_alert,
     format_alert,
 )
@@ -156,10 +152,11 @@ def make_streak(direction: str = "surge") -> StreakAlert:
 def test_streak_text_and_structured_fields():
     surge = make_streak()
     assert format_alert(surge) == (
-        "[连续急涨] 2026-10-09 13:55:13 | RLC_USDT | 30秒窗口连续 3 次急涨，近1分32秒累计上涨 7.33% | 0.8745 → 0.9386"
+        "[急涨提醒·连续急涨] 2026-10-09 13:55:13 | RLC_USDT | "
+        "30秒窗口连续 3 次急涨，近1分32秒累计上涨 7.33% | 0.8745 → 0.9386"
     )
     drop = make_streak("drop")
-    assert "[连续急跌]" in format_alert(drop) and "累计下跌 6.83%" in format_alert(drop)
+    assert "[急跌提醒·连续急跌]" in format_alert(drop) and "累计下跌 6.83%" in format_alert(drop)
 
     payload = surge.to_dict()
     assert payload["kind"] == "streak"
@@ -175,12 +172,12 @@ def test_duration_reads_in_minutes_and_seconds():
     assert describe_duration(147) == "2分27秒"
 
 
-def test_streak_label_has_its_own_color():
+def test_streak_label_uses_direction_color():
     alert = make_streak()
     text = colorize_alert(alert, format_alert(alert))
 
-    assert text.startswith(f"{SURGE_COLOR}{STREAK_LABEL_COLOR}[连续急涨]{Style.RESET_ALL}{SURGE_COLOR}")
+    # 标签和急涨提醒一样用方向色，不另外着色。
+    assert text.startswith(f"{SURGE_COLOR}[急涨提醒·连续急涨] ")
     assert f"{SYMBOL_COLOR}RLC_USDT" in text
-    # 要和前面那条普通短窗口提醒、其他类型提醒的标签一眼区分开。
-    others = {SURGE_COLOR, SYMBOL_COLOR, LONG_WINDOW_COLOR, TREND_LABEL_COLOR, LAUNCH_LABEL_COLOR}
-    assert STREAK_LABEL_COLOR not in others
+    drop = make_streak("drop")
+    assert colorize_alert(drop, format_alert(drop)).startswith(f"{DROP_COLOR}[急跌提醒·连续急跌] ")

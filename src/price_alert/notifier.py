@@ -60,8 +60,6 @@ LONG_WINDOW_COLOR = Fore.LIGHTBLUE_EX
 TREND_LABEL_COLOR = Fore.LIGHTMAGENTA_EX
 # 放量启动提醒的标签（[放量拉升] 等）：亮青色，与秒级异动、趋势提醒区分。
 LAUNCH_LABEL_COLOR = Fore.LIGHTCYAN_EX
-# 连续提醒的标签（[连续急涨] 等）：亮白色，与它前面那条普通短窗口提醒区分开。
-STREAK_LABEL_COLOR = Fore.LIGHTWHITE_EX
 
 
 class Notifier(Protocol):
@@ -114,16 +112,14 @@ def colorize_alert(alert: Alert, text: str, enabled: bool = True) -> str:
         change = format_change(alert)
     highlighted_change = f"{bright}{change}{Style.RESET_ALL}{color}"
     text = text.replace(alert.symbol, symbol, 1).replace(change, highlighted_change, 1)
-    if isinstance(alert, TrendAlert | LaunchAlert | StreakAlert):
+    if isinstance(alert, TrendAlert | LaunchAlert):
         # 标签在行首，按首次出现替换不会误伤正文。
         label = f"[{alert.label}]"
-        if isinstance(alert, TrendAlert):
-            label_color = TREND_LABEL_COLOR
-        elif isinstance(alert, LaunchAlert):
-            label_color = LAUNCH_LABEL_COLOR
-        else:
-            label_color = STREAK_LABEL_COLOR
+        label_color = TREND_LABEL_COLOR if isinstance(alert, TrendAlert) else LAUNCH_LABEL_COLOR
         text = text.replace(label, f"{label_color}{label}{Style.RESET_ALL}{color}", 1)
+    elif isinstance(alert, StreakAlert):
+        # 连续提醒的标签沿用方向色：它以「急涨提醒/急跌提醒」开头，是同一类提醒的延伸，靠标签文字区分即可。
+        pass
     elif alert.window == "long":
         # 只高亮长窗口，短窗口保持正文色。窗口字样带“秒”或“分钟”，按首次出现替换不会误伤。
         window = format_window(alert)

@@ -16,7 +16,8 @@ from price_alert.models import PriceAlert
 
 Direction = Literal["surge", "drop"]
 
-LABELS: dict[Direction, str] = {"surge": "连续急涨", "drop": "连续急跌"}
+# 标签以对应短窗口提醒的「急涨提醒/急跌提醒」开头，表明它是那类提醒的延伸，而不是另一种独立的提醒。
+LABELS: dict[Direction, str] = {"surge": "急涨提醒·连续急涨", "drop": "急跌提醒·连续急跌"}
 
 
 @dataclass(frozen=True, slots=True)

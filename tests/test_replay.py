@@ -265,4 +265,4 @@ def test_replay_keeps_streak_alert_right_after_its_short_alert():
     assert kinds[index - 1] == "short" and result.alerts[index].timestamp == result.alerts[index - 1].timestamp
     text = "\n".join(render_replay(result))
     assert "连续提醒：短窗口同方向提醒连续 3 次" in text
-    assert "[连续急涨]" in text
+    assert "[急涨提醒·连续急涨]" in text
