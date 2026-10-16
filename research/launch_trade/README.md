@@ -113,6 +113,7 @@ $P = "data/backtest/.venv/Scripts/python.exe"
 | `r5_oi.py <研究> [数据集...]` | 持仓价值过滤：持仓特征分档（`buckets`）、各方案加持仓过滤（`filters`）、与 24h 成交额同保留比例对照（`proxy`）、随机对照（`control`）、五年 24h 成交额对照（`volume`）、J4 与 P5（`jp`）；结论见 FINDINGS.md「持仓价值过滤」 |
 | `r6_lib.py` | 第六轮：不按时间平仓的做多模拟器，出场线为初始止损、移动止盈（盘中或按时钟对齐的 N 分钟收盘价触发，可另设盘中硬回撤；回撤幅度可按入场前或持仓中近期振幅放宽、浮盈后改变）、锁定浮盈、保本中最高的一条；S5 参数下与 `r5_lib` 逐笔一致 |
 | `r6_studies.py <研究...> [--dataset r6_p30]` | 第六轮：提醒只取到数据结束前 15 天、持满 15 天市价平仓；单因素（base、trail、dyn、start、tight、lock、be、close、closetf、slots、entry、stop）、组合网格（`grid`）、12 个入场设置平均（`robust`）、候选邻域与回撤（`hood`、`drawdown`）、推荐 T6 的平原与最终检验（`plateau`、`final`）；一次可跑多个研究（数据近 10GB，只加载一次）；结论见 FINDINGS.md「第六轮」 |
+| `r7_studies.py <研究...> [--dataset r5_p30]` | 第七轮：持仓 ≤ 60 分钟的超短线，用 `r6_lib` 的出场、第五轮的导出（或 `r5_export.py --post 180` 的 `r7_*` 变体）；出场网格（`grid`）、持仓上限（`hold`）、收紧手段（`extras`）、平原（`plateau`）、入场（`entry`）、信号与提醒前特征过滤（`signal`、`features`）、限仓、成本与按 24h 成交额分档的滑点（`slots`、`costs`、`liquidity`）、推荐 U7 的单点与逐年（`final`）；`signals --datasets ...` 比较多份提醒导出；结论见 FINDINGS.md「第七轮」 |
 
 运行顺序：`update_data.py` → `r1_export.py` / `r2_export.py` → 其余脚本。
 
