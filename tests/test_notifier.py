@@ -13,6 +13,7 @@ from price_alert.models import PriceAlert
 from price_alert.notifier import (
     DROP_CHANGE_COLOR,
     DROP_COLOR,
+    LAUNCH_LABEL_COLOR,
     LONG_WINDOW_COLOR,
     MACOS_SOUND_PLAYER,
     MUST_PLAY_MERGE_SECONDS,
@@ -20,6 +21,7 @@ from price_alert.notifier import (
     SURGE_COLOR,
     SYMBOL_COLOR,
     TRADE_URL_COLOR,
+    TREND_LABEL_COLOR,
     WINDOWS_PLAYBACK_MARGIN_SECONDS,
     AlertDispatcher,
     ConsoleNotifier,
@@ -650,6 +652,8 @@ def test_only_long_window_length_is_highlighted_in_one_color_for_both_directions
     drop = replace(surge, direction="drop", change_percent=-2.5)
     drop_text = colorize_alert(drop, format_alert(drop))
     assert f"{LONG_WINDOW_COLOR}3分钟{Style.RESET_ALL}{DROP_COLOR}内价格下跌" in drop_text
-    # 不能与正文、交易对、涨跌幅、地址撞色，否则起不到区分作用。
+    # 不能与正文、交易对、涨跌幅、地址、趋势/放量标签撞色，否则起不到区分作用。
     used = {SURGE_COLOR, DROP_COLOR, SYMBOL_COLOR, SURGE_CHANGE_COLOR, DROP_CHANGE_COLOR, TRADE_URL_COLOR}
+    used |= {TREND_LABEL_COLOR, LAUNCH_LABEL_COLOR}
     assert LONG_WINDOW_COLOR not in used
+    assert len(used) == 8

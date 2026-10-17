@@ -54,12 +54,13 @@ SURGE_CHANGE_COLOR = Fore.LIGHTGREEN_EX
 DROP_CHANGE_COLOR = Fore.LIGHTRED_EX
 # 交易地址：灰色，辅助信息不抢眼。
 TRADE_URL_COLOR = Fore.LIGHTBLACK_EX
-# 长窗口的窗口长度（3分钟）：亮蓝色。
-LONG_WINDOW_COLOR = Fore.LIGHTBLUE_EX
+# 长窗口的窗口长度（3分钟）：亮青色。
+LONG_WINDOW_COLOR = Fore.LIGHTCYAN_EX
 # 趋势提醒的标签（[趋势下跌] 等）：亮紫色，与秒级异动提醒一眼区分。
 TREND_LABEL_COLOR = Fore.LIGHTMAGENTA_EX
-# 放量启动提醒的标签（[放量上涨] 等）：亮青色，与秒级异动、趋势提醒区分。
-LAUNCH_LABEL_COLOR = Fore.LIGHTCYAN_EX
+# 放量启动提醒的标签（[放量上涨] 等）：金黄色（标准黄）。偏橙，与淡黄的交易对分得开，
+# 也不带涨跌含义，两个方向共用。
+LAUNCH_LABEL_COLOR = Fore.YELLOW
 
 
 class Notifier(Protocol):
