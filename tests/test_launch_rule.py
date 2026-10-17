@@ -146,3 +146,22 @@ def test_thresholds_validate_their_own_range():
     with pytest.raises(ValueError, match="max_change_percent"):
         Thresholds(3.0, 5.0, 5.0)
     assert not Thresholds(3.0, 2.0, None).overshoots(-50.0)
+
+
+def test_drop_overshoot_uses_the_absolute_change_with_shared_thresholds():
+    # 3 分钟跌 20%：与上涨一样按绝对值算插针，不能因为涨跌幅为负就漏过上限。
+    candles = history([(95.0, 1000), (88.0, 1000), (80.0, 1000)])
+
+    assert evaluate_launch(candles, rule(alert_drops=True)).failures == (Condition.OVERSHOOT,)
+    assert evaluate_launch(candles, rule(alert_drops=True, max_change_percent=None)).passed
+    assert rule().overshoots(-20.0) and not rule().overshoots(-10.0)
+
+
+def test_still_launching_rechecks_drops_with_shared_thresholds():
+    metrics = evaluate_launch(history([(99.0, 1000), (97.5, 1000), (96.0, 1000)]), rule(alert_drops=True))
+
+    # 起点 100：跌到 96.5 仍跌了 3.5%，且在基准低点 99.5 之下；回到 97.5 只跌 2.5%，已不算启动。
+    assert still_launching(metrics, 96.5, rule(alert_drops=True))
+    assert not still_launching(metrics, 97.5, rule(alert_drops=True))
+    # 方向不能弄反：价格反而涨上去，对下跌提醒来说当然不再成立。
+    assert not still_launching(metrics, 104.0, rule(alert_drops=True))

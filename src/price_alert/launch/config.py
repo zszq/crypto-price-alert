@@ -10,7 +10,7 @@ from price_alert.launch.rule import LaunchRule, Thresholds
 class LaunchDropConfig(BaseModel):
     """放量下跌单独的门槛（YAML 的 launch.drop）；没写的项沿用 launch 段顶层的值，什么都不写就与上涨完全相同。
 
-    只开放量比与涨跌幅上下限：五年回测里只有它们对两个方向的作用相反或不同；窗口、基准期、成交额与冷却两边共用，
+    只开放量比与涨跌幅上下限；窗口、基准期、成交额与冷却两边共用，
     窗口和基准期还决定要保留多少根 K 线，分开会让两个方向的历史长度不一致。
     """
 
