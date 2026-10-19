@@ -579,10 +579,19 @@ def _period_report(config: dict, direction: str, first_day: int, n_days: int) ->
     return report
 
 
+def _data_days() -> int:
+    """数据覆盖到的天数（含最后不满一天的那天）。按数据算而不是按运行当天算：数据不更新时晚些重跑，
+    样本外的天数与每天提醒数也不变（与 launch_alerts._data_weeks 同理）。"""
+    last = 0
+    for path in OUT.glob("cand_W*_B*.npz"):
+        with np.load(path) as data:
+            last = max(last, int(data["t"].max()))
+    return (last * 60 + 60) // DAY + 1
+
+
 def cmd_evaluate() -> None:
     chosen = json.loads((OUT / "select.json").read_text(encoding="utf-8"))
-    total_days = (int(time.time()) - EPOCH) // DAY
-    oos_days = total_days - DEV_DAYS
+    oos_days = _data_days() - DEV_DAYS
     result = {}
     for direction in ("surge", "drop"):
         result[direction] = {}

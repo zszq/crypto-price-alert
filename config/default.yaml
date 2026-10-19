@@ -338,7 +338,7 @@ trend:
       # 默认：0.5
       max_single_candle_ratio: 0.6
 
-# 提醒分发通道（冷却属于判定逻辑，见 move 下各窗口的 cooldown_seconds 与 launch.cooldown_minutes）。各通道有独立队列和后台任务，发送不阻塞行情处理。
+# 提醒分发通道（冷却属于判定逻辑，见 move 下各窗口的 cooldown_seconds 与 launch.rise / launch.fall 的 cooldown_minutes）。各通道有独立队列和后台任务，发送不阻塞行情处理。
 alerts:
   # 单个通道允许积压的提醒数（1~100000）。队列满时丢弃新提醒并记错误日志，绝不阻塞成交循环。
   # 通道（尤其 Webhook）长期偏慢时调大只是推迟丢弃，应先修通道；全市场同时异动的瞬时突发才适合调大。
