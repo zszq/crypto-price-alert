@@ -116,7 +116,7 @@ python -m venv .venv
 
 ## 回测研究（research/）
 
-`research/launch_trade/` 目前只有放量启动研究用的数据工具（`update_data.py` 下载/更新历史 1 分钟 K 线、`load_data.py` 合并为分钟序列、`check_jumps.py` 检查面值变更造成的跳价、`paths.py` 路径）与 `drop_thresholds.py`/`.md`（放量下跌门槛搜索，判据与结果写在 .md），以前的研究脚本与结论已全部删除。不参与实时监控，也不在 `ruff check src tests` 与 pytest 范围内。用法见其 README.md。行情数据在 `data/backtest/`（不进版本库），回测用单独的虚拟环境 `data/backtest/.venv`（多装 numpy、numba）。新研究的方案要先通过预先写定的过拟合判据（只用开发期选参数、多个入场设置平均、Deflated Sharpe、PBO 等）才能推荐或写进配置。
+`research/launch_trade/` 目前只有放量启动研究用的数据工具（`update_data.py` 下载/更新历史 1 分钟 K 线、`load_data.py` 合并为分钟序列、`check_jumps.py` 检查面值变更造成的跳价、`paths.py` 路径）、`drop_thresholds.py`/`.md`（放量下跌门槛搜索）与 `surge_params.py`/`.md`（放量上涨参数搜索，结论是维持现值），判据与结果都写在 .md，以前的研究脚本与结论已全部删除。不参与实时监控，也不在 `ruff check src tests` 与 pytest 范围内。用法见其 README.md。行情数据在 `data/backtest/`（不进版本库），回测用单独的虚拟环境 `data/backtest/.venv`（多装 numpy、numba）。新研究的方案要先通过预先写定的过拟合判据（只用开发期选参数、多个入场设置平均、Deflated Sharpe、PBO 等）才能推荐或写进配置。
 
 ## 约定
 
