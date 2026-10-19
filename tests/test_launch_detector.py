@@ -144,6 +144,19 @@ def test_overshoot_below_last_alert_does_not_lower_next_wave_bar():
     assert evaluations[-1].outcome is LaunchOutcome.NOT_EXTENDED
 
 
+def test_opposite_direction_spike_is_not_recorded_as_own_overshoot():
+    evaluations = []
+    detector = make(evaluations.append, seed=30, baseline_minutes=30, require_breakout=False, direction="drop")
+    # 下跌检测器看到 +20% 的拉升插针：方向相反，不能当作自己方向的插针记入冷却。
+    rally(detector, 30, [105.0, 118.0, 120.0])
+    assert evaluations[-1].metrics.failures == (Condition.DIRECTION, Condition.OVERSHOOT)
+    assert evaluations[-1].outcome is LaunchOutcome.FAILED
+
+    # 紧接着放量下跌（120 → 110，-8.3%），离插针只有 3 分钟、在冷却时长之内，仍应照常提醒。
+    alerts = rally(detector, 33, [116.0, 112.0, 110.0], quote=2000.0, price=120.0)
+    assert [(alert.direction, alert.wave) for item in alerts for alert in item] == [("drop", 1)]
+
+
 def test_overshoot_alerts_directly_when_cap_disabled():
     alerts = rally(make(seed=30, baseline_minutes=30, max_change_percent=None), 30, [105.0, 118.0, 120.0])
 

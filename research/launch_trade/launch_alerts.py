@@ -591,9 +591,19 @@ def _report(data: dict, events: np.ndarray, n_weeks: int) -> dict:
     }
 
 
+def _data_weeks() -> int:
+    """数据覆盖到的周数（含最后不满一周的那周）。按数据算而不是按运行当天算：数据不更新时晚些重跑，
+    样本外的周数与每天提醒数也不变。"""
+    last = 0
+    for path in OUT.glob("cand_W*_B*.npz"):
+        with np.load(path) as data:
+            last = max(last, int(data["t"].max()))
+    return (last * 60 + 60) // WEEK + 1
+
+
 def cmd_evaluate() -> None:
     chosen = json.loads((OUT / _named("select")).read_text(encoding="utf-8"))
-    n_weeks = math.ceil((time.time() - EPOCH) / WEEK) - DEV_WEEKS
+    n_weeks = _data_weeks() - DEV_WEEKS
     result = {}
     for direction in SIGNS:
         events = event_counts(direction, DEV_WEEKS, n_weeks)
