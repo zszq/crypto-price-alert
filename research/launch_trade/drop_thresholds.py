@@ -145,7 +145,7 @@ def run() -> None:
 def verify(symbols: list[str]) -> None:
     """与真 LaunchDetector 逐条对照 2025-10~11 两个月（这段没有数据缺口、合约池始终满足）。"""
     from price_alert.launch.detector import LaunchDetector
-    from price_alert.launch.rule import LaunchRule, Thresholds
+    from price_alert.launch.rule import LaunchRule
     from price_alert.models import Candle
 
     contracts = load_contracts()
@@ -163,11 +163,11 @@ def verify(symbols: list[str]) -> None:
                     np.ones(hi - lo, dtype=bool), ratio, low, high, LEVELS,
                 )
             ]
+            # 放量下跌是单独的检测器，只用下跌这一套门槛。
             rule = LaunchRule(
-                window_minutes=WINDOW, baseline_minutes=BASELINE, min_volume_ratio=3.0, min_window_quote=MIN_QUOTE,
-                min_change_percent=3.0, require_breakout=False, alert_drops=True, cooldown_minutes=COOLDOWN,
-                realert_step_percent=STEP, max_change_percent=15.0,
-                drop=Thresholds(ratio, low, None if math.isinf(high) else high),
+                direction="drop", window_minutes=WINDOW, baseline_minutes=BASELINE, min_volume_ratio=ratio,
+                min_window_quote=MIN_QUOTE, min_change_percent=low, require_breakout=False, cooldown_minutes=COOLDOWN,
+                realert_step_percent=STEP, max_change_percent=None if math.isinf(high) else high,
             )
             detector = LaunchDetector(rule)
             detector.add_symbol(name, [], 1e9, quanto_multiplier=1)

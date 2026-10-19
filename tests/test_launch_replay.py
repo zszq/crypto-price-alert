@@ -14,9 +14,8 @@ NOW = START + timedelta(days=1)
 
 def launch_config():
     # 基准期缩短到 30 分钟，构造数据简单直接。
-    return AppConfig.model_validate(
-        {"launch": {"baseline_minutes": 30, "window_minutes": 3, "min_window_quote": 3000, "cooldown_minutes": 5}}
-    ).launch
+    rise = {"baseline_minutes": 30, "window_minutes": 3, "min_window_quote": 3000, "cooldown_minutes": 5}
+    return AppConfig.model_validate({"launch": {"rise": rise}}).launch
 
 
 def candles(start, closes, quote):
@@ -30,19 +29,21 @@ def candles(start, closes, quote):
 
 
 def test_plan_aligns_warmup_and_rejects_ranges_beyond_gate_history():
-    rule = launch_config().to_rule()
-    plan = plan_launch_replay("RLC_USDT", START + timedelta(seconds=20), START + timedelta(hours=1), rule, NOW)
+    rules = launch_config().rules()
+    plan = plan_launch_replay("RLC_USDT", START + timedelta(seconds=20), START + timedelta(hours=1), rules, NOW)
     assert plan.warmup_start == START - timedelta(minutes=33)
 
     with pytest.raises(ValueError, match="结束时间必须晚于开始时间"):
-        plan_launch_replay("RLC_USDT", START, START, rule, NOW)
+        plan_launch_replay("RLC_USDT", START, START, rules, NOW)
     with pytest.raises(ValueError, match="10000 根"):
-        plan_launch_replay("RLC_USDT", NOW - timedelta(days=7), NOW, rule, NOW)
+        plan_launch_replay("RLC_USDT", NOW - timedelta(days=7), NOW, rules, NOW)
+    with pytest.raises(ValueError, match="都已关闭"):
+        plan_launch_replay("RLC_USDT", START, NOW, [], NOW)
 
 
 def test_run_and_render_explain_alerts_and_failures():
     config = launch_config()
-    plan = plan_launch_replay("RLC_USDT", START, START + timedelta(minutes=10), config.to_rule(), NOW)
+    plan = plan_launch_replay("RLC_USDT", START, START + timedelta(minutes=10), config.rules(), NOW)
     history = candles(plan.warmup_start, [1.0] * 33, 100.0)
     # 区间开始后放量逐分钟上涨 2%，再横盘。
     rally = candles(START, [1.0, 1.02, 1.04, 1.06, 1.08] + [1.08] * 5, 2000.0)
@@ -67,7 +68,7 @@ def test_run_and_render_explain_alerts_and_failures():
 
 def test_overshoot_minute_is_listed_to_explain_later_cooldown():
     config = launch_config()
-    plan = plan_launch_replay("RLC_USDT", START, START + timedelta(minutes=6), config.to_rule(), NOW)
+    plan = plan_launch_replay("RLC_USDT", START, START + timedelta(minutes=6), config.rules(), NOW)
     history = candles(plan.warmup_start, [1.0] * 33, 100.0)
     # 3 分钟涨 18% 超过上限，不提醒；窗口滑过后涨幅回到区间内，也只是冷却中，不在高位补报。
     spike = candles(START, [1.0, 1.02, 1.18, 1.20, 1.22, 1.24], 2000.0)
@@ -78,3 +79,35 @@ def test_overshoot_minute_is_listed_to_explain_later_cooldown():
     assert result.alerts == []
     assert "17:53 | 1 → 1.18 +18.00% | 3分钟成交额 6000 量比 20.0 | 只因涨跌幅过大（插针）不提醒" in text
     assert "满足条件，冷却中" in text
+
+
+def test_both_directions_replay_with_their_own_baselines():
+    # 下跌基准期更长：按较长的一边预热，两个方向各自成段输出，提醒按时间合并。
+    config = AppConfig.model_validate(
+        {
+            "launch": {
+                "rise": {"baseline_minutes": 30, "window_minutes": 3, "min_window_quote": 3000, "cooldown_minutes": 5},
+                "drop": {
+                    "enabled": True,
+                    "baseline_minutes": 40,
+                    "window_minutes": 3,
+                    "min_window_quote": 3000,
+                    "cooldown_minutes": 5,
+                },
+            }
+        }
+    ).launch
+    plan = plan_launch_replay("RLC_USDT", START, START + timedelta(minutes=20), config.rules(), NOW)
+    assert plan.warmup_start == START - timedelta(minutes=43)
+    history = candles(plan.warmup_start, [1.0] * 43, 100.0)
+    # 先放量上涨 3 分钟，横盘，再放量下跌 3 分钟。
+    moves = candles(START, [1.0, 1.02, 1.04, 1.06] + [1.06] * 6 + [1.04, 1.01, 0.98] + [0.98] * 7, 2000.0)
+
+    result = run_launch_replay(config, plan, history + moves)
+    text = "\n".join(render_launch_replay(result))
+
+    assert [(alert.direction, alert.timestamp) for alert in result.alerts] == [
+        ("surge", START + timedelta(minutes=3)),
+        ("drop", START + timedelta(minutes=13)),
+    ]
+    assert "【放量上涨】放量上涨：" in text and "【放量下跌】放量下跌：" in text

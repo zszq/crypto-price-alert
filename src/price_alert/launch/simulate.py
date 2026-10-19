@@ -1,4 +1,4 @@
-"""合成行情验证放量启动配置：平稳的基准期之后放量上涨一段，正常时恰好产生一条提醒。"""
+"""合成行情验证放量启动配置：每个启用的方向各跑一段平稳基准期之后放量上涨（下跌）的行情，正常时各恰好产生一条提醒。"""
 
 from __future__ import annotations
 
@@ -8,18 +8,26 @@ from datetime import UTC, datetime, timedelta
 from price_alert.assembly import build_launch_detector
 from price_alert.launch.alerts import LaunchAlert
 from price_alert.launch.config import LaunchConfig
+from price_alert.launch.rule import LaunchRule
 from price_alert.models import Candle
 
 SYMBOL = "BTC_USDT"
 _PRICE = 100.0
-# 基准期每分钟的成交额；基准期价格一字横盘，再小的涨幅门槛也能突破基准期高点。
+# 基准期每分钟的成交额；基准期价格一字横盘，再小的涨跌幅门槛也能突破基准期高低点。
 _BASE_QUOTE = 1_000.0
 
 
 def simulate_launch(config: LaunchConfig) -> list[LaunchAlert]:
+    alerts: list[LaunchAlert] = []
+    for rule in config.rules():
+        alerts.extend(_simulate_side(rule))
+    return alerts
+
+
+def _simulate_side(configured: LaunchRule) -> list[LaunchAlert]:
     # 拉升过程中条件可能提前满足，冷却覆盖整段行情，只验证门槛能否被满足，数量不随参数浮动。
-    rule = dataclasses.replace(config.to_rule(), cooldown_minutes=config.baseline_minutes)
-    detector = build_launch_detector(config, rule=rule)
+    rule = dataclasses.replace(configured, cooldown_minutes=configured.baseline_minutes)
+    detector = build_launch_detector(rule)
     now = int(datetime.now(UTC).timestamp())
     launch_start = datetime.fromtimestamp(now - now % 60, tz=UTC) - timedelta(minutes=rule.window_minutes)
     baseline_start = launch_start - timedelta(minutes=rule.baseline_minutes)
@@ -29,12 +37,15 @@ def simulate_launch(config: LaunchConfig) -> list[LaunchAlert]:
     ]
     detector.add_symbol(SYMBOL, flat, 1_000_000_000, quanto_multiplier=1.0)
 
-    # 成交额与涨幅都取门槛的 1.5 倍（涨幅不超过上下限的中点），平均分到窗口的每一分钟，逐分钟走高且无影线。
+    # 成交额与涨跌幅都取门槛的 1.5 倍（不超过上下限的中点），平均分到窗口的每一分钟，逐分钟单边移动且无影线。
     window_quote = max(rule.min_window_quote, rule.min_volume_ratio * _BASE_QUOTE * rule.window_minutes) * 1.5
     change = rule.min_change_percent * 1.5
     if rule.max_change_percent is not None:
         change = min(change, (rule.min_change_percent + rule.max_change_percent) / 2)
-    step = _PRICE * change / 100 / rule.window_minutes
+    if rule.sign < 0:
+        # 跌幅不能到 100%，价格会变成 0 或负数。
+        change = min(change, (rule.min_change_percent + 100) / 2)
+    step = rule.sign * _PRICE * change / 100 / rule.window_minutes
     alerts: list[LaunchAlert] = []
     for index in range(rule.window_minutes):
         open_price = _PRICE + step * index
@@ -42,8 +53,8 @@ def simulate_launch(config: LaunchConfig) -> list[LaunchAlert]:
         candle = Candle(
             launch_start + timedelta(minutes=index),
             open_price,
-            close_price,
-            open_price,
+            max(open_price, close_price),
+            min(open_price, close_price),
             close_price,
             window_quote / rule.window_minutes,
         )

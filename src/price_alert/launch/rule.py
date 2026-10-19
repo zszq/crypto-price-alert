@@ -31,69 +31,52 @@ CONDITION_LABELS: dict[Condition, str] = {
     Condition.RATIO: "量比不足",
     Condition.CHANGE: "涨跌幅不足",
     Condition.BREAKOUT: "未突破基准期高低点",
-    Condition.DIRECTION: "下跌（未开启下跌提醒）",
+    Condition.DIRECTION: "方向相反",
     Condition.OVERSHOOT: "涨跌幅过大（插针）",
 }
 
 
 @dataclass(frozen=True, slots=True)
-class Thresholds:
-    """一个方向的量价门槛。放量下跌之后常有恐慌盘回补，同样的门槛对两个方向的效果相反（例如涨跌幅下限调高
-    让上涨提醒更可靠，却让下跌提醒报在急跌末端、之后更容易反弹），所以下跌可以单独取一套，见 LaunchRule.drop。"""
-
-    min_volume_ratio: float
-    min_change_percent: float
-    max_change_percent: float | None
-
-    def __post_init__(self) -> None:
-        if self.max_change_percent is not None and self.max_change_percent <= self.min_change_percent:
-            raise ValueError("max_change_percent 必须大于 min_change_percent")
-
-    def overshoots(self, change_percent: float) -> bool:
-        """涨跌幅（取绝对值）超过上限：这么短时间走完这么多，提醒时已在插针的高点。"""
-        return self.max_change_percent is not None and abs(change_percent) > self.max_change_percent
-
-
-@dataclass(frozen=True, slots=True)
 class LaunchRule:
+    """一个方向的全部门槛。放量上涨与放量下跌各用一份、由两个检测器分别判定：放量下跌之后常有恐慌盘回补，
+    同样的门槛对两个方向的效果不同，回测选出的窗口、基准期、成交额门槛也不一样，所以全部分开设置。"""
+
+    direction: Direction
     window_minutes: int
     baseline_minutes: int
     min_volume_ratio: float
     min_window_quote: float
     min_change_percent: float
     require_breakout: bool = True
-    alert_drops: bool = False
     cooldown_minutes: int = 15
     realert_step_percent: float = 5.0
     max_change_percent: float | None = 15.0
-    # 放量下跌单独的量比、涨跌幅门槛；None 表示与上涨相同（上面三项）。窗口、基准期、成交额、突破、冷却两个方向共用。
-    drop: Thresholds | None = None
 
     def __post_init__(self) -> None:
         if self.window_minutes < 1:
             raise ValueError("window_minutes 必须至少为 1")
         if self.baseline_minutes <= self.window_minutes:
             raise ValueError("baseline_minutes 必须大于 window_minutes")
-        # 构造一次即校验上涨这套门槛的上下限。
-        self.thresholds("surge")
+        if self.max_change_percent is not None and self.max_change_percent <= self.min_change_percent:
+            raise ValueError("max_change_percent 必须大于 min_change_percent")
+
+    @property
+    def sign(self) -> int:
+        return 1 if self.direction == "surge" else -1
 
     @property
     def history_minutes(self) -> int:
         """判定一次所需的已收盘 1 分钟 K 线：基准期加观察窗口。"""
         return self.baseline_minutes + self.window_minutes
 
-    def thresholds(self, direction: Direction) -> Thresholds:
-        if direction == "drop" and self.drop is not None:
-            return self.drop
-        return Thresholds(self.min_volume_ratio, self.min_change_percent, self.max_change_percent)
-
     def overshoots(self, change_percent: float) -> bool:
-        """按涨跌幅所属方向的上限判断是否插针（与 evaluate_launch 一样，负数为下跌）。"""
-        return self.thresholds("drop" if change_percent < 0 else "surge").overshoots(change_percent)
+        """涨跌幅（取绝对值）超过上限：这么短时间走完这么多，提醒时已在插针的高点（低点）。"""
+        return self.max_change_percent is not None and abs(change_percent) > self.max_change_percent
 
 
 @dataclass(frozen=True, slots=True)
 class LaunchMetrics:
+    # 判定所用规则的方向，不是这段行情实际的涨跌方向（方向相反记为 Condition.DIRECTION）。
     direction: Direction
     # 窗口开始前最后一根 K 线的收盘价，即这一小段行情的起点。
     start_price: float
@@ -121,8 +104,7 @@ class LaunchMetrics:
 def still_launching(metrics: LaunchMetrics, price: float, rule: LaunchRule) -> bool:
     """用更新的成交价按同样的涨跌幅与突破门槛复核：空档之后才结算的分钟，收盘价已经过期，
     价格已经回落的不应再带着旧价格提醒。"""
-    sign = 1 if metrics.direction == "surge" else -1
-    if (price / metrics.start_price - 1) * 100 * sign < rule.thresholds(metrics.direction).min_change_percent:
+    if (price / metrics.start_price - 1) * 100 * rule.sign < rule.min_change_percent:
         return False
     return not rule.require_breakout or breaks_out(metrics.direction, price, metrics.breakout_price)
 
@@ -141,8 +123,7 @@ def evaluate_launch(history: Sequence[Candle], rule: LaunchRule) -> LaunchMetric
     start_price = baseline[-1].close
     end_price = window[-1].close
     change_percent = (end_price / start_price - 1) * 100
-    direction: Direction = "surge" if change_percent >= 0 else "drop"
-    limits = rule.thresholds(direction)
+    direction = rule.direction
 
     window_quote = sum(candle.quote_volume for candle in window)
     # 用均值而不是中位数：冷门币多数分钟零成交，中位数常为 0，任何一点成交都会显得「放量」。
@@ -154,16 +135,16 @@ def evaluate_launch(history: Sequence[Candle], rule: LaunchRule) -> LaunchMetric
         breakout_price = min(candle.low for candle in baseline)
 
     failures: list[Condition] = []
-    if direction == "drop" and not rule.alert_drops:
+    if change_percent * rule.sign < 0:
         failures.append(Condition.DIRECTION)
     # 量比只衡量相对放大，基准接近零的冷门币一点成交就是几十倍，必须同时有绝对成交额兜底。
     if window_quote < rule.min_window_quote:
         failures.append(Condition.VOLUME)
-    if volume_ratio is not None and volume_ratio < limits.min_volume_ratio:
+    if volume_ratio is not None and volume_ratio < rule.min_volume_ratio:
         failures.append(Condition.RATIO)
-    if abs(change_percent) < limits.min_change_percent:
+    if abs(change_percent) < rule.min_change_percent:
         failures.append(Condition.CHANGE)
-    if limits.overshoots(change_percent):
+    if rule.overshoots(change_percent):
         failures.append(Condition.OVERSHOOT)
     if rule.require_breakout and not breaks_out(direction, end_price, breakout_price):
         failures.append(Condition.BREAKOUT)

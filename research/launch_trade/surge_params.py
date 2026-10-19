@@ -550,7 +550,7 @@ def runup(which: list[str]) -> None:
 def verify(symbols: list[str]) -> None:
     """与真 LaunchDetector 逐条对照 2025-10~11 两个月（检测器现有参数能表达的候选）。"""
     from price_alert.launch.detector import LaunchDetector
-    from price_alert.launch.rule import LaunchRule, Thresholds
+    from price_alert.launch.rule import LaunchRule
     from price_alert.models import Candle
 
     contracts = load_contracts()
@@ -593,20 +593,25 @@ def verify(symbols: list[str]) -> None:
                 [(int(x[C["i"]]), "surge", int(x[C["dir"]])) for x in fake.surge_alerts(c)]
                 + [(int(x[C["i"]]), "drop", int(x[C["dir"]])) for x in fake.drop_alerts(c[:4])]
             )
-            rule = LaunchRule(
-                window_minutes=w, baseline_minutes=b, min_volume_ratio=ratio, min_window_quote=q,
-                min_change_percent=low_, require_breakout=bo, alert_drops=True, cooldown_minutes=COOLDOWN,
-                realert_step_percent=STEP, max_change_percent=None if math.isinf(high_) else high_,
-                drop=Thresholds(*DROP),
-            )
-            detector = LaunchDetector(rule)
-            detector.add_symbol(name, [], 1e9, quanto_multiplier=1)
+            # 放量上涨、放量下跌是两个检测器；下跌的量比与涨跌幅上下限取 DROP，其余与上涨相同。
+            shared = dict(window_minutes=w, baseline_minutes=b, min_window_quote=q, require_breakout=bo,
+                          cooldown_minutes=COOLDOWN, realert_step_percent=STEP)
+            rules = [
+                LaunchRule(direction="surge", min_volume_ratio=ratio, min_change_percent=low_,
+                           max_change_percent=None if math.isinf(high_) else high_, **shared),
+                LaunchRule(direction="drop", min_volume_ratio=DROP[0], min_change_percent=DROP[1],
+                           max_change_percent=DROP[2], **shared),
+            ]
+            detectors = [LaunchDetector(rule) for rule in rules]
+            for detector in detectors:
+                detector.add_symbol(name, [], 1e9, quanto_multiplier=1)
             real = []
             for k in range(hi - lo):
                 moment = datetime.fromtimestamp(part.t0 + k * 60, UTC)
                 candle = Candle(moment, part.open[k], part.high[k], part.low[k], part.close[k], part.quote[k])
-                for alert in detector.add_candle(name, candle):
-                    real.append((k, alert.metrics.direction, alert.wave))
+                for detector in detectors:
+                    for alert in detector.add_candle(name, candle):
+                        real.append((k, alert.metrics.direction, alert.wave))
             real.sort()
             status = "一致" if mine == real else f"不一致（真检测器 {len(real)} 条）"
             print(name, label(c), len(mine), status)

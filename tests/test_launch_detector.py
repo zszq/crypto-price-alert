@@ -12,6 +12,7 @@ SYMBOL = "RLC_USDT"
 
 def rule(**overrides) -> LaunchRule:
     values = {
+        "direction": "surge",
         "window_minutes": 3,
         "baseline_minutes": 10,
         "min_volume_ratio": 5.0,
@@ -173,10 +174,12 @@ def test_cooldown_longer_than_baseline_is_still_honoured():
     assert evaluations[-1].outcome is LaunchOutcome.COOLDOWN
 
 
-def test_drop_alerts_only_when_enabled_and_tracked_separately():
+def test_each_detector_alerts_only_its_own_direction():
+    # 上涨检测器不报下跌，下跌由另一个检测器负责。
     assert not any(rally(make(), 10, [99.0, 97.5, 96.0]))
+    assert not any(rally(make(direction="drop"), 10, [101.0, 102.5, 104.0]))
 
-    detector = make(alert_drops=True)
+    detector = make(direction="drop")
     drops = [alert for item in rally(detector, 10, [99.0, 97.5, 96.0]) for alert in item]
     assert [(alert.direction, alert.wave, alert.label) for alert in drops] == [("drop", 1, "放量下跌")]
 

@@ -12,7 +12,7 @@ from price_alert.config import INTERVAL_SECONDS, AppConfig, WindowConfig
 from price_alert.detection import MonitoredDetector
 from price_alert.detector import AtrMoveDetector
 from price_alert.gate import GateRestClient, RateLimiter
-from price_alert.launch.config import LaunchConfig
+from price_alert.launch.alerts import LABELS as LAUNCH_LABELS
 from price_alert.launch.detector import LaunchDetector, LaunchEvaluation
 from price_alert.launch.rule import LaunchRule
 from price_alert.streak import StreakRule
@@ -85,13 +85,12 @@ def build_trend_detector(
 
 
 def build_launch_detector(
-    config: LaunchConfig,
+    rule: LaunchRule,
     *,
-    rule: LaunchRule | None = None,
     observer: Callable[[LaunchEvaluation], None] | None = None,
 ) -> LaunchDetector:
-    # rule 覆盖配置生成的规则，供 simulate 调整冷却后单独验证。
-    return LaunchDetector(config.to_rule() if rule is None else rule, observer)
+    # 一个检测器只判定一个方向；规则由 LaunchSideConfig.to_rule 生成，simulate 可以先调整冷却再传进来。
+    return LaunchDetector(rule, observer)
 
 
 def build_detectors(config: AppConfig) -> list[MonitoredDetector]:
@@ -108,10 +107,13 @@ def build_detectors(config: AppConfig) -> list[MonitoredDetector]:
                 VolumeRange(move.min_volume_24h_quote),
             )
         )
-    if config.launch.enabled:
-        launch = build_launch_detector(config.launch)
-        volume = VolumeRange(config.launch.min_volume_24h_quote, config.launch.max_volume_24h_quote)
-        detectors.append(MonitoredDetector("放量启动", launch, launch.warmup_interval, launch.warmup_candles, volume))
+    # 放量上涨与放量下跌是两个检测器：各自的门槛、K 线保留长度与合约池（服务按各自的成交额范围增删合约）。
+    for direction, side in config.launch.sides():
+        launch = build_launch_detector(side.to_rule(direction))
+        volume = VolumeRange(side.min_volume_24h_quote, side.max_volume_24h_quote)
+        detectors.append(
+            MonitoredDetector(LAUNCH_LABELS[direction], launch, launch.warmup_interval, launch.warmup_candles, volume)
+        )
     if config.trend.enabled:
         trend = build_trend_detector(config.trend)
         volume = VolumeRange(config.trend.min_volume_24h_quote, config.trend.max_volume_24h_quote)

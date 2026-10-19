@@ -7,7 +7,7 @@ from colorama import Style
 
 from price_alert.formatting import format_amount
 from price_alert.launch.alerts import LaunchAlert, describe_launch_rule, format_launch_alert
-from price_alert.launch.rule import LaunchMetrics, LaunchRule, Thresholds
+from price_alert.launch.rule import LaunchMetrics, LaunchRule
 from price_alert.notifier import (
     LAUNCH_LABEL_COLOR,
     SURGE_CHANGE_COLOR,
@@ -89,26 +89,19 @@ def test_amounts_use_wan_and_yi_without_trailing_zeros():
 
 
 def test_rule_description_lists_thresholds_and_repeat_policy():
-    rule = LaunchRule(5, 360, 5.0, 30_000, 3.0)
+    rule = LaunchRule("surge", 5, 360, 5.0, 30_000, 3.0)
     assert describe_launch_rule(rule) == (
-        "放量启动：最近 5 分钟成交额 ≥ 3万 USDT 且 ≥ 近6小时同长度均量的 5 倍，涨跌幅 3%~15%，收盘突破近6小时高低点；"
-        "同方向再次提醒需间隔 ≥ 15 分钟且价格比上次提醒再推进 ≥ 5%（超过6小时重新计为启动）；只提醒上涨"
+        "放量上涨：最近 5 分钟成交额 ≥ 3万 USDT 且 ≥ 近6小时同长度均量的 5 倍，涨幅 3%~15%，收盘突破近6小时高点；"
+        "再次提醒需间隔 ≥ 15 分钟且价格比上次提醒再推进 ≥ 5%（超过6小时重新计为启动）"
     )
-    loose = replace(
-        rule,
-        require_breakout=False,
-        alert_drops=True,
-        baseline_minutes=90,
-        max_change_percent=None,
-    )
+    loose = replace(rule, require_breakout=False, baseline_minutes=90, max_change_percent=None)
     assert "突破" not in describe_launch_rule(loose)
-    assert "涨跌幅 ≥ 3%" in describe_launch_rule(loose)
-    assert "近90分钟" in describe_launch_rule(loose) and "涨跌都提醒" in describe_launch_rule(loose)
+    assert "涨幅 ≥ 3%" in describe_launch_rule(loose) and "近90分钟" in describe_launch_rule(loose)
 
 
-def test_rule_description_lists_separate_drop_thresholds():
-    rule = replace(LaunchRule(5, 360, 3.0, 100_000, 3.0), alert_drops=True, drop=Thresholds(4.0, 2.0, 10.0))
+def test_drop_rule_description_uses_drop_wording():
+    rule = LaunchRule("drop", 5, 180, 2.0, 50_000, 3.0)
 
-    assert describe_launch_rule(rule).endswith("涨跌都提醒，下跌改为 ≥ 近6小时同长度均量的 4 倍，涨跌幅 2%~10%")
-    # 只提醒上涨时下跌门槛用不上，不必列出。
-    assert describe_launch_rule(replace(rule, alert_drops=False)).endswith("；只提醒上涨")
+    assert describe_launch_rule(rule).startswith(
+        "放量下跌：最近 5 分钟成交额 ≥ 5万 USDT 且 ≥ 近3小时同长度均量的 2 倍，跌幅 3%~15%，收盘突破近3小时低点；"
+    )

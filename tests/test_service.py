@@ -748,8 +748,8 @@ def test_real_trend_detector_warms_up_through_monitor():
 
 def test_real_launch_detector_gets_contract_multiplier_through_monitor():
     app_config = config()
-    launch = build_launch_detector(app_config.launch)
-    detectors = [MonitoredDetector("放量启动", launch, launch.warmup_interval, launch.warmup_candles, ANY_VOLUME)]
+    launch = build_launch_detector(app_config.launch.rise.to_rule("surge"))
+    detectors = [MonitoredDetector("放量上涨", launch, launch.warmup_interval, launch.warmup_candles, ANY_VOLUME)]
     rest = IntervalRest([ticker("BTC_USDT", 20e6)], [contract("BTC_USDT") | {"quanto_multiplier": "0.0001"}])
 
     asyncio.run(monitor(detectors, rest, GateTradeFeed("wss://example.test"), app_config).refresh_universe())

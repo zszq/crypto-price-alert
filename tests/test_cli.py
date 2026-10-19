@@ -40,7 +40,7 @@ def test_simulate_produces_one_alert_per_enabled_window(move_config, expected_al
         {
             "move": move_config,
             "trend": {"enabled": False},
-            "launch": {"enabled": False},
+            "launch": {"rise": {"enabled": False}},
             "alerts": {"console_colors": False},
         }
     )
@@ -63,7 +63,7 @@ def test_simulate_produces_one_alert_per_enabled_window(move_config, expected_al
 )
 def test_simulate_produces_one_alert_per_enabled_trend_period(periods, expected_trend_alerts, capsys):
     config = AppConfig.model_validate(
-        {"trend": {"periods": periods}, "launch": {"enabled": False}, "alerts": {"console_colors": False}}
+        {"trend": {"periods": periods}, "launch": {"rise": {"enabled": False}}, "alerts": {"console_colors": False}}
     )
     windows = 2
 
@@ -181,11 +181,18 @@ def test_lock_path_is_per_config_file_and_default_keeps_its_old_name():
     assert cli.lock_path("config/launch-trade.yaml") == Path("data/price-alert-launch-trade.lock")
 
 
-def test_simulate_includes_one_launch_alert(capsys):
+def test_simulate_includes_one_alert_per_launch_direction(capsys):
     config = AppConfig.model_validate({"trend": {"enabled": False}, "alerts": {"console_colors": False}})
 
     assert asyncio.run(cli.simulate(config)) == 3 == cli.expected_simulated_alerts(config)
     assert capsys.readouterr().out.count("[放量上涨]") == 1
+
+    both = AppConfig.model_validate(
+        {"trend": {"enabled": False}, "launch": {"drop": {"enabled": True}}, "alerts": {"console_colors": False}}
+    )
+    assert asyncio.run(cli.simulate(both)) == 4 == cli.expected_simulated_alerts(both)
+    output = capsys.readouterr().out
+    assert output.count("[放量上涨]") == 1 and output.count("[放量下跌]") == 1
 
 
 @pytest.mark.parametrize(
@@ -197,9 +204,9 @@ def test_simulate_includes_one_launch_alert(capsys):
     ],
 )
 def test_simulated_launch_satisfies_extreme_thresholds(launch):
-    config = AppConfig.model_validate({"launch": launch})
+    config = AppConfig.model_validate({"launch": {"rise": launch, "drop": launch | {"enabled": True}}})
 
-    assert len(simulate_launch(config.launch)) == 1
+    assert [alert.direction for alert in simulate_launch(config.launch)] == ["surge", "drop"]
 
 
 def test_launch_replay_runs_against_fake_exchange(monkeypatch, capsys):

@@ -21,9 +21,10 @@ from price_alert.assembly import (
     build_windows,
 )
 from price_alert.config import INTERVAL_SECONDS, AppConfig, load_config
-from price_alert.formatting import BEIJING_TIME
+from price_alert.formatting import BEIJING_TIME, format_amount
 from price_alert.gate import GateRestClient, fetch_minute_candles, price_decimals
 from price_alert.instance import AlreadyRunningError, ProcessLock
+from price_alert.launch.alerts import LABELS as LAUNCH_LABELS
 from price_alert.launch.alerts import describe_launch_rule
 from price_alert.launch.replay import plan_launch_replay, render_launch_replay, run_launch_replay
 from price_alert.launch.simulate import simulate_launch
@@ -115,11 +116,11 @@ def _build_demo_candles(end: datetime, count: int, interval_seconds: int) -> lis
 def expected_simulated_alerts(config: AppConfig) -> int:
     windows = len(build_windows(config)) if config.move.enabled else 0
     trend_periods = len(config.trend.rules()) if config.trend.enabled else 0
-    return windows + trend_periods + int(config.launch.enabled)
+    return windows + trend_periods + len(config.launch.sides())
 
 
 async def simulate(config: AppConfig) -> int:
-    """为每个启用的观察窗口、趋势周期和放量启动各跑一遍合成行情，返回提醒总数；正常时等于 expected_simulated_alerts。"""
+    """为每个启用的观察窗口、趋势周期和放量方向各跑一遍合成行情，返回提醒总数；正常时等于 expected_simulated_alerts。"""
     notifier = ConsoleNotifier(beep=False, colors=config.alerts.console_colors)
     alert_count = 0
     for window in build_windows(config, cooldown_seconds=0) if config.move.enabled else []:
@@ -238,10 +239,9 @@ def trend_replay(config: AppConfig, args: argparse.Namespace) -> None:
 
 
 def launch_replay(config: AppConfig, args: argparse.Namespace) -> None:
-    rule = config.launch.to_rule()
     try:
         start, end = _replay_range(args, timedelta(hours=DEFAULT_LAUNCH_REPLAY_HOURS))
-        plan = plan_launch_replay(normalize_symbol(args.symbol), start, end, rule)
+        plan = plan_launch_replay(normalize_symbol(args.symbol), start, end, config.launch.rules())
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     rest = build_rest_client(config)
@@ -322,10 +322,14 @@ def main() -> None:
                 print(f"  {describe_trend_rule(rule)}")
         else:
             print("  趋势提醒：已关闭")
-        if config.launch.enabled:
-            print(f"  {describe_launch_rule(config.launch.to_rule())}")
-        else:
-            print("  放量启动提醒：已关闭")
+        for direction, side in (("surge", config.launch.rise), ("drop", config.launch.drop)):
+            if side.enabled:
+                volume = f"24 小时成交额 > {format_amount(side.min_volume_24h_quote)}"
+                if side.max_volume_24h_quote is not None:
+                    volume += f" 且 ≤ {format_amount(side.max_volume_24h_quote)}"
+                print(f"  {describe_launch_rule(side.to_rule(direction))}；合约池：{volume} USDT")
+            else:
+                print(f"  {LAUNCH_LABELS[direction]}提醒：已关闭")
         return
     if args.command == "universe":
         print_universe(config)
@@ -335,7 +339,7 @@ def main() -> None:
         produced = asyncio.run(simulate(config))
         if produced != expected:
             raise SystemExit(
-                f"模拟应产生 {expected} 条提醒（每个窗口、每个趋势周期、放量启动各一条），实际 {produced} 条，"
+                f"模拟应产生 {expected} 条提醒（每个窗口、每个趋势周期、每个放量方向各一条），实际 {produced} 条，"
                 "请检查 move、trend 与 launch 配置"
             )
         return

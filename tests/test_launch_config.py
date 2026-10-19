@@ -4,50 +4,74 @@ from pydantic import ValidationError
 from price_alert.assembly import build_detectors
 from price_alert.config import AppConfig
 from price_alert.launch.config import LaunchConfig
-from price_alert.launch.rule import Thresholds
 from price_alert.universe import VolumeRange
 
 
 def test_defaults_and_build_rule():
     config = LaunchConfig()
-    rule = config.to_rule()
 
-    assert (config.min_volume_24h_quote, config.max_volume_24h_quote) == (1_000_000, None)
-    assert (rule.window_minutes, rule.baseline_minutes, rule.history_minutes) == (5, 360, 365)
+    # 默认只开放量上涨；下跌关闭，但两边门槛的默认值相同。
+    assert (config.rise.enabled, config.drop.enabled, config.enabled) == (True, False, True)
+    assert [direction for direction, _ in config.sides()] == ["surge"]
+    rule = config.rise.to_rule("surge")
+    assert (config.rise.min_volume_24h_quote, config.rise.max_volume_24h_quote) == (1_000_000, None)
+    assert (rule.direction, rule.window_minutes, rule.baseline_minutes, rule.history_minutes) == ("surge", 5, 360, 365)
     assert (rule.min_volume_ratio, rule.min_window_quote, rule.min_change_percent) == (3.0, 100_000, 3.0)
-    assert (rule.require_breakout, rule.alert_drops) == (True, False)
-    assert (rule.cooldown_minutes, rule.realert_step_percent) == (15, 5.0)
-    assert rule.max_change_percent == 15.0
-    assert LaunchConfig(max_change_percent=None).to_rule().max_change_percent is None
-    # 不写 drop 段：两个方向共用顶层门槛。
-    assert rule.drop is None
+    assert rule.require_breakout is True
+    assert (rule.cooldown_minutes, rule.realert_step_percent, rule.max_change_percent) == (15, 5.0, 15.0)
+    assert config.drop.model_dump(exclude={"enabled"}) == config.rise.model_dump(exclude={"enabled"})
 
 
-def test_drop_section_overrides_only_what_it_sets():
+def test_sides_are_configured_independently():
     config = AppConfig.model_validate(
-        {"launch": {"max_change_percent": 15, "drop": {"min_change_percent": 2, "min_volume_ratio": 4}}}
+        {
+            "launch": {
+                "rise": {"min_change_percent": 4, "max_change_percent": None},
+                "drop": {"enabled": True, "baseline_minutes": 180, "min_volume_ratio": 2, "min_window_quote": 50_000},
+            }
+        }
     ).launch
 
-    assert config.to_rule().drop == Thresholds(4.0, 2.0, 15.0)
-    # 显式 null 表示下跌不设上限；不写则沿用顶层。
-    uncapped = LaunchConfig.model_validate({"drop": {"max_change_percent": None}})
-    assert uncapped.to_rule().drop == Thresholds(3.0, 3.0, None)
-    capped = LaunchConfig.model_validate({"max_change_percent": None, "drop": {"max_change_percent": 10}})
-    assert capped.to_rule().drop == Thresholds(3.0, 3.0, 10.0)
-    assert capped.to_rule().max_change_percent is None
+    rise, drop = config.rules()
+    assert (rise.direction, rise.min_change_percent, rise.max_change_percent, rise.baseline_minutes) == (
+        "surge",
+        4.0,
+        None,
+        360,
+    )
+    assert (drop.direction, drop.baseline_minutes, drop.min_volume_ratio, drop.min_window_quote) == (
+        "drop",
+        180,
+        2.0,
+        50_000,
+    )
+    # 没写的项取代码默认值，不受另一个方向影响。
+    assert (drop.min_change_percent, drop.max_change_percent) == (3.0, 15.0)
 
 
-def test_launch_detector_joins_monitor_with_its_own_volume_range():
-    config = AppConfig.model_validate({"launch": {"min_volume_24h_quote": 50_000, "max_volume_24h_quote": 5_000_000}})
+def test_each_side_joins_monitor_as_its_own_detector_and_pool():
+    config = AppConfig.model_validate(
+        {
+            "launch": {
+                "rise": {"min_volume_24h_quote": 50_000, "max_volume_24h_quote": 5_000_000},
+                "drop": {"enabled": True, "baseline_minutes": 180},
+            }
+        }
+    )
 
-    launch = next(entry for entry in build_detectors(config) if entry.name == "放量启动")
+    entries = {entry.name: entry for entry in build_detectors(config)}
+    assert list(entries) == ["ATR 异动", "放量上涨", "放量下跌", "K 线趋势"]
+    assert entries["放量上涨"].volume == VolumeRange(50_000, 5_000_000)
+    assert entries["放量下跌"].volume == VolumeRange(1_000_000)
+    # 两个方向的基准期不同，各自只保留并预热自己需要的 K 线。
+    assert (entries["放量上涨"].candle_interval, entries["放量上涨"].warmup_candles) == ("1m", 366)
+    assert entries["放量下跌"].warmup_candles == 186
+    disabled = AppConfig.model_validate({"launch": {"rise": {"enabled": False}}})
+    assert not disabled.launch.enabled
+    assert not {"放量上涨", "放量下跌"} & {entry.name for entry in build_detectors(disabled)}
 
-    assert launch.volume == VolumeRange(50_000, 5_000_000)
-    assert (launch.candle_interval, launch.warmup_candles) == ("1m", 366)
-    disabled = AppConfig.model_validate({"launch": {"enabled": False}})
-    assert "放量启动" not in [entry.name for entry in build_detectors(disabled)]
 
-
+@pytest.mark.parametrize("side", ["rise", "drop"])
 @pytest.mark.parametrize(
     ("values", "message"),
     [
@@ -57,12 +81,15 @@ def test_launch_detector_joins_monitor_with_its_own_volume_range():
         ({"min_volume_ratio": 1}, "min_volume_ratio"),
         ({"min_change_percent": 5, "max_change_percent": 5}, "max_change_percent 必须大于 min_change_percent"),
         ({"unknown": 1}, "unknown"),
-        ({"drop": {"window_minutes": 10}}, "window_minutes"),
-        ({"drop": {"min_volume_ratio": 1}}, "min_volume_ratio"),
-        # 只写了下跌的下限，上限取自顶层 15：合并后冲突也要报出来。
-        ({"drop": {"min_change_percent": 16}}, "放量下跌的 max_change_percent（15）必须大于 min_change_percent（16）"),
     ],
 )
-def test_rejects_inconsistent_settings(values, message):
+def test_rejects_inconsistent_settings(side, values, message):
     with pytest.raises(ValidationError, match=message):
-        AppConfig.model_validate({"launch": values})
+        AppConfig.model_validate({"launch": {side: values}})
+
+
+def test_old_flat_keys_are_rejected():
+    # 旧版写在 launch 顶层的键已经移到 rise / drop 下，留在顶层要直接报错，不能悄悄被忽略。
+    for values in ({"enabled": True}, {"alert_drops": True}, {"min_volume_ratio": 3}):
+        with pytest.raises(ValidationError):
+            AppConfig.model_validate({"launch": values})

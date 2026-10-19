@@ -14,10 +14,10 @@ from datetime import UTC, datetime, timedelta
 from price_alert.assembly import build_launch_detector
 from price_alert.formatting import beijing_time, format_amount, format_price
 from price_alert.gate import GATE_MINUTE_HISTORY
-from price_alert.launch.alerts import LaunchAlert, describe_launch_rule, format_launch_alert
+from price_alert.launch.alerts import LABELS, LaunchAlert, describe_launch_rule, format_launch_alert
 from price_alert.launch.config import LaunchConfig
 from price_alert.launch.detector import OUTCOME_LABELS, LaunchEvaluation, LaunchOutcome
-from price_alert.launch.rule import CONDITION_LABELS, LaunchRule
+from price_alert.launch.rule import CONDITION_LABELS, Condition, LaunchRule
 from price_alert.models import Candle
 
 MINUTE = timedelta(minutes=1)
@@ -35,27 +35,42 @@ class LaunchReplayPlan:
 
 
 @dataclass(frozen=True, slots=True)
-class LaunchReplayResult:
-    plan: LaunchReplayPlan
+class LaunchSideReplay:
+    """一个方向（一个检测器）的回放结果。"""
+
     rule: LaunchRule
     evaluations: list[LaunchEvaluation]
     alerts: list[LaunchAlert]
+
+
+@dataclass(frozen=True, slots=True)
+class LaunchReplayResult:
+    plan: LaunchReplayPlan
+    sides: list[LaunchSideReplay]
     candles_fed: int
     warmup_candles: int
     price_decimals: int | None = None
+
+    @property
+    def alerts(self) -> list[LaunchAlert]:
+        # 两个方向的提醒按时间合在一起，与实时监控看到的顺序一致。
+        return sorted((alert for side in self.sides for alert in side.alerts), key=lambda alert: alert.timestamp)
 
 
 def plan_launch_replay(
     symbol: str,
     start: datetime,
     end: datetime,
-    rule: LaunchRule,
+    rules: Sequence[LaunchRule],
     now: datetime | None = None,
 ) -> LaunchReplayPlan:
     if end <= start:
         raise ValueError("结束时间必须晚于开始时间")
+    if not rules:
+        raise ValueError("放量上涨与放量下跌都已关闭，没有可回放的规则")
     aligned = datetime.fromtimestamp(int(start.timestamp()) // 60 * 60, tz=start.tzinfo)
-    warmup = MINUTE * rule.history_minutes
+    # 两个方向的基准期可以不同，按较长的一边预热，两个检测器都能从区间开始就判定。
+    warmup = MINUTE * max(rule.history_minutes for rule in rules)
     warmup_start = aligned - warmup
     # 预先检查而不是等交易所返回含义不明的 400；与趋势回放同样留一分钟余量。
     earliest = (now or datetime.now(UTC)) - MINUTE * (GATE_MINUTE_HISTORY - 2)
@@ -73,22 +88,22 @@ def run_launch_replay(
     candles: Sequence[Candle],
     price_decimals: int | None = None,
 ) -> LaunchReplayResult:
-    """离线驱动检测器；从空白提醒记录开始，区间开始前已经提醒过的行情会在区间内再当作启动提醒。"""
-    evaluations: list[LaunchEvaluation] = []
-    detector = build_launch_detector(config, observer=evaluations.append)
+    """离线驱动每个启用方向的检测器；从空白提醒记录开始，区间开始前已经提醒过的行情会在区间内再当作启动提醒。"""
     start = datetime.fromtimestamp(int(plan.start.timestamp()) // 60 * 60, tz=plan.start.tzinfo)
     seed = [candle for candle in candles if candle.timestamp < start]
-    # K 线自带计价成交额，不需要合约面值换算；面值只用于实时成交。
-    detector.add_symbol(plan.symbol, seed, 0.0, price_decimals=price_decimals, quanto_multiplier=1.0)
-    alerts: list[LaunchAlert] = []
-    fed = 0
-    for candle in candles:
+    replayed = [candle for candle in candles if candle.timestamp >= start and candle.timestamp + MINUTE <= plan.end]
+    sides = []
+    for rule in config.rules():
+        evaluations: list[LaunchEvaluation] = []
+        detector = build_launch_detector(rule, observer=evaluations.append)
+        # K 线自带计价成交额，不需要合约面值换算；面值只用于实时成交。
+        detector.add_symbol(plan.symbol, seed, 0.0, price_decimals=price_decimals, quanto_multiplier=1.0)
+        alerts: list[LaunchAlert] = []
         # 只喂收盘不晚于结束时间的 K 线，判定时间点才全部落在区间内。
-        if candle.timestamp < start or candle.timestamp + MINUTE > plan.end:
-            continue
-        fed += 1
-        alerts.extend(detector.add_candle(plan.symbol, candle))
-    return LaunchReplayResult(plan, detector.rule, evaluations, alerts, fed, len(seed), price_decimals)
+        for candle in replayed:
+            alerts.extend(detector.add_candle(plan.symbol, candle))
+        sides.append(LaunchSideReplay(rule, evaluations, alerts))
+    return LaunchReplayResult(plan, sides, len(replayed), len(seed), price_decimals)
 
 
 def _format_row(evaluation: LaunchEvaluation, rule: LaunchRule, decimals: int | None) -> str:
@@ -112,32 +127,16 @@ def _closeness(evaluation: LaunchEvaluation, rule: LaunchRule) -> tuple[int, flo
     # 先比未满足的条件数，再比三道数值门槛中最弱的一项达到门槛的程度。
     metrics = evaluation.metrics
     assert metrics is not None
-    limits = rule.thresholds(metrics.direction)
-    ratio = metrics.volume_ratio / limits.min_volume_ratio if metrics.volume_ratio is not None else 1.0
+    ratio = metrics.volume_ratio / rule.min_volume_ratio if metrics.volume_ratio is not None else 1.0
     quote = metrics.window_quote / rule.min_window_quote if rule.min_window_quote > 0 else 1.0
-    change = abs(metrics.change_percent) / limits.min_change_percent
+    change = abs(metrics.change_percent) / rule.min_change_percent
     return (-len(metrics.failures), min(ratio, quote, change))
 
 
-def render_launch_replay(result: LaunchReplayResult, show_all: bool = False) -> list[str]:
-    plan = result.plan
-    rule = result.rule
-    decimals = result.price_decimals
-    lines = [
-        f"放量启动回放 {plan.symbol}：{beijing_time(plan.start)} ～ {beijing_time(plan.end)}（北京时间）",
-        f"数据：预热 1 分钟 K 线 {result.warmup_candles} 根，回放 {result.candles_fed} 根",
-        describe_launch_rule(rule),
-        "说明：回放从空白提醒记录开始；实时监控由成交聚合 K 线，与交易所 K 线可能有细微差别。",
-        "",
-    ]
-    if result.alerts:
-        lines.append(f"提醒 {len(result.alerts)} 条：")
-        lines.extend(f"  {format_launch_alert(alert)}" for alert in result.alerts)
-    else:
-        lines.append("区间内没有放量启动提醒。")
-    lines.append("")
-
-    in_range = [item for item in result.evaluations if plan.start <= item.timestamp <= plan.end]
+def _render_side(side: LaunchSideReplay, plan: LaunchReplayPlan, decimals: int | None, show_all: bool) -> list[str]:
+    rule = side.rule
+    lines = [f"【{LABELS[rule.direction]}】{describe_launch_rule(rule)}"]
+    in_range = [item for item in side.evaluations if plan.start <= item.timestamp <= plan.end]
     counts = Counter(item.outcome for item in in_range)
     lines.append(
         "判定统计："
@@ -151,12 +150,16 @@ def render_launch_replay(result: LaunchReplayResult, show_all: bool = False) -> 
             "  未满足的条件："
             + "、".join(f"{CONDITION_LABELS[condition]} {count} 次" for condition, count in failures.most_common())
         )
-    failed = [item for item in in_range if item.outcome is LaunchOutcome.FAILED]
+    # 方向相反的分钟离触发最远，不参与「最接近触发」的比较。
+    failed = [
+        item
+        for item in in_range
+        if item.outcome is LaunchOutcome.FAILED and item.metrics is not None
+        and Condition.DIRECTION not in item.metrics.failures
+    ]
     if failed:
         closest = max(failed, key=lambda item: _closeness(item, rule))
         lines.append(f"  最接近触发：{_format_row(closest, rule, decimals)}")
-    lines.append("")
-
     rows = [item for item in in_range if show_all or item.outcome not in _QUIET_OUTCOMES]
     if show_all:
         lines.append("逐分钟判定：")
@@ -165,4 +168,25 @@ def render_launch_replay(result: LaunchReplayResult, show_all: bool = False) -> 
     else:
         lines.append("没有满足条件或被插针拦下的分钟（加 --all 查看每一分钟的判定）。")
     lines.extend(f"  {_format_row(item, rule, decimals)}" for item in rows)
+    return lines
+
+
+def render_launch_replay(result: LaunchReplayResult, show_all: bool = False) -> list[str]:
+    plan = result.plan
+    decimals = result.price_decimals
+    lines = [
+        f"放量启动回放 {plan.symbol}：{beijing_time(plan.start)} ～ {beijing_time(plan.end)}（北京时间）",
+        f"数据：预热 1 分钟 K 线 {result.warmup_candles} 根，回放 {result.candles_fed} 根",
+        "说明：回放从空白提醒记录开始；实时监控由成交聚合 K 线，与交易所 K 线可能有细微差别。",
+        "",
+    ]
+    alerts = result.alerts
+    if alerts:
+        lines.append(f"提醒 {len(alerts)} 条：")
+        lines.extend(f"  {format_launch_alert(alert)}" for alert in alerts)
+    else:
+        lines.append("区间内没有放量启动提醒。")
+    for side in result.sides:
+        lines.append("")
+        lines.extend(_render_side(side, plan, decimals, show_all))
     return lines

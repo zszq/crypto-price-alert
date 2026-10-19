@@ -1,0 +1,50 @@
+# 待验证的放量启动参数：research/launch_trade/launch_grid.md 第二轮（F1，准确率与召回率同等看重）选出的一组。
+# 只跑放量启动，可以与日常监控（config/default.yaml）同时运行、对照两边的提醒（进程锁按配置文件区分）：
+#   .\.venv\Scripts\python.exe -m price_alert.cli run --config config/launch-f1.yaml
+# 也可以用回放对照同一段行情：
+#   .\.venv\Scripts\python.exe -m price_alert.cli launch-replay RLC --start "2026-10-05 17:30" --config config/launch-f1.yaml
+# 键与取值范围同 default.yaml，那里有每一项的完整说明；本文件没写的项（gate 整段等）取 config.py 的代码默认值。
+#
+# 回测（样本外 2025-01 ~ 2026-10）：≥20% 的大行情在前半段报到约 51%（上涨）/ 54%（下跌），约为现行配置的 2 倍；
+# 准确率上涨 0.384（现行 0.437）、下跌 0.360（现行 0.359）；提醒每天约 130 条（上涨）+ 114 条（下跌），约为现行的 2.6 倍。
+# 两个方向的取值除 24 小时成交额外完全相同，量比、窗口成交额、基准期、冷却、再推进都取在候选范围最宽的一端。
+
+move:
+  # 秒级异动由日常监控负责，这里关掉，免得重复订阅和重复提醒。
+  enabled: false
+
+trend:
+  enabled: false
+
+launch:
+  rise:
+    enabled: true
+    # 不设合约池下限（约 600 个合约，启动预热约 1.5 分钟）。
+    min_volume_24h_quote: 0
+    max_volume_24h_quote: null
+    window_minutes: 5
+    baseline_minutes: 180
+    min_volume_ratio: 2.0
+    min_window_quote: 50000
+    require_breakout: false
+    cooldown_minutes: 15
+    realert_step_percent: 3.0
+    min_change_percent: 2.0
+    max_change_percent: null
+  drop:
+    enabled: true
+    min_volume_24h_quote: 1000000
+    max_volume_24h_quote: null
+    window_minutes: 5
+    baseline_minutes: 180
+    min_volume_ratio: 2.0
+    min_window_quote: 50000
+    require_breakout: false
+    cooldown_minutes: 15
+    realert_step_percent: 3.0
+    min_change_percent: 2.0
+    max_change_percent: null
+
+alerts:
+  # 与日常监控分开落盘，便于事后对照；两个实例写同一个文件会互相轮转、交错写入。
+  jsonl_path: data/alerts/launch-f1.jsonl

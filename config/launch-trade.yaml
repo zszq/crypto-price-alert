@@ -23,22 +23,25 @@ trend:
   enabled: false
 
 launch:
-  enabled: true
-  # 不设合约池下限，冷门币由下面的窗口成交额门槛挡住。约 600 个合约，启动预热约 1.5 分钟。
-  min_volume_24h_quote: 0
-  max_volume_24h_quote: null
-  window_minutes: 5
-  baseline_minutes: 360
-  min_volume_ratio: 3.0
-  min_window_quote: 300000
-  require_breakout: false
-  cooldown_minutes: 10
-  # 第 2 波及以后同样买入。
-  realert_step_percent: 5.0
-  min_change_percent: 3.0
-  # 不设涨幅上限：涨得过猛的提醒买不买，交给「5 分钟后仍高于提醒价 1%」的入场条件判断。
-  max_change_percent: null
-  alert_drops: false
+  rise:
+    enabled: true
+    # 不设合约池下限，冷门币由下面的窗口成交额门槛挡住。约 600 个合约，启动预热约 1.5 分钟。
+    min_volume_24h_quote: 0
+    max_volume_24h_quote: null
+    window_minutes: 5
+    baseline_minutes: 360
+    min_volume_ratio: 3.0
+    min_window_quote: 300000
+    require_breakout: false
+    cooldown_minutes: 10
+    # 第 2 波及以后同样买入。
+    realert_step_percent: 5.0
+    min_change_percent: 3.0
+    # 不设涨幅上限：涨得过猛的提醒买不买，交给「5 分钟后仍高于提醒价 1%」的入场条件判断。
+    max_change_percent: null
+  # 只做多，不提醒放量下跌。
+  drop:
+    enabled: false
 
 alerts:
   # 与日常监控分开落盘，交易程序读这个文件；两个实例写同一个文件会互相轮转、交错写入。

@@ -60,23 +60,37 @@ def test_launch_trade_yaml_runs_only_the_launch_detector(monkeypatch):
 
     config = load_config(config_dir / "launch-trade.yaml")
 
-    assert [entry.name for entry in build_detectors(config)] == ["放量启动"]
+    assert [entry.name for entry in build_detectors(config)] == ["放量上涨"]
     assert config.alerts.jsonl_path != load_config(config_dir / "default.yaml").alerts.jsonl_path
-    rule = config.launch.to_rule()
-    assert (rule.min_window_quote, rule.require_breakout, rule.max_change_percent, rule.alert_drops) == (
+    (rule,) = config.launch.rules()
+    assert (rule.direction, rule.min_window_quote, rule.require_breakout, rule.max_change_percent) == (
+        "surge",
         300_000,
         False,
         None,
-        False,
     )
+
+
+def test_launch_f1_yaml_runs_both_launch_directions_on_its_own_file(monkeypatch):
+    # 待验证的放量参数与日常监控同时运行对照，只能有放量两个检测器，且不能与其他实例写同一个 JSONL。
+    monkeypatch.delenv("PRICE_ALERT_WEBHOOK_URL", raising=False)
+    config_dir = Path(__file__).resolve().parents[1] / "config"
+
+    config = load_config(config_dir / "launch-f1.yaml")
+
+    assert [entry.name for entry in build_detectors(config)] == ["放量上涨", "放量下跌"]
+    others = {load_config(config_dir / name).alerts.jsonl_path for name in ("default.yaml", "launch-trade.yaml")}
+    assert config.alerts.jsonl_path not in others
 
 
 def test_move_can_be_disabled_but_not_every_detector():
     config = AppConfig.model_validate({"move": {"enabled": False}})
 
-    assert [entry.name for entry in build_detectors(config)] == ["放量启动", "K 线趋势"]
+    assert [entry.name for entry in build_detectors(config)] == ["放量上涨", "K 线趋势"]
     with pytest.raises(ValidationError, match="至少要启用一个"):
-        AppConfig.model_validate({name: {"enabled": False} for name in ("move", "trend", "launch")})
+        AppConfig.model_validate(
+            {"move": {"enabled": False}, "trend": {"enabled": False}, "launch": {"rise": {"enabled": False}}}
+        )
 
 
 def test_rejects_reconnect_max_below_initial_delay():
