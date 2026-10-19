@@ -31,7 +31,7 @@ launch:
     realert_step_percent: 3.0
     min_change_percent: 2.0
     max_change_percent: null
-  drop:
+  fall:
     enabled: true
     min_volume_24h_quote: 1000000
     max_volume_24h_quote: null

@@ -188,7 +188,7 @@ def test_simulate_includes_one_alert_per_launch_direction(capsys):
     assert capsys.readouterr().out.count("[放量上涨]") == 1
 
     both = AppConfig.model_validate(
-        {"trend": {"enabled": False}, "launch": {"drop": {"enabled": True}}, "alerts": {"console_colors": False}}
+        {"trend": {"enabled": False}, "launch": {"fall": {"enabled": True}}, "alerts": {"console_colors": False}}
     )
     assert asyncio.run(cli.simulate(both)) == 4 == cli.expected_simulated_alerts(both)
     output = capsys.readouterr().out
@@ -204,7 +204,7 @@ def test_simulate_includes_one_alert_per_launch_direction(capsys):
     ],
 )
 def test_simulated_launch_satisfies_extreme_thresholds(launch):
-    config = AppConfig.model_validate({"launch": {"rise": launch, "drop": launch | {"enabled": True}}})
+    config = AppConfig.model_validate({"launch": {"rise": launch, "fall": launch | {"enabled": True}}})
 
     assert [alert.direction for alert in simulate_launch(config.launch)] == ["surge", "drop"]
 

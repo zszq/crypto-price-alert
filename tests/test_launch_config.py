@@ -11,15 +11,17 @@ def test_defaults_and_build_rule():
     config = LaunchConfig()
 
     # 默认只开放量上涨；下跌关闭，但两边门槛的默认值相同。
-    assert (config.rise.enabled, config.drop.enabled, config.enabled) == (True, False, True)
+    assert (config.rise.enabled, config.fall.enabled, config.enabled) == (True, False, True)
     assert [direction for direction, _ in config.sides()] == ["surge"]
+    # YAML 键是 rise/fall，方向值（JSONL 的 direction）仍是 surge/drop。
+    assert config.configured() == [("surge", config.rise), ("drop", config.fall)]
     rule = config.rise.to_rule("surge")
     assert (config.rise.min_volume_24h_quote, config.rise.max_volume_24h_quote) == (1_000_000, None)
     assert (rule.direction, rule.window_minutes, rule.baseline_minutes, rule.history_minutes) == ("surge", 5, 360, 365)
     assert (rule.min_volume_ratio, rule.min_window_quote, rule.min_change_percent) == (3.0, 100_000, 3.0)
     assert rule.require_breakout is True
     assert (rule.cooldown_minutes, rule.realert_step_percent, rule.max_change_percent) == (15, 5.0, 15.0)
-    assert config.drop.model_dump(exclude={"enabled"}) == config.rise.model_dump(exclude={"enabled"})
+    assert config.fall.model_dump(exclude={"enabled"}) == config.rise.model_dump(exclude={"enabled"})
 
 
 def test_sides_are_configured_independently():
@@ -27,7 +29,7 @@ def test_sides_are_configured_independently():
         {
             "launch": {
                 "rise": {"min_change_percent": 4, "max_change_percent": None},
-                "drop": {"enabled": True, "baseline_minutes": 180, "min_volume_ratio": 2, "min_window_quote": 50_000},
+                "fall": {"enabled": True, "baseline_minutes": 180, "min_volume_ratio": 2, "min_window_quote": 50_000},
             }
         }
     ).launch
@@ -54,7 +56,7 @@ def test_each_side_joins_monitor_as_its_own_detector_and_pool():
         {
             "launch": {
                 "rise": {"min_volume_24h_quote": 50_000, "max_volume_24h_quote": 5_000_000},
-                "drop": {"enabled": True, "baseline_minutes": 180},
+                "fall": {"enabled": True, "baseline_minutes": 180},
             }
         }
     )
@@ -71,7 +73,7 @@ def test_each_side_joins_monitor_as_its_own_detector_and_pool():
     assert not {"放量上涨", "放量下跌"} & {entry.name for entry in build_detectors(disabled)}
 
 
-@pytest.mark.parametrize("side", ["rise", "drop"])
+@pytest.mark.parametrize("side", ["rise", "fall"])
 @pytest.mark.parametrize(
     ("values", "message"),
     [
@@ -89,7 +91,8 @@ def test_rejects_inconsistent_settings(side, values, message):
 
 
 def test_old_flat_keys_are_rejected():
-    # 旧版写在 launch 顶层的键已经移到 rise / drop 下，留在顶层要直接报错，不能悄悄被忽略。
-    for values in ({"enabled": True}, {"alert_drops": True}, {"min_volume_ratio": 3}):
+    # 旧版写在 launch 顶层的键已经移到 rise / fall 下，留在顶层要直接报错，不能悄悄被忽略；
+    # 下跌段曾叫 drop，同样要报错，否则旧配置里的下跌参数会被当作没写、退回默认关闭。
+    for values in ({"enabled": True}, {"alert_drops": True}, {"min_volume_ratio": 3}, {"drop": {"enabled": True}}):
         with pytest.raises(ValidationError):
             AppConfig.model_validate({"launch": values})

@@ -322,7 +322,7 @@ def main() -> None:
                 print(f"  {describe_trend_rule(rule)}")
         else:
             print("  趋势提醒：已关闭")
-        for direction, side in (("surge", config.launch.rise), ("drop", config.launch.drop)):
+        for direction, side in config.launch.configured():
             if side.enabled:
                 volume = f"24 小时成交额 > {format_amount(side.min_volume_24h_quote)}"
                 if side.max_volume_24h_quote is not None:

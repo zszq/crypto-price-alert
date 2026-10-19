@@ -87,7 +87,7 @@ def test_both_directions_replay_with_their_own_baselines():
         {
             "launch": {
                 "rise": {"baseline_minutes": 30, "window_minutes": 3, "min_window_quote": 3000, "cooldown_minutes": 5},
-                "drop": {
+                "fall": {
                     "enabled": True,
                     "baseline_minutes": 40,
                     "window_minutes": 3,

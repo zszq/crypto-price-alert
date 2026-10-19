@@ -1,4 +1,4 @@
-"""放量启动提醒的配置模型（YAML 的 launch 段）：放量上涨（launch.rise）与放量下跌（launch.drop）两套完全独立的参数。"""
+"""放量启动提醒的配置模型（YAML 的 launch 段）：放量上涨（launch.rise）与放量下跌（launch.fall）两套完全独立的参数。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from price_alert.launch.rule import Direction, LaunchRule
 
 
 class LaunchSideConfig(BaseModel):
-    """一个方向的放量启动配置。两个方向分别是 LaunchRiseConfig、LaunchDropConfig，只有 enabled 的默认值不同，
+    """一个方向的放量启动配置。两个方向分别是 LaunchRiseConfig、LaunchFallConfig，只有 enabled 的默认值不同，
     其余默认值相同：没有特别设置时，下跌与上涨用同一套门槛。"""
 
     model_config = ConfigDict(extra="forbid")
@@ -68,8 +68,8 @@ class LaunchRiseConfig(LaunchSideConfig):
     """放量上涨（YAML 的 launch.rise）。"""
 
 
-class LaunchDropConfig(LaunchSideConfig):
-    """放量下跌（YAML 的 launch.drop），默认关闭。"""
+class LaunchFallConfig(LaunchSideConfig):
+    """放量下跌（YAML 的 launch.fall），默认关闭。"""
 
     enabled: bool = False
 
@@ -78,16 +78,21 @@ class LaunchConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     rise: LaunchRiseConfig = Field(default_factory=LaunchRiseConfig)
-    drop: LaunchDropConfig = Field(default_factory=LaunchDropConfig)
+    fall: LaunchFallConfig = Field(default_factory=LaunchFallConfig)
 
     @property
     def enabled(self) -> bool:
-        return self.rise.enabled or self.drop.enabled
+        return self.rise.enabled or self.fall.enabled
+
+    def configured(self) -> list[tuple[Direction, LaunchSideConfig]]:
+        """两个方向（含已关闭的），上涨在前（与 YAML 顺序一致）。"""
+        # YAML 键用 rise/fall 与「上涨/下跌」对应；方向值仍是 surge/drop，提醒的 JSONL 字段与交易程序都按它读。
+        # 键与方向值的对应只写在这里，check-config 等处都从这里取。
+        return [("surge", self.rise), ("drop", self.fall)]
 
     def sides(self) -> list[tuple[Direction, LaunchSideConfig]]:
-        """启用的方向，上涨在前（与 YAML 顺序一致）。"""
-        configured: list[tuple[Direction, LaunchSideConfig]] = [("surge", self.rise), ("drop", self.drop)]
-        return [(direction, side) for direction, side in configured if side.enabled]
+        """启用的方向，上涨在前。"""
+        return [(direction, side) for direction, side in self.configured() if side.enabled]
 
     def rules(self) -> list[LaunchRule]:
         return [side.to_rule(direction) for direction, side in self.sides()]

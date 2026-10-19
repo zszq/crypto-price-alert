@@ -40,7 +40,7 @@ launch:
     # 不设涨幅上限：涨得过猛的提醒买不买，交给「5 分钟后仍高于提醒价 1%」的入场条件判断。
     max_change_percent: null
   # 只做多，不提醒放量下跌。
-  drop:
+  fall:
     enabled: false
 
 alerts:
