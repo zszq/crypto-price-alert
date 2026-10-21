@@ -265,7 +265,7 @@ trend:
   alert_continuing: true
   # 趋势合约池的 24 小时 USDT 计价成交额下限：须严格大于该值，与秒级异动的 move.min_volume_24h_quote 互不影响。
   # 默认：10000000
-  min_volume_24h_quote: 8000000
+  min_volume_24h_quote: 3000000
   # 成交额上限（含等于）：只看中小市值合约时设置，例如 50000000；不设（null）表示下限以上全部纳入。须大于下限。
   # 默认：null
   max_volume_24h_quote: null
@@ -278,7 +278,7 @@ trend:
       enabled: true
       # 参与判定的已收盘 K 线根数（3~60）。调大要求趋势持续更久，发现得更晚；调小更灵敏、噪声也更多。
       # 默认：5
-      candles: 4
+      candles: 5
       # 累计涨跌幅下限（百分比，(0, 100]）：第一根开盘价到最后一根收盘价。调低提醒变多。
       # 过滤横盘里幅度很小的连阴连阳；对 BTC、ETH 这类低波动币可能偏高。
       # 默认：5
@@ -295,10 +295,10 @@ trend:
       # 单根实体占比下限（[0, 1]）：顺势 K 线的实体 ÷ 本根振幅低于该值时视为十字星，算作反向 K 线（计入上面的根数与首尾顺势）。
       # 总实体占比按窗口合计，几根大实体会把末尾停滞的十字星、长影线 K 线摊薄，这里逐根约束每一根都在推进。调大更严格，0 表示不限制。
       # 默认：0.3
-      min_candle_body_ratio: 0.3
+      min_candle_body_ratio: 0.1
       # 总实体占比下限（[0, 1]）：各根实体长度之和 ÷ 各根振幅之和。整体上下影线越长，比例越低。
       # 默认：0.5
-      min_body_ratio: 0.6
+      min_body_ratio: 0.5
       # 最大实体占比上限（(0, 1]）：最大一根顺势 K 线的实体 ÷ 整段累计涨跌幅度（不是本根振幅），不能超过该值。
       # 保证涨跌是几根 K 线共同推出来的，排除一根急拉急砸加几根小 K 线凑出来的走势（急涨急跌由秒级异动负责）。
       # 默认：0.5
@@ -309,15 +309,15 @@ trend:
       # 默认：4
       candles: 4
       # 默认：6
-      min_change_percent: 6.0
+      min_change_percent: 5.0
       # 默认：1
       max_counter_candles: 0
       # 默认：0.3
       max_rebound_ratio: 0.3
       # 默认：0.5
-      min_body_ratio: 0.6
+      min_body_ratio: 0.5
       # 默认：0.3
-      min_candle_body_ratio: 0.3
+      min_candle_body_ratio: 0.1
       # 默认：0.5
       max_single_candle_ratio: 0.6
     15m:
@@ -326,15 +326,15 @@ trend:
       # 默认：3
       candles: 3
       # 默认：8
-      min_change_percent: 8.0
+      min_change_percent: 6.0
       # 默认：0
       max_counter_candles: 0
       # 默认：0.3
       max_rebound_ratio: 0.3
       # 默认：0.5
-      min_body_ratio: 0.6
+      min_body_ratio: 0.5
       # 默认：0.3
-      min_candle_body_ratio: 0.3
+      min_candle_body_ratio: 0.1
       # 默认：0.5
       max_single_candle_ratio: 0.6
 
