@@ -314,10 +314,10 @@ trend:
       max_counter_candles: 0
       # 默认：0.3
       max_rebound_ratio: 0.3
-      # 默认：0.5
-      min_body_ratio: 0.5
       # 默认：0.3
       min_candle_body_ratio: 0.1
+      # 默认：0.5
+      min_body_ratio: 0.5
       # 默认：0.5
       max_single_candle_ratio: 0.6
     15m:
@@ -331,10 +331,10 @@ trend:
       max_counter_candles: 0
       # 默认：0.3
       max_rebound_ratio: 0.3
-      # 默认：0.5
-      min_body_ratio: 0.5
       # 默认：0.3
       min_candle_body_ratio: 0.1
+      # 默认：0.5
+      min_body_ratio: 0.5
       # 默认：0.5
       max_single_candle_ratio: 0.6
 
