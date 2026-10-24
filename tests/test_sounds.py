@@ -5,9 +5,12 @@ import wave
 from array import array
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 
 from price_alert import sounds
+from price_alert.dormant.alerts import DormantAlert
+from price_alert.dormant.rule import DormantMetrics
 from price_alert.launch.alerts import LaunchAlert
 from price_alert.launch.rule import LaunchMetrics
 from price_alert.models import PriceAlert
@@ -50,6 +53,14 @@ LAUNCH_ALERT = LaunchAlert(
     metrics=LaunchMetrics("surge", 1.0, 1.05, 5.0, 200_000.0, 10_000.0, 20.0, 1.02, ()),
     volume_24h_quote=1_000_000,
 )
+DORMANT_ALERT = DormantAlert(
+    "IRYS_USDT",
+    NOW,
+    NOW - timedelta(minutes=10),
+    10,
+    DormantMetrics(1.0, 1.09, 9.0, 30_000.0, 8, 50_000.0, 0.0, math.inf, 3.0, 1.0, 3_000.0, 0.5, ()),
+    2e5,
+)
 
 
 def decode(name: sounds.SoundName) -> tuple[wave._wave_params, array]:
@@ -66,13 +77,14 @@ def test_each_alert_kind_maps_to_its_own_sound():
     assert sounds.sound_for(TREND_ALERT) == "trend"
     assert sounds.sound_for(replace(TREND_ALERT, continuing=True)) == "trend_continuing"
     assert sounds.sound_for(LAUNCH_ALERT) == "launch"
+    assert sounds.sound_for(DORMANT_ALERT) == "dormant"
     # 涨跌方向不区分音效。
     assert sounds.sound_for(replace(PRICE_ALERT, direction="drop", change_percent=-1.0)) == "short"
 
 
 def test_priority_order_is_launch_streak_trend_then_second_level():
     priority = sounds.SOUND_PRIORITY
-    assert priority["launch"] > priority["streak"] > priority["trend"] > priority["short"]
+    assert priority["launch"] > priority["dormant"] > priority["streak"] > priority["trend"] > priority["short"]
     assert priority["trend"] == priority["trend_continuing"]
     assert priority["short"] == priority["long"]
     assert set(priority) == set(sounds.SOUND_NAMES) == set(sounds.SOUND_LABELS)
@@ -140,11 +152,17 @@ def test_families_share_timbre_so_each_kind_is_recognizable():
     specs = sounds.SOUND_SPECS
     assert specs["short"].timbre == specs["long"].timbre == specs["streak"].timbre
     assert specs["trend"].timbre == specs["trend_continuing"].timbre
-    timbres = {specs["short"].timbre, specs["trend"].timbre, specs["launch"].timbre}
-    assert len(timbres) == 3
+    timbres = {specs["short"].timbre, specs["trend"].timbre, specs["launch"].timbre, specs["dormant"].timbre}
+    assert len(timbres) == 4
     # 「敲两下」在两类里都表示连续/延续。
     assert len(specs["streak"].strikes) == len(specs["trend_continuing"].strikes) == 2
     assert len(specs["short"].strikes) == len(specs["trend"].strikes) == 1
+    # 冷门启动与放量启动时长相同、同样上行，但音色不同、节奏更慢，不会听混。
+    assert specs["dormant"].length_seconds == specs["launch"].length_seconds
+    def gaps(name: sounds.SoundName) -> list[float]:
+        return [b.start_seconds - a.start_seconds for a, b in pairwise(specs[name].strikes)]
+
+    assert min(gaps("dormant")) > 3 * max(gaps("launch"))
 
 
 def test_default_sound_dir_avoids_system_temp(monkeypatch, tmp_path):

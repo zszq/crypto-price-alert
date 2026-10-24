@@ -11,6 +11,8 @@ from collections.abc import Callable, Sequence
 from price_alert.config import INTERVAL_SECONDS, AppConfig, WindowConfig
 from price_alert.detection import MonitoredDetector
 from price_alert.detector import AtrMoveDetector
+from price_alert.dormant.detector import DormantDetector, DormantEvaluation
+from price_alert.dormant.rule import DormantRule
 from price_alert.gate import GateRestClient, RateLimiter
 from price_alert.launch.alerts import LABELS as LAUNCH_LABELS
 from price_alert.launch.detector import LaunchDetector, LaunchEvaluation
@@ -93,6 +95,14 @@ def build_launch_detector(
     return LaunchDetector(rule, observer)
 
 
+def build_dormant_detector(
+    rule: DormantRule,
+    *,
+    observer: Callable[[DormantEvaluation], None] | None = None,
+) -> DormantDetector:
+    return DormantDetector(rule, observer)
+
+
 def build_detectors(config: AppConfig) -> list[MonitoredDetector]:
     """实时监控运行的全部检测器，顺序与 config/default.yaml 一致；关闭的检测器不创建，不多订阅、不多拉 K 线。"""
     move = config.move
@@ -118,6 +128,12 @@ def build_detectors(config: AppConfig) -> list[MonitoredDetector]:
         trend = build_trend_detector(config.trend)
         volume = VolumeRange(config.trend.min_volume_24h_quote, config.trend.max_volume_24h_quote)
         detectors.append(MonitoredDetector("K 线趋势", trend, trend.warmup_interval, trend.warmup_candles, volume))
+    if config.dormant.enabled:
+        dormant = build_dormant_detector(config.dormant.to_rule())
+        volume = VolumeRange(config.dormant.min_volume_24h_quote, config.dormant.max_volume_24h_quote)
+        detectors.append(
+            MonitoredDetector("冷门启动", dormant, dormant.warmup_interval, dormant.warmup_candles, volume)
+        )
     return detectors
 
 

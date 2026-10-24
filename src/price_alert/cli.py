@@ -21,6 +21,9 @@ from price_alert.assembly import (
     build_windows,
 )
 from price_alert.config import INTERVAL_SECONDS, AppConfig, load_config
+from price_alert.dormant.alerts import describe_dormant_rule
+from price_alert.dormant.replay import plan_dormant_replay, render_dormant_replay, run_dormant_replay
+from price_alert.dormant.simulate import simulate_dormant
 from price_alert.formatting import BEIJING_TIME, format_amount
 from price_alert.gate import GateRestClient, fetch_minute_candles, price_decimals
 from price_alert.instance import AlreadyRunningError, ProcessLock
@@ -55,6 +58,8 @@ DEFAULT_REPLAY_MINUTES = 15
 DEFAULT_TREND_REPLAY_HOURS = 3
 # 放量回放只给开始时间时的时长：足够看完一段启动以及之后的几波拉升。
 DEFAULT_LAUNCH_REPLAY_HOURS = 6
+# 冷门启动回放只给开始时间时的时长：与放量回放相同，足够看完一段启动。
+DEFAULT_DORMANT_REPLAY_HOURS = 6
 SOUND_PREVIEW_PAUSE_SECONDS = 0.8
 
 
@@ -69,6 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("replay", "用历史成交回放某个合约，逐秒解释为什么提醒或没有提醒"),
         ("trend-replay", "用历史 1 分钟 K 线回放某个合约的趋势提醒，逐根解释判定结果"),
         ("launch-replay", "用历史 1 分钟 K 线回放某个合约的放量启动提醒，逐分钟解释判定结果"),
+        ("dormant-replay", "用历史 1 分钟 K 线回放某个合约的冷门启动提醒，逐分钟解释判定结果"),
         ("sounds", "依次试听各类提醒的提示音"),
     ):
         command = commands.add_parser(name, help=help_text)
@@ -86,6 +92,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_replay_arguments(
         commands.choices["launch-replay"],
         f"默认开始后 {DEFAULT_LAUNCH_REPLAY_HOURS} 小时",
+        "输出每一分钟的判定，而不只是满足条件的分钟",
+    )
+    _add_replay_arguments(
+        commands.choices["dormant-replay"],
+        f"默认开始后 {DEFAULT_DORMANT_REPLAY_HOURS} 小时",
         "输出每一分钟的判定，而不只是满足条件的分钟",
     )
     return parser
@@ -116,11 +127,12 @@ def _build_demo_candles(end: datetime, count: int, interval_seconds: int) -> lis
 def expected_simulated_alerts(config: AppConfig) -> int:
     windows = len(build_windows(config)) if config.move.enabled else 0
     trend_periods = len(config.trend.rules()) if config.trend.enabled else 0
-    return windows + trend_periods + len(config.launch.sides())
+    return windows + trend_periods + len(config.launch.sides()) + int(config.dormant.enabled)
 
 
 async def simulate(config: AppConfig) -> int:
-    """为每个启用的观察窗口、趋势周期和放量方向各跑一遍合成行情，返回提醒总数；正常时等于 expected_simulated_alerts。"""
+    """为每个启用的观察窗口、趋势周期、放量方向和冷门启动各跑一遍合成行情，返回提醒总数；
+    正常时等于 expected_simulated_alerts。"""
     notifier = ConsoleNotifier(beep=False, colors=config.alerts.console_colors)
     alert_count = 0
     for window in build_windows(config, cooldown_seconds=0) if config.move.enabled else []:
@@ -131,6 +143,10 @@ async def simulate(config: AppConfig) -> int:
             await notifier.send(alert)
     if config.launch.enabled:
         for alert in simulate_launch(config.launch):
+            alert_count += 1
+            await notifier.send(alert)
+    if config.dormant.enabled:
+        for alert in simulate_dormant(config.dormant):
             alert_count += 1
             await notifier.send(alert)
     return alert_count
@@ -255,6 +271,24 @@ def launch_replay(config: AppConfig, args: argparse.Namespace) -> None:
     print("\n".join(render_launch_replay(result, show_all=args.all)))
 
 
+def dormant_replay(config: AppConfig, args: argparse.Namespace) -> None:
+    rule = config.dormant.to_rule()
+    try:
+        start, end = _replay_range(args, timedelta(hours=DEFAULT_DORMANT_REPLAY_HOURS))
+        plan = plan_dormant_replay(normalize_symbol(args.symbol), start, end, rule)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    rest = build_rest_client(config)
+    try:
+        candles = fetch_minute_candles(rest, plan.symbol, plan.warmup_start, plan.end)
+    except (OSError, ValueError, TypeError, http.client.HTTPException) as exc:
+        raise SystemExit(f"获取 {plan.symbol} 历史 K 线失败：{exc}") from exc
+    if not candles:
+        raise SystemExit(f"{plan.symbol} 在该时间段没有取到 K 线：合约名可能有误")
+    result = run_dormant_replay(rule, plan, candles, _fetch_price_decimals(rest, plan.symbol))
+    print("\n".join(render_dormant_replay(result, show_all=args.all)))
+
+
 def _fetch_price_decimals(rest: GateRestClient, symbol: str) -> int | None:
     try:
         return price_decimals(rest.fetch_contract(symbol).get("order_price_round"))
@@ -330,6 +364,14 @@ def main() -> None:
                 print(f"  {describe_launch_rule(side.to_rule(direction))}；合约池：{volume} USDT")
             else:
                 print(f"  {LAUNCH_LABELS[direction]}提醒：已关闭")
+        dormant = config.dormant
+        if dormant.enabled:
+            volume = f"24 小时成交额 > {format_amount(dormant.min_volume_24h_quote)}"
+            if dormant.max_volume_24h_quote is not None:
+                volume += f" 且 ≤ {format_amount(dormant.max_volume_24h_quote)}"
+            print(f"  {describe_dormant_rule(dormant.to_rule())}；合约池：{volume} USDT")
+        else:
+            print("  冷门启动提醒：已关闭")
         return
     if args.command == "universe":
         print_universe(config)
@@ -339,8 +381,8 @@ def main() -> None:
         produced = asyncio.run(simulate(config))
         if produced != expected:
             raise SystemExit(
-                f"模拟应产生 {expected} 条提醒（每个窗口、每个趋势周期、每个放量方向各一条），实际 {produced} 条，"
-                "请检查 move、trend 与 launch 配置"
+                f"模拟应产生 {expected} 条提醒（每个窗口、每个趋势周期、每个放量方向、冷门启动各一条），"
+                f"实际 {produced} 条，请检查 move、trend、launch 与 dormant 配置"
             )
         return
     if args.command == "replay":
@@ -351,6 +393,9 @@ def main() -> None:
         return
     if args.command == "launch-replay":
         launch_replay(config, args)
+        return
+    if args.command == "dormant-replay":
+        dormant_replay(config, args)
         return
     if args.command == "sounds":
         asyncio.run(preview_sounds())

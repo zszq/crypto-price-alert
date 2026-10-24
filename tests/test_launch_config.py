@@ -62,7 +62,7 @@ def test_each_side_joins_monitor_as_its_own_detector_and_pool():
     )
 
     entries = {entry.name: entry for entry in build_detectors(config)}
-    assert list(entries) == ["ATR 异动", "放量上涨", "放量下跌", "K 线趋势"]
+    assert list(entries) == ["ATR 异动", "放量上涨", "放量下跌", "K 线趋势", "冷门启动"]
     assert entries["放量上涨"].volume == VolumeRange(50_000, 5_000_000)
     assert entries["放量下跌"].volume == VolumeRange(1_000_000)
     # 两个方向的基准期不同，各自只保留并预热自己需要的 K 线。

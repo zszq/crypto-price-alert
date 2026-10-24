@@ -9,6 +9,7 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from price_alert.dormant.config import DormantConfig
 from price_alert.launch.config import LaunchConfig
 from price_alert.trend.config import TrendConfig
 
@@ -169,13 +170,15 @@ class AppConfig(BaseModel):
     trend: TrendConfig = Field(default_factory=TrendConfig)
     # 放量启动提醒，与上面两者相互独立；模型定义在 launch 包内，删除该功能时只需去掉这一项。
     launch: LaunchConfig = Field(default_factory=LaunchConfig)
+    # 冷门启动提醒，与上面三者相互独立；模型定义在 dormant 包内，删除该功能时只需去掉这一项。
+    dormant: DormantConfig = Field(default_factory=DormantConfig)
     alerts: AlertConfig = Field(default_factory=AlertConfig)
 
     @model_validator(mode="after")
     def validate_any_detector(self) -> AppConfig:
-        if not (self.move.enabled or self.trend.enabled or self.launch.enabled):
+        if not (self.move.enabled or self.trend.enabled or self.launch.enabled or self.dormant.enabled):
             # 没有检测器时 run 会一直按合约池刷新失败重试，不如在加载配置时直接指出。
-            raise ValueError("move、trend、launch 至少要启用一个")
+            raise ValueError("move、trend、launch、dormant 至少要启用一个")
         return self
 
 

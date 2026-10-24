@@ -7,10 +7,13 @@ from pathlib import Path
 
 from colorama import Style
 
+from price_alert.dormant.alerts import DormantAlert
+from price_alert.dormant.rule import DormantMetrics
 from price_alert.launch.alerts import LaunchAlert
 from price_alert.launch.rule import LaunchMetrics
 from price_alert.models import PriceAlert
 from price_alert.notifier import (
+    DORMANT_LABEL_COLOR,
     DROP_CHANGE_COLOR,
     DROP_COLOR,
     LAUNCH_LABEL_COLOR,
@@ -654,6 +657,29 @@ def test_only_long_window_length_is_highlighted_in_one_color_for_both_directions
     assert f"{LONG_WINDOW_COLOR}3分钟{Style.RESET_ALL}{DROP_COLOR}内价格下跌" in drop_text
     # 不能与正文、交易对、涨跌幅、地址、趋势/放量标签撞色，否则起不到区分作用。
     used = {SURGE_COLOR, DROP_COLOR, SYMBOL_COLOR, SURGE_CHANGE_COLOR, DROP_CHANGE_COLOR, TRADE_URL_COLOR}
-    used |= {TREND_LABEL_COLOR, LAUNCH_LABEL_COLOR}
+    used |= {TREND_LABEL_COLOR, LAUNCH_LABEL_COLOR, DORMANT_LABEL_COLOR}
     assert LONG_WINDOW_COLOR not in used
-    assert len(used) == 8
+    assert len(used) == 9
+
+
+def make_dormant() -> DormantAlert:
+    now = datetime(2026, 10, 21, 9, 0, tzinfo=UTC)
+    metrics = DormantMetrics(0.01542, 0.01685, 9.27, 51_156.0, 8, 423_566.0, 0.3, 30.9, 3.9, 0.82, 6_120.0, 0.55, ())
+    return DormantAlert("IRYS_USDT", now, now - timedelta(minutes=10), 10, metrics, 2_000_000)
+
+
+def test_dormant_alert_has_its_own_label_color_and_bright_change():
+    alert = make_dormant()
+    text = colorize_alert(alert, format_alert(alert))
+
+    assert text.startswith(f"{SURGE_COLOR}{DORMANT_LABEL_COLOR}[冷门启动]{Style.RESET_ALL}{SURGE_COLOR}")
+    assert f"{SURGE_CHANGE_COLOR}9.27%{Style.RESET_ALL}{SURGE_COLOR}" in text
+    assert f"{SYMBOL_COLOR}IRYS_USDT{Style.RESET_ALL}" in text
+
+
+def test_jsonl_writes_dormant_alert_with_kind(tmp_path):
+    path = tmp_path / "alerts.jsonl"
+    asyncio.run(JsonlNotifier(path).send(make_dormant()))
+
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert record["kind"] == "dormant" and record["active_minutes"] == 8

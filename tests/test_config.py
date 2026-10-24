@@ -86,10 +86,15 @@ def test_launch_f1_yaml_runs_both_launch_directions_on_its_own_file(monkeypatch)
 def test_move_can_be_disabled_but_not_every_detector():
     config = AppConfig.model_validate({"move": {"enabled": False}})
 
-    assert [entry.name for entry in build_detectors(config)] == ["放量上涨", "K 线趋势"]
+    assert [entry.name for entry in build_detectors(config)] == ["放量上涨", "K 线趋势", "冷门启动"]
     with pytest.raises(ValidationError, match="至少要启用一个"):
         AppConfig.model_validate(
-            {"move": {"enabled": False}, "trend": {"enabled": False}, "launch": {"rise": {"enabled": False}}}
+            {
+                "move": {"enabled": False},
+                "trend": {"enabled": False},
+                "launch": {"rise": {"enabled": False}},
+                "dormant": {"enabled": False},
+            }
         )
 
 

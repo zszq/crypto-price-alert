@@ -19,6 +19,8 @@ from price_alert import sounds
 from price_alert import streak as streak_alerts
 from price_alert.config import AlertConfig
 from price_alert.detection import Alert
+from price_alert.dormant import alerts as dormant_alerts
+from price_alert.dormant.alerts import DormantAlert
 from price_alert.formatting import beijing_time, describe_window, format_price
 from price_alert.gate import futures_trade_url
 from price_alert.launch import alerts as launch_alerts
@@ -61,6 +63,8 @@ TREND_LABEL_COLOR = Fore.LIGHTMAGENTA_EX
 # 放量启动提醒的标签（[放量上涨] 等）：金黄色（标准黄）。偏橙，与淡黄的交易对分得开，
 # 也不带涨跌含义，两个方向共用。
 LAUNCH_LABEL_COLOR = Fore.YELLOW
+# 冷门启动提醒的标签（[冷门启动]）：亮蓝色。与放量启动的金黄色分开：冷门启动准确率较低，一眼就能看出是哪一类。
+DORMANT_LABEL_COLOR = Fore.LIGHTBLUE_EX
 
 
 class Notifier(Protocol):
@@ -72,6 +76,8 @@ def format_alert(alert: Alert) -> str:
         return trend_alerts.format_trend_alert(alert)
     if isinstance(alert, LaunchAlert):
         return launch_alerts.format_launch_alert(alert)
+    if isinstance(alert, DormantAlert):
+        return dormant_alerts.format_dormant_alert(alert)
     if isinstance(alert, StreakAlert):
         return streak_alerts.format_streak_alert(alert)
     label = "急涨" if alert.direction == "surge" else "急跌"
@@ -107,16 +113,23 @@ def colorize_alert(alert: Alert, text: str, enabled: bool = True) -> str:
         change = trend_alerts.format_change(alert)
     elif isinstance(alert, LaunchAlert):
         change = launch_alerts.format_change(alert)
+    elif isinstance(alert, DormantAlert):
+        change = dormant_alerts.format_change(alert)
     elif isinstance(alert, StreakAlert):
         change = streak_alerts.format_change(alert)
     else:
         change = format_change(alert)
     highlighted_change = f"{bright}{change}{Style.RESET_ALL}{color}"
     text = text.replace(alert.symbol, symbol, 1).replace(change, highlighted_change, 1)
-    if isinstance(alert, TrendAlert | LaunchAlert):
+    if isinstance(alert, TrendAlert | LaunchAlert | DormantAlert):
         # 标签在行首，按首次出现替换不会误伤正文。
         label = f"[{alert.label}]"
-        label_color = TREND_LABEL_COLOR if isinstance(alert, TrendAlert) else LAUNCH_LABEL_COLOR
+        if isinstance(alert, TrendAlert):
+            label_color = TREND_LABEL_COLOR
+        elif isinstance(alert, LaunchAlert):
+            label_color = LAUNCH_LABEL_COLOR
+        else:
+            label_color = DORMANT_LABEL_COLOR
         text = text.replace(label, f"{label_color}{label}{Style.RESET_ALL}{color}", 1)
     elif isinstance(alert, StreakAlert):
         # 连续提醒的标签沿用方向色：它以「急涨提醒/急跌提醒」开头，是同一类提醒的延伸，靠标签文字区分即可。

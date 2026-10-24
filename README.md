@@ -129,14 +129,35 @@ ATR 异动强度 = |当前完整秒 VWAP - N 秒前完整秒 VWAP| / Wilder ATR
 
 放量下跌：`launch.fall` 是与 `launch.rise` 结构完全相同的另一套参数，开启 `enabled` 后作为单独的检测器运行，合约池、K 线保留长度、冷却与波次都与上涨分开（突破看基准期最低价，涨跌幅按跌幅的绝对值）。代码默认关闭、其余默认值与上涨相同；`config/default.yaml` 中下跌改为基准期 3 小时、量比 2、窗口成交额 5 万、跌幅 3%~15%、冷却 15 分钟、再推进 3%、合约池 > 100 万，上涨保持原取值，依据与检验见 [research/launch_trade/launch_grid.md](research/launch_trade/launch_grid.md) 第三轮。
 
+### 冷门启动：几乎没人交易的币突然拉升
+
+放量上涨的窗口成交额门槛（10 万）会挡掉启动前几乎没人交易的币：IRYS_USDT 2026-10-21 14:40 之前 24 小时只成交约 2.5 万 USDT，14:54 前后 5 分钟涨 5.6%、量比几十倍，但 5 分钟成交额只有一两万，放量上涨不会提醒。冷门启动提醒（`dormant`，与前三者相互独立）专门看这类币：
+
+- 由实时成交聚合带成交额的 1 分钟 K 线，每分钟收盘判定一次；最近 `window_minutes`（默认 10）分钟，以下条件全部满足即提醒：
+  - **冷门**：窗口之前 24 小时的成交额 ≤ 100 万 USDT（`max_prior_quote`）；
+  - **涨幅**：窗口开始前一根收盘到最后一根收盘 ≥ 8%；只提醒上涨；
+  - **窗口成交额**：≥ 5000 USDT；
+  - **有成交的分钟数**：窗口里至少 5 分钟有成交。冷门币一两笔单子就能拉出涨幅，要求多分钟有成交才算有人在持续买；
+  - **涨前平稳**：涨幅 ≥ 涨前波动的 10 倍（`min_calm_multiple`）。涨前波动是窗口之前 240 分钟每分钟真实波幅（含跳空，无成交的分钟为 0）的平均值，一字横盘为 0、倍数无穷大；涨之前就来回乱跳的币，同样的涨幅倍数低，不报；涨前波动本身还不能超过每分钟 0.5%（`max_pre_volatility_percent`），涨前要近乎一条直线，乱跳的币涨得再多也不报；
+  - **不靠跳涨**：窗口里每一分钟的收盘涨幅都 ≤ 5%（`max_minute_change_percent`）。一两分钟跳上去的多是几笔单子拉的；
+  - **实体饱满**：窗口里各根 K 线实体之和 ÷ 振幅之和 ≥ 60%（`min_body_ratio`，与趋势提醒的总实体占比同一口径）。上影线多说明冲高被砸回、拉升没站稳；每分钟只有一两笔成交、靠跳空往上走的 K 线没有实体，也会被挡掉；
+  - **买盘跟得上**（代码默认不限，`config/default.yaml` 开启）：窗口最后一分钟成交额 ≥ `min_last_minute_quote`、后半窗口（最后 ⌈窗口/2⌉ 分钟）成交额占窗口成交额 ≥ `min_late_quote_share`。成交集中在前半段、拉到后面没人买的多是几笔单子拉完就停。`default.yaml` 按 `research/launch_trade/dormant_early.md` 第三轮「假启动更少」取窗口 15 分钟、成交额 2 万、8 分钟有成交、最后一分钟 1000、后半占比 40%：样本外准确率不变（0.445），每天假启动少约 12%，代价是提醒稍晚（早报分低约 11%）、少报一些；判据未通过，是用户知情后的例外。之后放开全部条件重新选参也没有更好的稳健方案（[dormant_best.md](research/launch_trade/dormant_best.md)）；
+- 距上次提醒（含补报）不足 60 分钟（`cooldown_minutes`）时，只有价格比上次提醒价再涨 ≥ 3%（`realert_step_percent`）才再报「冷门启动·第N波」，第一次没注意到还有补报；超过 60 分钟再满足条件就当作新的启动，从第 1 波算。拉升之后之前 24 小时的成交额很快超过冷门门槛，自然不再提醒；合约移出合约池后提醒记录仍然保留；
+- 隔了空档才结算的分钟用触发结算的那笔成交价复核涨幅，价格已回落就不再提醒；断线时暂停判定，恢复后从 REST 回补（与放量启动相同）；
+- 合约池默认是 24 小时成交额 0~300 万的全部虚拟币合约（约 550 个）。冷门与否由检测器按自己的 K 线判断，合约池上限只是不必订阅早就不冷门的币，要明显高于冷门门槛，否则刚启动的币可能在合约池刷新时被移出。
+
+**这类提醒的准确率低于放量上涨，是知情后作为例外采用的。** 门槛用全部合约 2021-09 起的 1 分钟 K 线、只按 2021-09~2024 年的数据选参（PBO 0）：先在 61,440 组候选里选出前四项（[research/launch_trade/dormant_solo.md](research/launch_trade/dormant_solo.md)），再按用户要求的「涨前平稳、拉升不靠跳涨」在 10,368 组候选里加上后两项、成交额门槛同时从 2 万降到 5000（[dormant_calm.md](research/launch_trade/dormant_calm.md)），之后按用户指定的形态加上实体占比 ≥ 60%（未经选参，见 dormant_calm.md 第四节）与涨前波动 ≤ 0.5%（第六节）。2025-01 起的样本外：提醒之后先涨 3%~5%、没先跌回同样幅度的比例约 0.44（不带涨前平稳、不靠跳涨两项时 0.43，提升未达统计显著；加实体占比、涨前波动上限前后都是这个数；放量上涨约 0.44；冷门币随便挑一个时刻只有约 0.06），每天约 4.7 条（加实体占比、涨前波动上限前约 9 条），另有约 1.2 条「第 N 波」补报（准确率约 0.48，不低于第一次提醒；中位在第一次提醒后 4 分钟、价格高约 5%；79% 的拉升只报一次，见 dormant_calm.md 第五节），前半段报到的冷门大行情（起点前 24 小时冷门、涨 ≥10%/20%、段内成交额 ≥ 10 万）不到一成。量比、突破、持续 15~30 分钟量价齐升这些条件都试过，都没有让提醒更准，所以不设；涨前波动的绝对上限（「近乎一条直线」）在涨幅门槛 5% 的几组里反而更不准，在现行 8% 门槛上加 0.5% 则准确率不变、只是少报，按用户要求加上。冷门币盘口薄，拉升之后先回落 3%~5% 和继续上涨一样常见，看到提醒不代表会继续涨。
+
+以 IRYS_USDT 为例，2026-10-21 14:00~18:00 不报：最接近的 17:00 那段 10 分钟上涨 9.27%、成交额 5.12 万、10 分钟都有成交，但涨前每分钟平均波动 0.65%（超过 0.5%），其中一分钟还涨了 6.11%（超过单分钟上限）；14:54 那段 10 分钟涨幅不到 8%。可以用 `dormant-replay` 复现，见下文。
+
 ## 数据流程
 
 ```text
 Gate REST /futures/usdt/contracts + /tickers
         ↓ 仅虚拟币、交易中；按 24h quote volume 分别筛选
-动态交易对池：秒级异动 > 10M USDT，趋势提醒 > 10M USDT（上限可选），放量上涨 / 下跌 > 1M USDT（各自设置），订阅并集
+动态交易对池：秒级异动 > 10M USDT，趋势提醒 > 10M USDT（上限可选），放量上涨 / 下跌 > 1M USDT（各自设置），冷门启动 0~3M USDT，订阅并集
         ↓
-Gate REST candlesticks 预热 ATR、趋势与放量基准（同周期合并为一次请求）
+Gate REST candlesticks 预热 ATR、趋势、放量基准与冷门启动之前 24 小时（同周期合并为一次请求）
         ↓
 Gate WebSocket futures.trades 实时成交
         ↓                                    ↓                              ↓
@@ -147,6 +168,8 @@ Gate WebSocket futures.trades 实时成交
         ↓                                    ↓                              ↓
 控制台声音 + JSONL + 可选 Webhook
 ```
+
+冷门启动与放量启动共用带成交额的 1 分钟 K 线这一路：之前 24 小时成交额 + 涨幅 + 窗口成交额 + 有成交的分钟数 + 涨前平稳 + 单分钟涨幅上限 + 实体占比，冷却期内再涨够步长才报下一波。
 
 项目通过 Gate 合约元数据的 `contract_type` 排除股票、指数、外汇、贵金属和商品等非币类合约，并且只监控 `status=trading` 且不在下架流程（`in_delisting`）中的品种。Gate 官方将 `volume_24h_usd` 标记为弃用，因此项目使用 `volume_24h_quote`。`is_internal=true` 的内部成交可能偏离正常盘口且不会进入 K 线，检测时会主动忽略。
 
@@ -171,11 +194,11 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 
 停止监控请按 `Ctrl+C`。
 
-一个监控进程会同时订阅全部符合条件的交易对。放量启动默认监控 24 小时成交额超过 100 万 USDT 的约 100 个合约，启动时要为它们各拉一次 1 分钟 K 线（受 REST 限速约束，约十几秒；下限设为 0 时约 600 个、约 1.5 分钟）。预热按检测器分批：秒级异动与趋势用到的合约先预热、先订阅，启动几秒后就开始接收成交；只有放量启动用到的合约随后预热完再增量订阅，断线回补也按同样的顺序。程序使用进程锁阻止重复启动：同一份配置文件已有进程在运行时，再次启动会直接退出，从而避免同一行情被重复提醒。锁按配置文件区分（`config/default.yaml` 用 `data/price-alert.lock`，其他配置用 `data/price-alert-<文件名>.lock`），不同配置可以同时运行。
+一个监控进程会同时订阅全部符合条件的交易对。放量启动默认监控 24 小时成交额超过 100 万 USDT 的约 100 个合约，启动时要为它们各拉一次 1 分钟 K 线（受 REST 限速约束，约十几秒；下限设为 0 时约 600 个、约 1.5 分钟）。冷门启动默认监控 24 小时成交额 0~300 万的约 550 个合约，每个要拉约 1450 根 1 分钟 K 线，约 1 分钟。预热按检测器分批：秒级异动与趋势用到的合约先预热、先订阅，启动几秒后就开始接收成交；只有放量启动、冷门启动用到的合约随后预热完再增量订阅，断线回补也按同样的顺序。程序使用进程锁阻止重复启动：同一份配置文件已有进程在运行时，再次启动会直接退出，从而避免同一行情被重复提醒。锁按配置文件区分（`config/default.yaml` 用 `data/price-alert.lock`，其他配置用 `data/price-alert-<文件名>.lock`），不同配置可以同时运行。
 
 ### 交易用的放量实例
 
-`config/launch-trade.yaml` 是给交易单独准备的一份配置：只开放量启动（`move`、`trend` 都关闭），参数取 S5（窗口成交额 ≥ 30 万、不要求突破、不设涨幅上限、合约池不设下限、只做多，最长持 18 小时），提醒写到 `data/alerts/launch-trade.jsonl`。与日常监控同时运行，日常监控调参不影响交易信号：
+`config/launch-trade.yaml` 是给交易单独准备的一份配置：只开放量启动（`move`、`trend`、`dormant` 都关闭），参数取 S5（窗口成交额 ≥ 30 万、不要求突破、不设涨幅上限、合约池不设下限、只做多，最长持 18 小时），提醒写到 `data/alerts/launch-trade.jsonl`。与日常监控同时运行，日常监控调参不影响交易信号：
 
 ```powershell
 .\.venv\Scripts\python.exe -m price_alert.cli run --config config/launch-trade.yaml
@@ -253,6 +276,16 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 - 输出先列回放得到的提醒（两个方向按时间合并），再按方向（启用的放量上涨、放量下跌各一段）列规则摘要、判定统计（含每个条件未满足的次数和「最接近触发」的一分钟），以及所有满足条件的分钟（含冷却中、价格未再推进而没有提醒的）；加 `--all` 输出每一分钟的判定；预热按两个方向中较长的基准期；
 - 回放从空白提醒记录开始，区间开始前已经提醒过的行情会在区间内再当作启动提醒。
 
+冷门启动提醒同样用历史 1 分钟 K 线回放（预热之前 24 小时加一个窗口，约 1450 根）：
+
+```powershell
+.\.venv\Scripts\python.exe -m price_alert.cli dormant-replay IRYS --start "2026-10-21 14:00" --end "2026-10-21 18:00"
+```
+
+- `--end` 默认为开始后 6 小时，时间、合约名与保留范围同 `trend-replay`；
+- 输出依次是规则摘要、回放得到的提醒、判定统计（含每个条件未满足的次数和「最接近触发」的一分钟，不冷门的分钟不参与比较），以及所有满足条件的分钟（含冷却中、空档后价格已回落而没有提醒的）；加 `--all` 输出每一分钟的判定；
+- 回放从空白提醒记录开始，也不按合约池筛选。
+
 ## 提醒示例
 
 ```text
@@ -286,7 +319,13 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 [放量上涨·第2波] 2026-10-05 20:10:00 | RLC_USDT | 5分钟上涨 3.45%，成交额 11.28万 USDT，为近6小时均量的 8.7 倍，突破近6小时高点 0.4832 | 0.4815 → 0.4981
 ```
 
-JSONL/Webhook 中趋势提醒带 `kind: "trend"`，并有 `period`、`candles`、`continuing`（是否为延续提醒）、`started_at`、`start_price`、`price`、`change_percent`、`counter_candles`、`rebound_ratio`、`body_ratio`、`single_candle_ratio` 等字段；连续提醒带 `kind: "streak"`，并有 `alert_count`（这一串的短窗口提醒条数）、`started_at`、`start_price`、`price`、`change_percent`、`lookback_seconds` 等字段；放量启动提醒带 `kind: "launch"`，并有 `wave`（第几波）、`window_minutes`、`baseline_minutes`、`started_at`、`start_price`、`price`、`change_percent`、`window_quote_volume`、`baseline_quote_volume`、`volume_ratio`（基准期无成交时为 null）、`breakout_price` 等字段；秒级异动提醒没有 `kind` 字段。
+冷门启动提醒以亮蓝色的标签开头：
+
+```text
+[冷门启动] 2026-10-22 02:37:00 | BULLA_USDT | 10分钟上涨 8.09%，成交额 4.76万 USDT（9 分钟有成交），之前24小时成交额 48.79万 USDT，涨前240分钟平均每分钟波动 0.15%（涨幅为其 54 倍） | 0.081135 → 0.087698
+```
+
+JSONL/Webhook 中趋势提醒带 `kind: "trend"`，并有 `period`、`candles`、`continuing`（是否为延续提醒）、`started_at`、`start_price`、`price`、`change_percent`、`counter_candles`、`rebound_ratio`、`body_ratio`、`single_candle_ratio` 等字段；连续提醒带 `kind: "streak"`，并有 `alert_count`（这一串的短窗口提醒条数）、`started_at`、`start_price`、`price`、`change_percent`、`lookback_seconds` 等字段；放量启动提醒带 `kind: "launch"`，并有 `wave`（第几波）、`window_minutes`、`baseline_minutes`、`started_at`、`start_price`、`price`、`change_percent`、`window_quote_volume`、`baseline_quote_volume`、`volume_ratio`（基准期无成交时为 null）、`breakout_price` 等字段；冷门启动提醒带 `kind: "dormant"`，并有 `wave`（第几波）、`window_minutes`、`started_at`、`start_price`、`price`、`change_percent`、`window_quote_volume`、`active_minutes`（窗口内有成交的分钟数）、`prior_quote_volume`（窗口之前 24 小时成交额）、`pre_volatility_percent`（涨前波动）、`max_minute_change_percent`（窗口内单分钟最大涨幅）、`body_ratio`（窗口总实体占比）、`last_minute_quote_volume`（最后一分钟成交额）、`late_quote_share`（后半窗口成交额占比）等字段；秒级异动提醒没有 `kind` 字段。
 
 价格按合约的报价精度（Gate 合约的 `order_price_round`）显示，高价币不会再被截掉小数；取不到精度时按 8 位有效数字显示。
 
@@ -307,9 +346,10 @@ JSONL/Webhook 中趋势提醒带 `kind: "trend"`，并有 `period`、`candles`�
 | 连续提醒 | 木琴音，短窗口的音连敲两下，比秒级异动稍响 | 2 |
 | 趋势提醒 | 钟音，中高音（1175Hz）敲一下 | 1 |
 | 趋势提醒·延续 | 钟音，连敲两下 | 1 |
-| 放量启动 | 号角音，快速上行琶音（大三和弦），音量最大 | 3 |
+| 冷门启动 | 簧管音（比号角空、闷），一步一步上行三个音（G5→C6→G6），时长与放量启动相同、音量稍小 | 3 |
+| 放量启动 | 号角音，快速上行琶音（大三和弦），音量最大 | 4 |
 
-「连敲两下」在两类里都表示连续/延续。秒级异动最常响，用短促的木琴音、音量最小；放量启动最重要，音量最大。每个音效都在 1 秒以内，在后台播放，不会推迟文字提醒。上一个音效还没播完时又来了新提醒：优先级更高的立即打断它，同级或更低的不再发声，所以一波集中异动只响一次，但放量启动不会因为秒级异动正在响而没有声音。放量启动必须完整播放：没有任何提醒能打断它；它正在响时又来了放量启动，开播 0.3 秒内到达的（同一分钟结算的一批）由这一声代表，更晚的不丢，播完后补响一次（多条合并成一次）。每个音效结尾都有足够长的淡出，不会听起来像被掐断；Windows 判断播完时额外等 0.3 秒出声延迟，避免下一个提醒切掉尾音。用 `price_alert.cli sounds` 可以依次试听。
+「连敲两下」在两类里都表示连续/延续。秒级异动最常响，用短促的木琴音、音量最小；放量启动最重要，音量最大；冷门启动时长与它相同、同样上行，但换成簧管音色、三个音一步一步往上，一听就和放量启动分开。每个音效都在 1 秒以内，在后台播放，不会推迟文字提醒。上一个音效还没播完时又来了新提醒：优先级更高的立即打断它，同级或更低的不再发声，所以一波集中异动只响一次，但放量启动不会因为秒级异动正在响而没有声音。放量启动必须完整播放：没有任何提醒能打断它；它正在响时又来了放量启动，开播 0.3 秒内到达的（同一分钟结算的一批）由这一声代表，更晚的不丢，播完后补响一次（多条合并成一次）。每个音效结尾都有足够长的淡出，不会听起来像被掐断；Windows 判断播完时额外等 0.3 秒出声延迟，避免下一个提醒切掉尾音。用 `price_alert.cli sounds` 可以依次试听。
 
 ## Webhook
 
@@ -324,7 +364,7 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 
 ## 配置说明
 
-本文中的参数取值、例子和回放结果都按代码默认值（`config.py` / `trend/config.py` / `launch/config.py`）给出，与 `config/default.yaml` 中调过的取值可能不同，实际运行以 YAML 为准。
+本文中的参数取值、例子和回放结果都按代码默认值（`config.py` / `trend/config.py` / `launch/config.py` / `dormant/config.py`）给出，与 `config/default.yaml` 中调过的取值可能不同，实际运行以 YAML 为准。
 
 `config/default.yaml` 的主要参数：
 
@@ -335,7 +375,7 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 - `gate.rest_rate_limit_per_second` / `gate.rest_rate_limit_burst`：所有 REST 请求共用的令牌桶速率与突发额度，默认 10 次/秒、突发 20 次。交易所限频按单位时间的请求数计算，而合约池大小只决定单轮请求数，因此上限必须加在时间维度上：合约池再大、断线重连再频繁，长期平均速率都收敛到该值，只会拉长一轮预热或回补的耗时。注意突发额度是瞬时放行的额度——桶攒满时可以一次发出 20 个请求，限制的是长期平均速率而非任意一秒内的绝对上限，所以突发额度不应超过交易所在一个限频窗口内的配额——Gate 公共接口的官方口径是每个端点每 10 秒 200 次（响应头 `X-Gate-RateLimit-Limit` 实测同为 200），折合平均 20 次/秒，而本项目的令牌桶是所有端点共用的，比按端点计算更保守。若日志出现 429，应下调速率而不是调高重试次数；
 - `gate.rest_retries`：单个请求的最大尝试次数。429 按交易所告知的恢复时刻等待（封顶 30 秒）：优先读 HTTP 标准头 `Retry-After`，Gate 实际不返回该头，恢复时刻放在专有头 `X-Gate-RateLimit-Reset-Timestamp`（Unix 秒级绝对时间戳）里；两者都没有时才按 2 秒起的指数退避，明显长于其他临时故障的 0.5 秒，避免在限频期间继续加码请求；
 - `gate.warmup_concurrency`：K 线预热与断线回补共用的并发上限，两者共用同一个信号量，峰值并发不会叠加；
-- `move.enabled`：是否启用秒级 ATR 异动提醒，默认开启；关闭后不创建该检测器，也不订阅、预热它的合约池。`move`、`trend`、`launch.rise` / `launch.fall` 至少要启用一个；
+- `move.enabled`：是否启用秒级 ATR 异动提醒，默认开启；关闭后不创建该检测器，也不订阅、预热它的合约池。`move`、`trend`、`launch.rise` / `launch.fall`、`dormant` 至少要启用一个；
 - `move.min_volume_24h_quote`：秒级 ATR 异动的 24 小时 USDT 计价成交额门槛，默认 10M；趋势、放量启动的合约池另见 `trend.min_volume_24h_quote` / `launch.rise.min_volume_24h_quote` 等；
 - `move.candle_interval`：ATR K 线周期；
 - `move.atr_period`：Wilder ATR 周期；
@@ -369,6 +409,15 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 - `launch.<方向>.require_breakout`：是否要求收盘突破基准期高点（下跌为低点），默认开启；
 - `launch.<方向>.max_change_percent`：窗口涨跌幅上限，默认 15%，须大于 `min_change_percent`，null 表示不限；超过时不提醒，但按同样的冷却与再推进规则当作提醒记入；
 - `launch.<方向>.cooldown_minutes` / `realert_step_percent`：再次提醒的最小间隔（不能小于窗口）与价格须再推进的幅度，默认 15 分钟、5%；
+- `dormant.enabled`：是否启用冷门启动提醒，默认开启；关闭后不创建该检测器，也不会多订阅、多拉 K 线；
+- `dormant.min_volume_24h_quote` / `max_volume_24h_quote`：冷门启动的合约池范围，默认 0~3M；上限要明显高于 `max_prior_quote`，设为 null 不设上限；
+- `dormant.window_minutes` / `max_prior_quote`：观察窗口（分钟）与冷门门槛（窗口之前 24 小时成交额上限，USDT），默认 10 与 1000000；
+- `dormant.min_window_quote` / `min_active_minutes`：窗口成交额（USDT）与有成交的分钟数门槛，默认 5000、5 分钟；有成交的分钟数不能大于窗口；
+- `dormant.min_change_percent` / `max_minute_change_percent`：窗口涨幅下限与单分钟收盘涨幅上限，默认 8%、5%；涨幅门槛不能大于窗口 × 单分钟上限；
+- `dormant.min_body_ratio`：窗口总实体占比（各根 K 线实体之和 ÷ 振幅之和）下限，0~1，默认 0.6，0 即不限；
+- `dormant.min_calm_multiple` / `max_pre_volatility_percent`：涨幅至少是涨前 240 分钟平均每分钟真实波幅的多少倍（0 即不限）与涨前波动本身的上限（百分比，null 即不限），默认 10 倍、0.5；
+- `dormant.min_last_minute_quote` / `min_late_quote_share`：窗口最后一分钟成交额下限（USDT）与后半窗口（最后 ⌈窗口/2⌉ 分钟）成交额占比下限（0 ≤ x < 1），默认都是 0 即不限；
+- `dormant.cooldown_minutes` / `realert_step_percent`：冷却默认 60 分钟（不能小于窗口），冷却期内价格比上次提醒再涨 ≥ 3% 才补报「第 N 波」，null 即冷却内不再报；
 - `alerts.queue_size`：每个通知通道允许积压的提醒数量；
 - `alerts.console_colors`：是否启用控制台颜色，默认开启；
 - `alerts.beep`：是否在控制台提醒时播放提示音；Windows 与 macOS 按提醒类型播放内置合成音效（见「提示音」），不依赖终端响铃设置，其他平台使用终端响铃；
@@ -377,7 +426,7 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 ## 工程结构
 
 ```text
-config/default.yaml          Gate、ATR、趋势、放量启动、提醒配置
+config/default.yaml          Gate、ATR、趋势、放量启动、冷门启动、提醒配置
 config/launch-trade.yaml     交易用的放量启动实例（只开放量上涨，参数取 S5）
 config/launch-f1.yaml        待验证的放量参数（launch_grid.md 第二轮 F1，只开放量启动，与日常监控同时运行对照）
 src/price_alert/
@@ -405,13 +454,20 @@ src/price_alert/
 │   ├── config.py            launch 配置段
 │   ├── replay.py            历史 1 分钟 K 线回放
 │   └── simulate.py          合成行情验证
+├── dormant/                 冷门启动提醒（独立模块，只经 assembly 接入）
+│   ├── rule.py              冷门、涨幅、成交额、有成交分钟数、涨前波动倍数与单分钟涨幅判定（纯函数）
+│   ├── detector.py          带成交额的 1 分钟 K 线聚合、判定与冷却
+│   ├── alerts.py            冷门启动提醒模型与文本
+│   ├── config.py            dormant 配置段
+│   ├── replay.py            历史 1 分钟 K 线回放
+│   └── simulate.py          合成行情验证
 ├── detection.py             服务对检测器的约定（多个检测器共用成交与合约池）
 ├── instance.py              防止重复提醒的跨平台进程锁
 ├── notifier.py              控制台、JSONL、Webhook 与独立队列分发
 ├── sounds.py                按提醒类型合成提示音与打断优先级
 ├── assembly.py              按配置组装检测器与 REST 客户端（各入口共用）
 ├── service.py               预热、增量刷新、重连和服务编排
-└── cli.py                   run/universe/check-config/simulate/replay/trend-replay/launch-replay/sounds
+└── cli.py                   run/universe/check-config/simulate/replay/trend-replay/launch-replay/dormant-replay/sounds
 tests/                       指标、筛选、解析、检测、通知、服务编排和命令行测试
 data/alerts/                 本地告警记录
 ```

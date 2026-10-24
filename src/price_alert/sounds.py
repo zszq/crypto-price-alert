@@ -6,6 +6,8 @@
   连续提醒是短窗口的音连敲两下。数量最多，音量最小。
 - 趋势（新成立、延续）：清亮但不刺耳的钟音。新成立敲一下，延续连敲两下（与连续提醒一样，“两下”表示延续）。
 - 放量启动：明亮的号角音色快速上行琶音（大三和弦），音量最大，最醒目，但收得干脆。
+- 冷门启动：簧管音色（只有奇次谐波，比号角空、闷）三个音一步一步上行，时长与放量启动相同、音量稍小：
+  同样醒目，但音色和节奏都与放量启动不同，不会听混。
 """
 
 from __future__ import annotations
@@ -24,18 +26,20 @@ from pathlib import Path
 from typing import Literal
 
 from price_alert.detection import Alert
+from price_alert.dormant.alerts import DormantAlert
 from price_alert.launch.alerts import LaunchAlert
 from price_alert.streak import StreakAlert
 from price_alert.trend.alerts import TrendAlert
 
-SoundName = Literal["short", "long", "streak", "trend", "trend_continuing", "launch"]
-SOUND_NAMES: tuple[SoundName, ...] = ("short", "long", "streak", "trend", "trend_continuing", "launch")
+SoundName = Literal["short", "long", "streak", "trend", "trend_continuing", "dormant", "launch"]
+SOUND_NAMES: tuple[SoundName, ...] = ("short", "long", "streak", "trend", "trend_continuing", "dormant", "launch")
 SOUND_LABELS: dict[SoundName, str] = {
     "short": "秒级异动·短窗口",
     "long": "秒级异动·长窗口",
     "streak": "连续提醒",
     "trend": "趋势提醒",
     "trend_continuing": "趋势提醒·延续",
+    "dormant": "冷门启动",
     "launch": "放量启动",
 }
 # 正在播放时，只有优先级更高的提醒才打断它；同级或更低的跳过，一波异动不会响个不停。
@@ -45,7 +49,8 @@ SOUND_PRIORITY: dict[SoundName, int] = {
     "trend": 1,
     "trend_continuing": 1,
     "streak": 2,
-    "launch": 3,
+    "dormant": 3,
+    "launch": 4,
 }
 # 必须完整播放的音效：优先级最高，没有能打断它的；同类提醒在它播放中到达时不跳过，播完后补响一次
 # （开播即到的同一批由这一声代表，见 notifier.MUST_PLAY_MERGE_SECONDS）。
@@ -105,6 +110,14 @@ FANFARE = (
     _Partial(4.0, 0.25, 0.08),
     _Partial(5.0, 0.15, 0.06),
 )
+# 簧管：只有奇次谐波，听起来中空、偏闷，和整数倍谐波齐全的号角一听就能分开；衰减与号角相近，保证同样醒目。
+REED = (
+    _Partial(1.0, 1.0, 0.20),
+    _Partial(3.0, 0.45, 0.12),
+    _Partial(5.0, 0.18, 0.07),
+)
+# 冷门启动三个音之间的间隔：比琶音慢三倍多，听成「一步一步」的三下，与放量启动连成一声的上扬区分开。
+STEP_GAP = 0.13
 # 琶音相邻两音的间隔：短到连成一个上扬的声音，不会听成“连敲几下”。
 ARPEGGIO_GAP = 0.035
 # 连敲两下的间隔：足够分辨出两下，又短到仍像“一声”。
@@ -143,12 +156,22 @@ SOUND_SPECS: dict[SoundName, _SoundSpec] = {
         peak_level=0.95,
         fade_out_seconds=LONG_FADE_OUT_SECONDS,
     ),
+    # G5-C6-G6 三步上行：同样表示「启动」、时长与放量启动相同，但换了音色和节奏，音量稍小（放量启动仍最响）。
+    "dormant": _SoundSpec(
+        REED,
+        (_Strike(784.0), _Strike(1047.0, STEP_GAP), _Strike(1568.0, STEP_GAP * 2, sustain=1.2)),
+        0.8,
+        peak_level=0.85,
+        fade_out_seconds=LONG_FADE_OUT_SECONDS,
+    ),
 }
 
 
 def sound_for(alert: Alert) -> SoundName:
     if isinstance(alert, LaunchAlert):
         return "launch"
+    if isinstance(alert, DormantAlert):
+        return "dormant"
     if isinstance(alert, StreakAlert):
         return "streak"
     if isinstance(alert, TrendAlert):

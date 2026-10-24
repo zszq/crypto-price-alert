@@ -22,6 +22,10 @@ move:
 trend:
   enabled: false
 
+# 冷门启动由日常监控负责，这里关掉。
+dormant:
+  enabled: false
+
 launch:
   rise:
     enabled: true

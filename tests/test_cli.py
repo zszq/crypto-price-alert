@@ -5,6 +5,7 @@ import pytest
 
 from price_alert import cli
 from price_alert.config import AppConfig
+from price_alert.dormant.simulate import simulate_dormant
 from price_alert.launch.simulate import simulate_launch
 
 
@@ -41,6 +42,7 @@ def test_simulate_produces_one_alert_per_enabled_window(move_config, expected_al
             "move": move_config,
             "trend": {"enabled": False},
             "launch": {"rise": {"enabled": False}},
+                "dormant": {"enabled": False},
             "alerts": {"console_colors": False},
         }
     )
@@ -63,7 +65,12 @@ def test_simulate_produces_one_alert_per_enabled_window(move_config, expected_al
 )
 def test_simulate_produces_one_alert_per_enabled_trend_period(periods, expected_trend_alerts, capsys):
     config = AppConfig.model_validate(
-        {"trend": {"periods": periods}, "launch": {"rise": {"enabled": False}}, "alerts": {"console_colors": False}}
+        {
+            "trend": {"periods": periods},
+            "launch": {"rise": {"enabled": False}},
+            "dormant": {"enabled": False},
+            "alerts": {"console_colors": False},
+        }
     )
     windows = 2
 
@@ -169,7 +176,12 @@ def test_trend_replay_without_enabled_periods_exits_readably():
 
 def test_simulate_skips_windows_when_move_is_disabled(capsys):
     config = AppConfig.model_validate(
-        {"move": {"enabled": False}, "trend": {"enabled": False}, "alerts": {"console_colors": False}}
+        {
+            "move": {"enabled": False},
+            "trend": {"enabled": False},
+            "dormant": {"enabled": False},
+            "alerts": {"console_colors": False},
+        }
     )
 
     assert asyncio.run(cli.simulate(config)) == 1 == cli.expected_simulated_alerts(config)
@@ -182,13 +194,20 @@ def test_lock_path_is_per_config_file_and_default_keeps_its_old_name():
 
 
 def test_simulate_includes_one_alert_per_launch_direction(capsys):
-    config = AppConfig.model_validate({"trend": {"enabled": False}, "alerts": {"console_colors": False}})
+    config = AppConfig.model_validate(
+        {"trend": {"enabled": False}, "dormant": {"enabled": False}, "alerts": {"console_colors": False}}
+    )
 
     assert asyncio.run(cli.simulate(config)) == 3 == cli.expected_simulated_alerts(config)
     assert capsys.readouterr().out.count("[放量上涨]") == 1
 
     both = AppConfig.model_validate(
-        {"trend": {"enabled": False}, "launch": {"fall": {"enabled": True}}, "alerts": {"console_colors": False}}
+        {
+            "trend": {"enabled": False},
+            "launch": {"fall": {"enabled": True}},
+            "dormant": {"enabled": False},
+            "alerts": {"console_colors": False},
+        }
     )
     assert asyncio.run(cli.simulate(both)) == 4 == cli.expected_simulated_alerts(both)
     output = capsys.readouterr().out
@@ -266,3 +285,78 @@ def test_preview_sounds_explains_unsupported_platform(monkeypatch):
 
     with pytest.raises(SystemExit, match="只支持 Windows 与 macOS"):
         asyncio.run(cli.preview_sounds())
+
+
+def test_simulate_includes_one_dormant_alert(capsys):
+    config = AppConfig.model_validate(
+        {
+            "move": {"enabled": False},
+            "trend": {"enabled": False},
+            "launch": {"rise": {"enabled": False}},
+            "alerts": {"console_colors": False},
+        }
+    )
+
+    assert asyncio.run(cli.simulate(config)) == 1 == cli.expected_simulated_alerts(config)
+    assert capsys.readouterr().out.count("[冷门启动]") == 1
+
+
+@pytest.mark.parametrize(
+    "dormant",
+    [
+        {"window_minutes": 1, "min_active_minutes": 1, "cooldown_minutes": 1, "min_change_percent": 0.01},
+        {"window_minutes": 60, "min_active_minutes": 60, "min_change_percent": 100, "max_prior_quote": 1},
+        {"min_window_quote": 0},
+        {"min_late_quote_share": 0.99, "min_last_minute_quote": 1_000_000},
+        {
+            "window_minutes": 1,
+            "min_active_minutes": 1,
+            "cooldown_minutes": 1,
+            "min_change_percent": 0.01,
+            "min_late_quote_share": 0.9,
+        },
+        {"window_minutes": 15, "min_active_minutes": 15, "min_late_quote_share": 0.4, "min_last_minute_quote": 1000},
+    ],
+)
+def test_simulated_dormant_satisfies_extreme_thresholds(dormant):
+    config = AppConfig.model_validate({"dormant": dormant})
+
+    assert len(simulate_dormant(config.dormant)) == 1
+
+
+def test_dormant_replay_runs_against_fake_exchange(monkeypatch, capsys):
+    from datetime import UTC, datetime, timedelta
+
+    from price_alert.models import Candle
+
+    class FakeRest:
+        def fetch_candles_between(self, symbol, interval, start, end):
+            count = int((end - start) / timedelta(minutes=1)) + 1
+            return [Candle(start + timedelta(minutes=i), 1.0, 1.0, 1.0, 1.0, 10.0) for i in range(count)]
+
+        def fetch_contract(self, symbol):
+            raise ConnectionError("contract down")
+
+    monkeypatch.setattr(cli, "build_rest_client", lambda config: FakeRest())
+    original_plan = cli.plan_dormant_replay
+    now = datetime(2026, 10, 22, tzinfo=UTC)
+    monkeypatch.setattr(cli, "plan_dormant_replay", lambda *items: original_plan(*items, now=now))
+    args = cli.build_parser().parse_args(["dormant-replay", "irys", "--start", "2026-10-21 14:00"])
+
+    cli.dormant_replay(AppConfig(), args)
+
+    output = capsys.readouterr().out
+    assert "冷门启动回放 IRYS_USDT：2026-10-21 14:00:00 ～ 2026-10-21 20:00:00" in output
+    assert "区间内没有冷门启动提醒" in output
+
+
+def test_check_config_lists_dormant_rule_and_pool(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "config.yaml"
+    path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr("sys.argv", ["price-alert", "check-config", "--config", str(path)])
+
+    cli.main()
+
+    output = capsys.readouterr().out
+    assert "冷门启动：之前 24 小时成交额 ≤ 100万 USDT 的币" in output
+    assert "合约池：24 小时成交额 > 0 且 ≤ 300万 USDT" in output
