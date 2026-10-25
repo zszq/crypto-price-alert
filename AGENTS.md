@@ -133,6 +133,8 @@ python -m venv .venv
 - 放量启动：`drop_thresholds.py`/`.md`（放量下跌门槛）、`surge_params.py`/`.md`（放量上涨参数，维持现值）、`launch_grid.py`/`launch_alerts.py`/`launch_grid.md`（两个方向全量搜索：第一轮按跟单收益已作废，第二轮 F1、第三轮 F0.5 按准确率与召回；`default.yaml` 的放量下跌取第三轮）。
 - 冷门启动（依赖链 `dormant_best` → `dormant_early` → `dormant_calm` → `dormant_solo`）：`dormant_solo`（单独的冷门启动检测器）、`dormant_calm`（涨前平稳、不靠跳涨，代码默认值）、`dormant_early`（更早、更少假启动，`default.yaml` 取其第三轮）、`dormant_best`（放开全部条件重新选参，维持现行，并给出现行的样本外：准确率与原参数相同，只是少报）。都未通过判据，采用的都是用户知情后的例外。
 
+`research/move_params/`：秒级异动参数（`move_params.md`）。用下载站 4~9 月逐笔成交与 REST 十月逐笔成交（数据在 `data/backtest/move/`），`record.py` 用真实检测器按宽松门槛逐笔重放并记录逐秒指标，`sim.py` 在记录上按更严的参数离线重算确认、补齐秒、空档复核与冷却（`verify.py` 与检测器逐条对拍一致），`half.py` 汇总半年，`quality.py` 是第三轮。第一轮只用九月；第二轮（4~7 月开发期）以减少数量为主；第三轮按用户要求以质量为目标（5 分钟保留率 − 假提醒率）重新选参，建议短窗口 3.0%、2.5 ATR、确认 5 秒，相对第二轮质量只高约 0.4 个百分点。对比后用户选用第二轮，`default.yaml` 短窗口已改为 2.0%、2.5 ATR、确认 3 秒（笔数、冷却不变，提醒约 −33%）。
+
 行情数据在 `data/backtest/`（不进版本库），回测用单独的虚拟环境 `data/backtest/.venv`（多装 numpy、numba）。新研究的方案要先通过预先写定的过拟合判据（只用开发期选参数、多个入场设置平均、Deflated Sharpe、PBO 等）才能推荐或写进配置。
 
 ## 约定
