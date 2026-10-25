@@ -104,15 +104,15 @@ move:
     lookback_seconds: 30
     # 触发所需的 ATR 倍数（(0, 20]）：窗口内价格变动（绝对值）÷ ATR ≥ 该值，随波动率自适应。调低提醒变多。
     # 默认：1.5
-    trigger_atr_multiple: 1.5
+    trigger_atr_multiple: 2.5
     # 触发所需的最低实际涨跌幅（百分比，(0, 100]），与 ATR 倍数是「且」的关系。
     # 用于兜底：某些合约 ATR 极小，仅靠倍数会把微小波动放大成提醒。
     # 默认：1
-    min_change_percent: 1.2
+    min_change_percent: 2.0
     # 需连续满足门槛的相邻秒数（1~10），不能大于 lookback_seconds。
     # 调大能过滤单秒插针，代价是提醒延迟增加、快进快出的行情可能漏报。
     # 默认：3
-    confirmation_seconds: 2
+    confirmation_seconds: 3
     # 观察窗口内的最低成交笔数（≥1），过滤几笔成交就把价格打穿的流动性空窗。调大会让冷门合约几乎不再提醒。
     # 默认：10
     min_window_trades: 15
