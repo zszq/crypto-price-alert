@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from price_alert.dormant.config import DormantConfig
 from price_alert.launch.config import LaunchConfig
+from price_alert.reversal.config import ReversalConfig
 from price_alert.trend.config import TrendConfig
 
 # K 线周期映射只保留这一份，避免服务编排与配置校验各自维护而出现分歧。
@@ -172,13 +173,16 @@ class AppConfig(BaseModel):
     launch: LaunchConfig = Field(default_factory=LaunchConfig)
     # 冷门启动提醒，与上面三者相互独立；模型定义在 dormant 包内，删除该功能时只需去掉这一项。
     dormant: DormantConfig = Field(default_factory=DormantConfig)
+    # 反弹回落提醒，与上面四者相互独立；模型定义在 reversal 包内，删除该功能时只需去掉这一项。
+    reversal: ReversalConfig = Field(default_factory=ReversalConfig)
     alerts: AlertConfig = Field(default_factory=AlertConfig)
 
     @model_validator(mode="after")
     def validate_any_detector(self) -> AppConfig:
-        if not (self.move.enabled or self.trend.enabled or self.launch.enabled or self.dormant.enabled):
+        detectors = (self.move, self.trend, self.launch, self.dormant, self.reversal)
+        if not any(detector.enabled for detector in detectors):
             # 没有检测器时 run 会一直按合约池刷新失败重试，不如在加载配置时直接指出。
-            raise ValueError("move、trend、launch、dormant 至少要启用一个")
+            raise ValueError("move、trend、launch、dormant、reversal 至少要启用一个")
         return self
 
 

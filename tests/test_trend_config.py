@@ -73,9 +73,10 @@ def test_counter_candles_must_be_fewer_than_candles():
 
 
 def test_disabled_trend_is_not_built_into_monitor():
-    assert [entry.name for entry in build_detectors(AppConfig())] == ["ATR 异动", "放量上涨", "K 线趋势", "冷门启动"]
+    names = [entry.name for entry in build_detectors(AppConfig())]
+    assert names == ["ATR 异动", "放量上涨", "K 线趋势", "冷门启动", "反弹回落"]
     disabled = AppConfig.model_validate({"trend": {"enabled": False}})
-    assert [entry.name for entry in build_detectors(disabled)] == ["ATR 异动", "放量上涨", "冷门启动"]
+    assert [entry.name for entry in build_detectors(disabled)] == ["ATR 异动", "放量上涨", "冷门启动", "反弹回落"]
 
 
 def test_trend_volume_range_is_configured_separately_from_atr():
@@ -85,6 +86,7 @@ def test_trend_volume_range_is_configured_separately_from_atr():
             "trend": {"min_volume_24h_quote": 3_000_000, "max_volume_24h_quote": 50_000_000},
             "launch": {"rise": {"enabled": False}},
             "dormant": {"enabled": False},
+            "reversal": {"enabled": False},
         }
     )
 

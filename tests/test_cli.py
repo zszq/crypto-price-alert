@@ -43,6 +43,7 @@ def test_simulate_produces_one_alert_per_enabled_window(move_config, expected_al
             "trend": {"enabled": False},
             "launch": {"rise": {"enabled": False}},
                 "dormant": {"enabled": False},
+                "reversal": {"enabled": False},
             "alerts": {"console_colors": False},
         }
     )
@@ -69,6 +70,7 @@ def test_simulate_produces_one_alert_per_enabled_trend_period(periods, expected_
             "trend": {"periods": periods},
             "launch": {"rise": {"enabled": False}},
             "dormant": {"enabled": False},
+            "reversal": {"enabled": False},
             "alerts": {"console_colors": False},
         }
     )
@@ -180,6 +182,7 @@ def test_simulate_skips_windows_when_move_is_disabled(capsys):
             "move": {"enabled": False},
             "trend": {"enabled": False},
             "dormant": {"enabled": False},
+            "reversal": {"enabled": False},
             "alerts": {"console_colors": False},
         }
     )
@@ -195,7 +198,12 @@ def test_lock_path_is_per_config_file_and_default_keeps_its_old_name():
 
 def test_simulate_includes_one_alert_per_launch_direction(capsys):
     config = AppConfig.model_validate(
-        {"trend": {"enabled": False}, "dormant": {"enabled": False}, "alerts": {"console_colors": False}}
+        {
+            "trend": {"enabled": False},
+            "dormant": {"enabled": False},
+            "reversal": {"enabled": False},
+            "alerts": {"console_colors": False},
+        }
     )
 
     assert asyncio.run(cli.simulate(config)) == 3 == cli.expected_simulated_alerts(config)
@@ -206,6 +214,7 @@ def test_simulate_includes_one_alert_per_launch_direction(capsys):
             "trend": {"enabled": False},
             "launch": {"fall": {"enabled": True}},
             "dormant": {"enabled": False},
+            "reversal": {"enabled": False},
             "alerts": {"console_colors": False},
         }
     )
@@ -293,6 +302,7 @@ def test_simulate_includes_one_dormant_alert(capsys):
             "move": {"enabled": False},
             "trend": {"enabled": False},
             "launch": {"rise": {"enabled": False}},
+            "reversal": {"enabled": False},
             "alerts": {"console_colors": False},
         }
     )

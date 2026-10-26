@@ -26,6 +26,10 @@ trend:
 dormant:
   enabled: false
 
+# 反弹回落由日常监控负责，这里关掉。
+reversal:
+  enabled: false
+
 launch:
   rise:
     enabled: true

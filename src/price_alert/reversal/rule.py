@@ -1,0 +1,39 @@
+"""反弹回落的判定门槛（纯数据），检测器、提醒文本与模拟共用。"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+# 成交笔数暴增：最近 BURST_SECONDS 秒的成交笔数与最近 BURST_BASE_SECONDS 秒的每分钟平均相比。
+# 两个长度固定：研究只验证过 1 分钟对 1 小时（research/move_accuracy/move_accuracy.md），不开放成配置。
+BURST_SECONDS = 60
+BURST_BASE_SECONDS = 3600
+# 全部成交都落在最近 1 分钟时倍数最大，等于两个长度之比；门槛不小于它就永远不会提醒。
+MAX_BURST_RATIO = BURST_BASE_SECONDS / BURST_SECONDS
+# ATR 口径与秒级异动的代码默认值相同（研究用的就是这一套），不单独开放配置。
+ATR_PERIOD = 14
+CANDLE_INTERVAL = "1m"
+CANDLE_INTERVAL_SECONDS = 60
+WARMUP_CANDLES = 50
+MAX_ATR_AGE_SECONDS = 180
+
+
+@dataclass(frozen=True, slots=True)
+class ReversalRule:
+    # 急动窗口：与秒级异动相同的判定（秒级 VWAP、基准桶、ATR、连续确认、空档复核、冷却）。
+    lookback_seconds: int
+    min_change_percent: float
+    trigger_atr_multiple: float
+    confirmation_seconds: int
+    min_window_trades: int
+    cooldown_seconds: int
+    # 前置走势：窗口开始前 prior_seconds 秒到窗口基准价，逆着急动方向走了至少 min_prior_move_percent。
+    prior_seconds: int
+    min_prior_move_percent: float
+    # 最近 1 分钟成交笔数 ÷ 最近 1 小时每分钟平均笔数的下限。
+    min_trade_burst_ratio: float
+
+    @property
+    def history_seconds(self) -> int:
+        """判定要回看的成交历史：前置走势的起点与成交暴增的 1 小时基准，取更早的那个。"""
+        return max(self.lookback_seconds + self.prior_seconds, BURST_BASE_SECONDS)

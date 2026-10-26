@@ -85,6 +85,8 @@ def test_each_alert_kind_maps_to_its_own_sound():
 def test_priority_order_is_launch_streak_trend_then_second_level():
     priority = sounds.SOUND_PRIORITY
     assert priority["launch"] > priority["dormant"] > priority["streak"] > priority["trend"] > priority["short"]
+    # 反弹回落每天只有几条，比连续提醒重要，与冷门启动同级、低于放量启动。
+    assert priority["dormant"] == priority["reversal"] > priority["streak"]
     assert priority["trend"] == priority["trend_continuing"]
     assert priority["short"] == priority["long"]
     assert set(priority) == set(sounds.SOUND_NAMES) == set(sounds.SOUND_LABELS)
@@ -152,8 +154,14 @@ def test_families_share_timbre_so_each_kind_is_recognizable():
     specs = sounds.SOUND_SPECS
     assert specs["short"].timbre == specs["long"].timbre == specs["streak"].timbre
     assert specs["trend"].timbre == specs["trend_continuing"].timbre
-    timbres = {specs["short"].timbre, specs["trend"].timbre, specs["launch"].timbre, specs["dormant"].timbre}
-    assert len(timbres) == 4
+    timbres = {
+        specs["short"].timbre,
+        specs["trend"].timbre,
+        specs["launch"].timbre,
+        specs["dormant"].timbre,
+        specs["reversal"].timbre,
+    }
+    assert len(timbres) == 5
     # 「敲两下」在两类里都表示连续/延续。
     assert len(specs["streak"].strikes) == len(specs["trend_continuing"].strikes) == 2
     assert len(specs["short"].strikes) == len(specs["trend"].strikes) == 1

@@ -26,6 +26,8 @@ from price_alert.gate import futures_trade_url
 from price_alert.launch import alerts as launch_alerts
 from price_alert.launch.alerts import LaunchAlert
 from price_alert.models import PriceAlert
+from price_alert.reversal import alerts as reversal_alerts
+from price_alert.reversal.alerts import ReversalAlert
 from price_alert.streak import StreakAlert
 from price_alert.trend import alerts as trend_alerts
 from price_alert.trend.alerts import TrendAlert
@@ -65,6 +67,9 @@ TREND_LABEL_COLOR = Fore.LIGHTMAGENTA_EX
 LAUNCH_LABEL_COLOR = Fore.YELLOW
 # 冷门启动提醒的标签（[冷门启动]）：亮蓝色。与放量启动的金黄色分开：冷门启动准确率较低，一眼就能看出是哪一类。
 DORMANT_LABEL_COLOR = Fore.LIGHTBLUE_EX
+# 反弹回落提醒的标签（[下跌反弹]/[冲高回落]）：亮白色，不和方向色、交易对、其他标签撞色；
+# 正文仍按急动方向着绿/红，标签单独亮起来就能和同样是秒级急动的秒级异动分开。
+REVERSAL_LABEL_COLOR = Fore.LIGHTWHITE_EX
 
 
 class Notifier(Protocol):
@@ -78,6 +83,8 @@ def format_alert(alert: Alert) -> str:
         return launch_alerts.format_launch_alert(alert)
     if isinstance(alert, DormantAlert):
         return dormant_alerts.format_dormant_alert(alert)
+    if isinstance(alert, ReversalAlert):
+        return reversal_alerts.format_reversal_alert(alert)
     if isinstance(alert, StreakAlert):
         return streak_alerts.format_streak_alert(alert)
     label = "急涨" if alert.direction == "surge" else "急跌"
@@ -115,19 +122,23 @@ def colorize_alert(alert: Alert, text: str, enabled: bool = True) -> str:
         change = launch_alerts.format_change(alert)
     elif isinstance(alert, DormantAlert):
         change = dormant_alerts.format_change(alert)
+    elif isinstance(alert, ReversalAlert):
+        change = reversal_alerts.format_change(alert)
     elif isinstance(alert, StreakAlert):
         change = streak_alerts.format_change(alert)
     else:
         change = format_change(alert)
     highlighted_change = f"{bright}{change}{Style.RESET_ALL}{color}"
     text = text.replace(alert.symbol, symbol, 1).replace(change, highlighted_change, 1)
-    if isinstance(alert, TrendAlert | LaunchAlert | DormantAlert):
+    if isinstance(alert, TrendAlert | LaunchAlert | DormantAlert | ReversalAlert):
         # 标签在行首，按首次出现替换不会误伤正文。
         label = f"[{alert.label}]"
         if isinstance(alert, TrendAlert):
             label_color = TREND_LABEL_COLOR
         elif isinstance(alert, LaunchAlert):
             label_color = LAUNCH_LABEL_COLOR
+        elif isinstance(alert, ReversalAlert):
+            label_color = REVERSAL_LABEL_COLOR
         else:
             label_color = DORMANT_LABEL_COLOR
         text = text.replace(label, f"{label_color}{label}{Style.RESET_ALL}{color}", 1)

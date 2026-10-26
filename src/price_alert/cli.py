@@ -41,6 +41,10 @@ from price_alert.replay import (
     render_replay,
     run_replay,
 )
+from price_alert.reversal.alerts import describe_reversal_rule
+from price_alert.reversal.replay import plan_reversal_replay, render_reversal_replay, run_reversal_replay
+from price_alert.reversal.rule import CANDLE_INTERVAL as REVERSAL_INTERVAL
+from price_alert.reversal.simulate import simulate_reversal
 from price_alert.service import run_monitor
 from price_alert.sounds import SOUND_LABELS, SOUND_NAMES, SOUND_PRIORITY
 from price_alert.streak import describe_streak_rule
@@ -60,6 +64,8 @@ DEFAULT_TREND_REPLAY_HOURS = 3
 DEFAULT_LAUNCH_REPLAY_HOURS = 6
 # 冷门启动回放只给开始时间时的时长：与放量回放相同，足够看完一段启动。
 DEFAULT_DORMANT_REPLAY_HOURS = 6
+# 反弹回落回放只给开始时间时的时长：判定是秒级的，还要多取 1 小时成交作基准，区间不宜太长。
+DEFAULT_REVERSAL_REPLAY_MINUTES = 30
 SOUND_PREVIEW_PAUSE_SECONDS = 0.8
 
 
@@ -75,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("trend-replay", "用历史 1 分钟 K 线回放某个合约的趋势提醒，逐根解释判定结果"),
         ("launch-replay", "用历史 1 分钟 K 线回放某个合约的放量启动提醒，逐分钟解释判定结果"),
         ("dormant-replay", "用历史 1 分钟 K 线回放某个合约的冷门启动提醒，逐分钟解释判定结果"),
+        ("reversal-replay", "用历史成交回放某个合约的反弹回落提醒，逐秒解释判定结果"),
         ("sounds", "依次试听各类提醒的提示音"),
     ):
         command = commands.add_parser(name, help=help_text)
@@ -98,6 +105,11 @@ def build_parser() -> argparse.ArgumentParser:
         commands.choices["dormant-replay"],
         f"默认开始后 {DEFAULT_DORMANT_REPLAY_HOURS} 小时",
         "输出每一分钟的判定，而不只是满足条件的分钟",
+    )
+    _add_replay_arguments(
+        commands.choices["reversal-replay"],
+        f"默认开始后 {DEFAULT_REVERSAL_REPLAY_MINUTES} 分钟",
+        "输出每一秒的判定，而不只是急动达标的秒",
     )
     return parser
 
@@ -127,11 +139,12 @@ def _build_demo_candles(end: datetime, count: int, interval_seconds: int) -> lis
 def expected_simulated_alerts(config: AppConfig) -> int:
     windows = len(build_windows(config)) if config.move.enabled else 0
     trend_periods = len(config.trend.rules()) if config.trend.enabled else 0
-    return windows + trend_periods + len(config.launch.sides()) + int(config.dormant.enabled)
+    singles = int(config.dormant.enabled) + int(config.reversal.enabled)
+    return windows + trend_periods + len(config.launch.sides()) + singles
 
 
 async def simulate(config: AppConfig) -> int:
-    """为每个启用的观察窗口、趋势周期、放量方向和冷门启动各跑一遍合成行情，返回提醒总数；
+    """为每个启用的观察窗口、趋势周期、放量方向、冷门启动和反弹回落各跑一遍合成行情，返回提醒总数；
     正常时等于 expected_simulated_alerts。"""
     notifier = ConsoleNotifier(beep=False, colors=config.alerts.console_colors)
     alert_count = 0
@@ -147,6 +160,10 @@ async def simulate(config: AppConfig) -> int:
             await notifier.send(alert)
     if config.dormant.enabled:
         for alert in simulate_dormant(config.dormant):
+            alert_count += 1
+            await notifier.send(alert)
+    if config.reversal.enabled:
+        for alert in simulate_reversal(config.reversal):
             alert_count += 1
             await notifier.send(alert)
     return alert_count
@@ -224,6 +241,23 @@ def replay(config: AppConfig, args: argparse.Namespace) -> None:
         raise SystemExit(f"{plan.symbol} 在该时间段没有取到成交：合约名可能有误，或 Gate 已不再提供这么早的成交")
     result = run_replay(config, plan, data)
     print("\n".join(render_replay(result, show_all=args.all)))
+
+
+def reversal_replay(config: AppConfig, args: argparse.Namespace) -> None:
+    rule = config.reversal.to_rule()
+    try:
+        start, end = _replay_range(args, timedelta(minutes=DEFAULT_REVERSAL_REPLAY_MINUTES))
+        plan = plan_reversal_replay(normalize_symbol(args.symbol), start, end, rule)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    try:
+        data = fetch_replay_data(build_rest_client(config), plan, config, candle_interval=REVERSAL_INTERVAL)
+    except (OSError, ValueError, TypeError, http.client.HTTPException) as exc:
+        raise SystemExit(f"获取 {plan.symbol} 历史数据失败：{exc}") from exc
+    if not data.trades:
+        raise SystemExit(f"{plan.symbol} 在该时间段没有取到成交：合约名可能有误，或 Gate 已不再提供这么早的成交")
+    result = run_reversal_replay(rule, plan, data)
+    print("\n".join(render_reversal_replay(result, show_all=args.all)))
 
 
 def _replay_range(args: argparse.Namespace, default_length: timedelta) -> tuple[datetime, datetime]:
@@ -372,6 +406,14 @@ def main() -> None:
             print(f"  {describe_dormant_rule(dormant.to_rule())}；合约池：{volume} USDT")
         else:
             print("  冷门启动提醒：已关闭")
+        reversal = config.reversal
+        if reversal.enabled:
+            volume = f"24 小时成交额 > {format_amount(reversal.min_volume_24h_quote)}"
+            if reversal.max_volume_24h_quote is not None:
+                volume += f" 且 ≤ {format_amount(reversal.max_volume_24h_quote)}"
+            print(f"  {describe_reversal_rule(reversal.to_rule())}；合约池：{volume} USDT")
+        else:
+            print("  反弹回落提醒：已关闭")
         return
     if args.command == "universe":
         print_universe(config)
@@ -381,8 +423,8 @@ def main() -> None:
         produced = asyncio.run(simulate(config))
         if produced != expected:
             raise SystemExit(
-                f"模拟应产生 {expected} 条提醒（每个窗口、每个趋势周期、每个放量方向、冷门启动各一条），"
-                f"实际 {produced} 条，请检查 move、trend、launch 与 dormant 配置"
+                f"模拟应产生 {expected} 条提醒（每个窗口、每个趋势周期、每个放量方向、冷门启动、反弹回落各一条），"
+                f"实际 {produced} 条，请检查 move、trend、launch、dormant 与 reversal 配置"
             )
         return
     if args.command == "replay":
@@ -396,6 +438,9 @@ def main() -> None:
         return
     if args.command == "dormant-replay":
         dormant_replay(config, args)
+        return
+    if args.command == "reversal-replay":
+        reversal_replay(config, args)
         return
     if args.command == "sounds":
         asyncio.run(preview_sounds())

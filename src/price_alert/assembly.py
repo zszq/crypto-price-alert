@@ -17,6 +17,11 @@ from price_alert.gate import GateRestClient, RateLimiter
 from price_alert.launch.alerts import LABELS as LAUNCH_LABELS
 from price_alert.launch.detector import LaunchDetector, LaunchEvaluation
 from price_alert.launch.rule import LaunchRule
+from price_alert.reversal.alerts import NAME as REVERSAL_NAME
+from price_alert.reversal.detector import ReversalDetector
+from price_alert.reversal.rule import CANDLE_INTERVAL as REVERSAL_INTERVAL
+from price_alert.reversal.rule import WARMUP_CANDLES as REVERSAL_WARMUP
+from price_alert.reversal.rule import ReversalRule
 from price_alert.streak import StreakRule
 from price_alert.trend.config import TrendConfig
 from price_alert.trend.detector import TrendDetector, TrendEvaluation
@@ -103,6 +108,10 @@ def build_dormant_detector(
     return DormantDetector(rule, observer)
 
 
+def build_reversal_detector(rule: ReversalRule) -> ReversalDetector:
+    return ReversalDetector(rule)
+
+
 def build_detectors(config: AppConfig) -> list[MonitoredDetector]:
     """实时监控运行的全部检测器，顺序与 config/default.yaml 一致；关闭的检测器不创建，不多订阅、不多拉 K 线。"""
     move = config.move
@@ -133,6 +142,14 @@ def build_detectors(config: AppConfig) -> list[MonitoredDetector]:
         volume = VolumeRange(config.dormant.min_volume_24h_quote, config.dormant.max_volume_24h_quote)
         detectors.append(
             MonitoredDetector("冷门启动", dormant, dormant.warmup_interval, dormant.warmup_candles, volume)
+        )
+    reversal = config.reversal
+    if reversal.enabled:
+        volume = VolumeRange(reversal.min_volume_24h_quote, reversal.max_volume_24h_quote)
+        detectors.append(
+            MonitoredDetector(
+                REVERSAL_NAME, build_reversal_detector(reversal.to_rule()), REVERSAL_INTERVAL, REVERSAL_WARMUP, volume
+            )
         )
     return detectors
 

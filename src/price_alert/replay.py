@@ -106,17 +106,24 @@ def plan_replay(symbol: str, start: datetime, end: datetime, config: AppConfig) 
     return ReplayPlan(symbol, start, end, feed_start, warmup_start)
 
 
-def fetch_replay_data(rest: GateRestClient, plan: ReplayPlan, config: AppConfig) -> ReplayData:
+def fetch_replay_data(
+    rest: GateRestClient,
+    plan: ReplayPlan,
+    config: AppConfig,
+    candle_interval: str | None = None,
+) -> ReplayData:
+    """candle_interval 为预热 K 线周期，默认取秒级异动的 move.candle_interval；反弹回落回放固定用 1 分钟。"""
+    interval_name = candle_interval or config.move.candle_interval
     decimals: int | None = None
     try:
         decimals = price_decimals(rest.fetch_contract(plan.symbol).get("order_price_round"))
     except Exception as exc:
         # 精度只影响价格显示，取不到就按有效数字显示，不值得让整个回放失败。
         LOGGER.warning("%s 合约信息获取失败，价格按有效数字显示：%s", plan.symbol, exc)
-    interval = timedelta(seconds=INTERVAL_SECONDS[config.move.candle_interval])
+    interval = timedelta(seconds=INTERVAL_SECONDS[interval_name])
     candles = rest.fetch_candles_between(
         plan.symbol,
-        config.move.candle_interval,
+        interval_name,
         plan.warmup_start,
         plan.feed_start - interval,
     )

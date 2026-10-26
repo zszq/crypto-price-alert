@@ -8,6 +8,7 @@
 - 放量启动：明亮的号角音色快速上行琶音（大三和弦），音量最大，最醒目，但收得干脆。
 - 冷门启动：簧管音色（只有奇次谐波，比号角空、闷）三个音一步一步上行，时长与放量启动相同、音量稍小：
   同样醒目，但音色和节奏都与放量启动不同，不会听混。
+- 反弹回落：拨弦音色（衰减快、干净利落）先落后起三个音，音高的「拐弯」对应走势的反转；比秒级异动响，比两种启动轻。
 """
 
 from __future__ import annotations
@@ -28,17 +29,28 @@ from typing import Literal
 from price_alert.detection import Alert
 from price_alert.dormant.alerts import DormantAlert
 from price_alert.launch.alerts import LaunchAlert
+from price_alert.reversal.alerts import ReversalAlert
 from price_alert.streak import StreakAlert
 from price_alert.trend.alerts import TrendAlert
 
-SoundName = Literal["short", "long", "streak", "trend", "trend_continuing", "dormant", "launch"]
-SOUND_NAMES: tuple[SoundName, ...] = ("short", "long", "streak", "trend", "trend_continuing", "dormant", "launch")
+SoundName = Literal["short", "long", "streak", "trend", "trend_continuing", "reversal", "dormant", "launch"]
+SOUND_NAMES: tuple[SoundName, ...] = (
+    "short",
+    "long",
+    "streak",
+    "trend",
+    "trend_continuing",
+    "reversal",
+    "dormant",
+    "launch",
+)
 SOUND_LABELS: dict[SoundName, str] = {
     "short": "秒级异动·短窗口",
     "long": "秒级异动·长窗口",
     "streak": "连续提醒",
     "trend": "趋势提醒",
     "trend_continuing": "趋势提醒·延续",
+    "reversal": "反弹回落",
     "dormant": "冷门启动",
     "launch": "放量启动",
 }
@@ -49,6 +61,8 @@ SOUND_PRIORITY: dict[SoundName, int] = {
     "trend": 1,
     "trend_continuing": 1,
     "streak": 2,
+    # 每天只有几条、提醒后几分钟内最可能延续，比连续提醒重要；仍让位于两种启动提醒。
+    "reversal": 3,
     "dormant": 3,
     "launch": 4,
 }
@@ -116,6 +130,14 @@ REED = (
     _Partial(3.0, 0.45, 0.12),
     _Partial(5.0, 0.18, 0.07),
 )
+# 拨弦：基音之外只有很弱的二、四次谐波，衰减比钟音快，听起来干净利落，和木琴、钟、号角、簧管都不同。
+PLUCK = (
+    _Partial(1.0, 1.0, 0.22),
+    _Partial(2.0, 0.25, 0.08),
+    _Partial(4.0, 0.06, 0.03),
+)
+# 反弹回落三个音之间的间隔：介于琶音与冷门启动的一步一步之间，听成一个「拐弯」。
+TURN_GAP = 0.08
 # 冷门启动三个音之间的间隔：比琶音慢三倍多，听成「一步一步」的三下，与放量启动连成一声的上扬区分开。
 STEP_GAP = 0.13
 # 琶音相邻两音的间隔：短到连成一个上扬的声音，不会听成“连敲几下”。
@@ -156,6 +178,14 @@ SOUND_SPECS: dict[SoundName, _SoundSpec] = {
         peak_level=0.95,
         fade_out_seconds=LONG_FADE_OUT_SECONDS,
     ),
+    # E6-B5-E6 先落后起：音高的「拐弯」对应走势的反转，比秒级异动响、比两种启动轻。
+    "reversal": _SoundSpec(
+        PLUCK,
+        (_Strike(1319.0), _Strike(988.0, TURN_GAP), _Strike(1319.0, TURN_GAP * 2, sustain=1.3)),
+        0.7,
+        peak_level=0.8,
+        fade_out_seconds=LONG_FADE_OUT_SECONDS,
+    ),
     # G5-C6-G6 三步上行：同样表示「启动」、时长与放量启动相同，但换了音色和节奏，音量稍小（放量启动仍最响）。
     "dormant": _SoundSpec(
         REED,
@@ -172,6 +202,8 @@ def sound_for(alert: Alert) -> SoundName:
         return "launch"
     if isinstance(alert, DormantAlert):
         return "dormant"
+    if isinstance(alert, ReversalAlert):
+        return "reversal"
     if isinstance(alert, StreakAlert):
         return "streak"
     if isinstance(alert, TrendAlert):
