@@ -293,12 +293,18 @@ def test_warmup_logs_progress_and_failures(monkeypatch, caplog):
                 raise ConnectionError("candles down")
             return super().fetch_candles(symbol, interval, limit)
 
-    rest = FailingEthRest([ticker(symbol, 20e6) for symbol in symbols], [contract(symbol) for symbol in symbols])
+    # 已停止交易的合约计入总数但不符合条件，用来区分两个数字。
+    rest = FailingEthRest(
+        [ticker(symbol, 20e6) for symbol in (*symbols, "OLD_USDT")],
+        [contract(symbol) for symbol in symbols] + [{**contract("OLD_USDT"), "status": "delisted"}],
+    )
     app_config = config()
     detector = build_detector(app_config)
     asyncio.run(monitor(detector, rest, GateTradeFeed("wss://example.test"), app_config).initial_universe())
 
     assert "正在从 Gate.io 获取合约列表" in caplog.text
+    assert "Gate.io 共 4 个合约，符合条件 3 个" in caplog.text
+    assert caplog.text.index("符合条件 3 个") < caplog.text.index("开始为 3 个新合约")
     assert "开始为 3 个新合约拉取 K 线预热（ATR 异动，并发 8）" in caplog.text
     # 最后一个完成时由“预热完成”收尾，不再重复报告 3/3。
     assert "K 线预热进度：2/3" in caplog.text

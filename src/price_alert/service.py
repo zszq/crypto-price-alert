@@ -299,6 +299,9 @@ class _Monitor:
         # 单个检测器的范围可能本来就很窄，选不出合约属正常；全部为空才说明交易所数据异常。
         if not any(selections):
             raise RuntimeError("Gate.io 没有满足成交额条件的可用虚拟币合约")
+        # 各检测器的合约池互有重叠，按合约去重后才是实际要监控的数量；放在预热前，启动时能先看到规模。
+        eligible = len({ticker.symbol for selected in selections for ticker in selected})
+        LOGGER.info("Gate.io 共 %d 个合约，符合条件 %d 个", len(raw_contracts), eligible)
         await self.sync_universe(selections)
         # 先完成预热再订阅，新合约的第一笔实时成交到达时检测器已经就绪。
         await self._subscribe()
