@@ -5,10 +5,10 @@ from datetime import UTC, datetime, timedelta
 
 from colorama import Style
 
-from price_alert.formatting import format_amount
-from price_alert.launch.alerts import LaunchAlert, describe_launch_rule, format_launch_alert
-from price_alert.launch.rule import LaunchMetrics, LaunchRule
-from price_alert.notifier import (
+from price_alert.common.formatting import format_amount
+from price_alert.detectors.launch.alerts import LaunchAlert, describe_launch_rule, format_launch_alert
+from price_alert.detectors.launch.rule import LaunchMetrics, LaunchRule
+from price_alert.notify.notifier import (
     LAUNCH_LABEL_COLOR,
     SURGE_CHANGE_COLOR,
     SURGE_COLOR,

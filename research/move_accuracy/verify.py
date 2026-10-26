@@ -13,9 +13,9 @@ from common import load_klines, month_start, previous_month
 from engine import load_trades, process
 from sim import Params, Rows, Simulator
 
-from price_alert.detector import AtrMoveDetector
-from price_alert.models import Candle, PriceTick
-from price_alert.windows import MoveWindow
+from price_alert.detectors.move.detector import AtrMoveDetector
+from price_alert.common.models import Candle, PriceTick
+from price_alert.detectors.move.windows import MoveWindow
 
 CASES = [
     (30, Params(1.3, 1.5, 2, 15, 30)),

@@ -464,52 +464,65 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 config/default.yaml          Gate、ATR、趋势、放量启动、冷门启动、反弹回落、提醒配置
 config/launch-trade.yaml     交易用的放量启动实例（只开放量上涨，参数取 S5）
 config/launch-f1.yaml        待验证的放量参数（launch_grid.md 第二轮 F1，只开放量启动，与日常监控同时运行对照）
-src/price_alert/
-├── config.py                配置模型与严格校验
-├── models.py                领域模型
-├── universe.py              动态高成交额合约池
-├── gate.py                  Gate REST / WebSocket 适配器、报价精度、合约面值与交易地址
-├── indicators.py            Wilder ATR
-├── windows.py               观察窗口规则与逐秒判定记录
-├── detector.py              ATR 标准化异动检测（多窗口）
-├── streak.py                短窗口同向连发的连续提醒
-├── formatting.py            价格、窗口长度与北京时间的展示格式
-├── replay.py                历史成交回放与逐秒判定解释
-├── trend/                   K 线形态趋势提醒（独立模块，只经 assembly 接入）
-│   ├── pattern.py           形态条件与周期 K 线合成（纯函数）
-│   ├── detector.py          1 分钟 K 线聚合与多周期判定
-│   ├── alerts.py            趋势提醒模型与文本
-│   ├── config.py            trend 配置段
-│   ├── replay.py            历史 1 分钟 K 线回放
-│   └── simulate.py          合成行情验证
-├── launch/                  放量启动提醒（独立模块，只经 assembly 接入）
-│   ├── rule.py              量比、成交额、涨跌幅与突破判定（纯函数）
-│   ├── detector.py          带成交额的 1 分钟 K 线聚合、判定与波次
-│   ├── alerts.py            放量提醒模型与文本
-│   ├── config.py            launch 配置段
-│   ├── replay.py            历史 1 分钟 K 线回放
-│   └── simulate.py          合成行情验证
-├── dormant/                 冷门启动提醒（独立模块，只经 assembly 接入）
-│   ├── rule.py              冷门、涨幅、成交额、有成交分钟数、涨前波动倍数与单分钟涨幅判定（纯函数）
-│   ├── detector.py          带成交额的 1 分钟 K 线聚合、判定与冷却
-│   ├── alerts.py            冷门启动提醒模型与文本
-│   ├── config.py            dormant 配置段
-│   ├── replay.py            历史 1 分钟 K 线回放
-│   └── simulate.py          合成行情验证
-├── reversal/                反弹回落提醒（独立模块，只经 assembly 接入）
-│   ├── rule.py              门槛与固定常量（1 分钟对 1 小时、ATR 口径）
-│   ├── detector.py          继承秒级异动检测器，加判前置走势与成交笔数暴增
-│   ├── alerts.py            下跌反弹 / 冲高回落提醒模型与文本
-│   ├── config.py            reversal 配置段
-│   ├── replay.py            历史成交逐秒回放
-│   └── simulate.py          合成行情验证
+src/price_alert/              分层：common ← exchange ← detectors ← notify ← 顶层（回放、模拟经 assembly 组装检测器）
+├── cli.py                   run/universe/check-config/simulate/replay/trend-replay/launch-replay/dormant-replay/reversal-replay/sounds
+├── config.py                汇总各配置段（AppConfig）与读取 YAML
 ├── detection.py             服务对检测器的约定（多个检测器共用成交与合约池）
-├── instance.py              防止重复提醒的跨平台进程锁
-├── notifier.py              控制台、JSONL、Webhook 与独立队列分发
-├── sounds.py                按提醒类型合成提示音与打断优先级
 ├── assembly.py              按配置组装检测器与 REST 客户端（各入口共用）
 ├── service.py               预热、增量刷新、重连和服务编排
-└── cli.py                   run/universe/check-config/simulate/replay/trend-replay/launch-replay/dormant-replay/reversal-replay/sounds
+├── instance.py              防止重复提醒的跨平台进程锁
+├── common/                  不依赖交易所与检测器的基础
+│   ├── models.py            领域模型（K 线、成交、合约行情与 K 线周期秒数）
+│   ├── formatting.py        价格、窗口长度与北京时间的展示格式
+│   ├── indicators.py        Wilder ATR
+│   └── minute_bars.py       1 分钟 K 线检测器骨架（成交聚合、补平线、断线回补），趋势/放量/冷门共用
+├── exchange/                Gate.io 适配
+│   ├── gate.py              REST / WebSocket 适配器、报价精度、合约面值与交易地址
+│   ├── universe.py          动态成交额合约池
+│   └── config.py            gate 配置段
+├── detectors/               各类提醒（每个子包只经 assembly 接入）
+│   ├── alerts.py            全部提醒类型的汇总
+│   ├── replay.py            各回放共用的时间解析、报价精度、区间推算与取数
+│   ├── move/                秒级 ATR 异动提醒
+│   │   ├── windows.py       观察窗口规则与逐秒判定记录
+│   │   ├── detector.py      ATR 标准化异动检测（多窗口）
+│   │   ├── streak.py        短窗口同向连发的连续提醒
+│   │   ├── alerts.py        异动提醒模型与文本
+│   │   ├── config.py        move 配置段
+│   │   ├── replay.py        历史成交回放与逐秒判定解释
+│   │   └── simulate.py      合成行情验证
+│   ├── trend/               K 线形态趋势提醒
+│   │   ├── pattern.py       形态条件与周期 K 线合成（纯函数）
+│   │   ├── detector.py      多周期形态判定
+│   │   ├── alerts.py        趋势提醒模型与文本
+│   │   ├── config.py        trend 配置段
+│   │   ├── replay.py        历史 1 分钟 K 线回放
+│   │   └── simulate.py      合成行情验证
+│   ├── launch/              放量启动提醒
+│   │   ├── rule.py          量比、成交额、涨跌幅与突破判定（纯函数）
+│   │   ├── detector.py      每分钟判定与波次
+│   │   ├── alerts.py        放量提醒模型与文本
+│   │   ├── config.py        launch 配置段
+│   │   ├── replay.py        历史 1 分钟 K 线回放
+│   │   └── simulate.py      合成行情验证
+│   ├── dormant/             冷门启动提醒
+│   │   ├── rule.py          冷门、涨幅、成交额、有成交分钟数、涨前波动倍数与单分钟涨幅判定（纯函数）
+│   │   ├── detector.py      每分钟判定、滚动统计与冷却
+│   │   ├── alerts.py        冷门启动提醒模型与文本
+│   │   ├── config.py        dormant 配置段
+│   │   ├── replay.py        历史 1 分钟 K 线回放
+│   │   └── simulate.py      合成行情验证
+│   └── reversal/            反弹回落提醒
+│       ├── rule.py          门槛与固定常量（1 分钟对 1 小时、ATR 口径）
+│       ├── detector.py      继承秒级异动检测器，加判前置走势与成交笔数暴增
+│       ├── alerts.py        下跌反弹 / 冲高回落提醒模型与文本
+│       ├── config.py        reversal 配置段
+│       ├── replay.py        历史成交逐秒回放
+│       └── simulate.py      合成行情验证
+└── notify/                  提醒通道
+    ├── notifier.py          控制台、JSONL、Webhook 与独立队列分发
+    ├── sounds.py            按提醒类型合成提示音与打断优先级
+    └── config.py            alerts 配置段
 tests/                       指标、筛选、解析、检测、通知、服务编排和命令行测试
 data/alerts/                 本地告警记录
 ```

@@ -549,9 +549,9 @@ def runup(which: list[str]) -> None:
 
 def verify(symbols: list[str]) -> None:
     """与真 LaunchDetector 逐条对照 2025-10~11 两个月（检测器现有参数能表达的候选）。"""
-    from price_alert.launch.detector import LaunchDetector
-    from price_alert.launch.rule import LaunchRule
-    from price_alert.models import Candle
+    from price_alert.detectors.launch.detector import LaunchDetector
+    from price_alert.detectors.launch.rule import LaunchRule
+    from price_alert.common.models import Candle
 
     contracts = load_contracts()
     checks = [c for c in CANDIDATES if not any(c[7:])]

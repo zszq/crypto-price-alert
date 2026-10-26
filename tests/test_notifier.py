@@ -7,12 +7,12 @@ from pathlib import Path
 
 from colorama import Style
 
-from price_alert.dormant.alerts import DormantAlert
-from price_alert.dormant.rule import DormantMetrics
-from price_alert.launch.alerts import LaunchAlert
-from price_alert.launch.rule import LaunchMetrics
-from price_alert.models import PriceAlert
-from price_alert.notifier import (
+from price_alert.detectors.dormant.alerts import DormantAlert
+from price_alert.detectors.dormant.rule import DormantMetrics
+from price_alert.detectors.launch.alerts import LaunchAlert
+from price_alert.detectors.launch.rule import LaunchMetrics
+from price_alert.detectors.move.alerts import PriceAlert
+from price_alert.notify.notifier import (
     DORMANT_LABEL_COLOR,
     DROP_CHANGE_COLOR,
     DROP_COLOR,
@@ -32,7 +32,7 @@ from price_alert.notifier import (
     colorize_alert,
     format_alert,
 )
-from price_alert.sounds import sound_duration, synthesize
+from price_alert.notify.sounds import sound_duration, synthesize
 
 
 def test_jsonl_notifier_writes_atr_alert(tmp_path):
@@ -152,8 +152,8 @@ def patch_macos_sound(monkeypatch, return_code: int = 0) -> list[tuple[tuple, Fa
         calls.append((args, process))
         return process
 
-    monkeypatch.setattr("price_alert.notifier.sys.platform", "darwin")
-    monkeypatch.setattr("price_alert.notifier.asyncio.create_subprocess_exec", create_subprocess_exec)
+    monkeypatch.setattr("price_alert.notify.notifier.sys.platform", "darwin")
+    monkeypatch.setattr("price_alert.notify.notifier.asyncio.create_subprocess_exec", create_subprocess_exec)
     return calls
 
 
@@ -326,8 +326,8 @@ def test_macos_sound_failure_does_not_hide_alert(monkeypatch, capsys, caplog, tm
     async def create_subprocess_exec(*args, **kwargs):
         raise OSError("afplay 不可用")
 
-    monkeypatch.setattr("price_alert.notifier.sys.platform", "darwin")
-    monkeypatch.setattr("price_alert.notifier.asyncio.create_subprocess_exec", create_subprocess_exec)
+    monkeypatch.setattr("price_alert.notify.notifier.sys.platform", "darwin")
+    monkeypatch.setattr("price_alert.notify.notifier.asyncio.create_subprocess_exec", create_subprocess_exec)
 
     async def scenario():
         notifier = ConsoleNotifier(beep=True, colors=False, sound_dir=tmp_path)
@@ -364,9 +364,9 @@ def patch_windows_sound(monkeypatch, winsound: FakeWinsound) -> list[float]:
         sleeps.append(delay)
         await real_sleep(0)
 
-    monkeypatch.setattr("price_alert.notifier.sys.platform", "win32")
-    monkeypatch.setattr("price_alert.notifier.winsound", winsound)
-    monkeypatch.setattr("price_alert.notifier.asyncio.sleep", sleep)
+    monkeypatch.setattr("price_alert.notify.notifier.sys.platform", "win32")
+    monkeypatch.setattr("price_alert.notify.notifier.winsound", winsound)
+    monkeypatch.setattr("price_alert.notify.notifier.asyncio.sleep", sleep)
     return sleeps
 
 
@@ -471,7 +471,7 @@ def test_play_and_wait_reports_failure_when_sound_file_cannot_be_regenerated(mon
 
 
 def test_console_notifier_keeps_terminal_bell_on_other_platforms(monkeypatch, capsys):
-    monkeypatch.setattr("price_alert.notifier.sys.platform", "linux")
+    monkeypatch.setattr("price_alert.notify.notifier.sys.platform", "linux")
 
     asyncio.run(ConsoleNotifier(beep=True, colors=False).send(make_alert()))
 
@@ -479,7 +479,7 @@ def test_console_notifier_keeps_terminal_bell_on_other_platforms(monkeypatch, ca
 
 
 def test_sound_file_failure_falls_back_to_terminal_bell(monkeypatch, capsys, caplog, tmp_path):
-    monkeypatch.setattr("price_alert.notifier.sys.platform", "darwin")
+    monkeypatch.setattr("price_alert.notify.notifier.sys.platform", "darwin")
     # 用一个普通文件占住目录位置，创建音效目录必然失败。
     blocker = tmp_path / "not-a-directory"
     blocker.write_text("", encoding="utf-8")
@@ -595,7 +595,7 @@ def test_jsonl_notifier_rotates_whole_files(tmp_path):
 
 
 def test_console_trade_url_keeps_chinese_symbol_readable(monkeypatch, capsys):
-    monkeypatch.setattr("price_alert.notifier.sys.platform", "linux")
+    monkeypatch.setattr("price_alert.notify.notifier.sys.platform", "linux")
 
     asyncio.run(ConsoleNotifier(beep=False, colors=False).send(make_alert(symbol="龙虾_USDT")))
 
@@ -603,7 +603,7 @@ def test_console_trade_url_keeps_chinese_symbol_readable(monkeypatch, capsys):
 
 
 def test_console_trade_url_is_gray_when_colors_enabled(monkeypatch, capsys):
-    monkeypatch.setattr("price_alert.notifier.sys.platform", "linux")
+    monkeypatch.setattr("price_alert.notify.notifier.sys.platform", "linux")
 
     asyncio.run(ConsoleNotifier(beep=False, colors=True).send(make_alert(symbol="BTC_USDT")))
 
@@ -612,7 +612,7 @@ def test_console_trade_url_is_gray_when_colors_enabled(monkeypatch, capsys):
 
 
 def test_console_trade_url_still_escapes_ascii_reserved_characters(monkeypatch, capsys):
-    monkeypatch.setattr("price_alert.notifier.sys.platform", "linux")
+    monkeypatch.setattr("price_alert.notify.notifier.sys.platform", "linux")
 
     asyncio.run(ConsoleNotifier(beep=False, colors=False).send(make_alert(symbol="A/B?_USDT")))
 
@@ -620,7 +620,7 @@ def test_console_trade_url_still_escapes_ascii_reserved_characters(monkeypatch, 
 
 
 def test_console_trade_url_escapes_non_ascii_whitespace_and_invisible_characters(monkeypatch, capsys):
-    monkeypatch.setattr("price_alert.notifier.sys.platform", "linux")
+    monkeypatch.setattr("price_alert.notify.notifier.sys.platform", "linux")
 
     asyncio.run(ConsoleNotifier(beep=False, colors=False).send(make_alert(symbol="龙\u3000虾\u200b_USDT")))
 

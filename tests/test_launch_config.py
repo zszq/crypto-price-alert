@@ -3,8 +3,8 @@ from pydantic import ValidationError
 
 from price_alert.assembly import build_detectors
 from price_alert.config import AppConfig
-from price_alert.launch.config import LaunchConfig
-from price_alert.universe import VolumeRange
+from price_alert.detectors.launch.config import LaunchConfig
+from price_alert.exchange.universe import VolumeRange
 
 
 def test_defaults_and_build_rule():

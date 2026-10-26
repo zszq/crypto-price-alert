@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from price_alert.formatting import beijing_time, describe_window, format_price
+from price_alert.common.formatting import beijing_time, describe_window, format_price
 
 
 @pytest.mark.parametrize(

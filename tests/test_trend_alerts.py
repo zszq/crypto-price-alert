@@ -5,7 +5,9 @@ from datetime import UTC, datetime, timedelta
 
 from colorama import Style
 
-from price_alert.notifier import (
+from price_alert.detectors.trend.alerts import TrendAlert, describe_trend_rule, format_trend_alert
+from price_alert.detectors.trend.pattern import PatternMetrics, TrendRule
+from price_alert.notify.notifier import (
     DROP_CHANGE_COLOR,
     DROP_COLOR,
     SYMBOL_COLOR,
@@ -14,8 +16,6 @@ from price_alert.notifier import (
     colorize_alert,
     format_alert,
 )
-from price_alert.trend.alerts import TrendAlert, describe_trend_rule, format_trend_alert
-from price_alert.trend.pattern import PatternMetrics, TrendRule
 
 # 北京时间 2026-09-30 22:17。
 DETECTED = datetime(2026, 9, 30, 14, 17, tzinfo=UTC)

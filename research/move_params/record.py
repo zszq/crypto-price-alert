@@ -22,9 +22,9 @@ from pathlib import Path
 import numpy as np
 import sim
 
-from price_alert.detector import AtrMoveDetector
-from price_alert.models import Candle, PriceTick
-from price_alert.windows import MoveWindow, Outcome
+from price_alert.detectors.move.detector import AtrMoveDetector
+from price_alert.common.models import Candle, PriceTick
+from price_alert.detectors.move.windows import MoveWindow, Outcome
 
 # 行情、记录与结果只放本机（data/backtest/move/，不进版本库），代码在这里
 DATA = Path(__file__).resolve().parents[2] / "data" / "backtest" / "move"

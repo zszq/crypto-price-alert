@@ -4,7 +4,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from price_alert.dormant.rule import (
+from price_alert.common.models import Candle
+from price_alert.detectors.dormant.rule import (
     CALM_MINUTES,
     PRIOR_MINUTES,
     Condition,
@@ -14,7 +15,6 @@ from price_alert.dormant.rule import (
     minute_range_percent,
     still_rising,
 )
-from price_alert.models import Candle
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
 RULE_VALUES = {

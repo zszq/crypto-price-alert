@@ -2,9 +2,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from price_alert.launch.detector import LaunchDetector, LaunchOutcome
-from price_alert.launch.rule import Condition, LaunchRule
-from price_alert.models import Candle, PriceTick
+from price_alert.common.models import Candle, PriceTick
+from price_alert.detectors.launch.detector import LaunchDetector, LaunchOutcome
+from price_alert.detectors.launch.rule import Condition, LaunchRule
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
 SYMBOL = "RLC_USDT"

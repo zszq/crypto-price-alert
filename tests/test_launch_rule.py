@@ -2,8 +2,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from price_alert.launch.rule import Condition, LaunchRule, evaluate_launch, still_launching
-from price_alert.models import Candle
+from price_alert.common.models import Candle
+from price_alert.detectors.launch.rule import Condition, LaunchRule, evaluate_launch, still_launching
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
 

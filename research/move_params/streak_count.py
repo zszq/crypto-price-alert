@@ -1,6 +1,6 @@
 """短窗口提醒串成的连续提醒条数。
 
-规则同 src/price_alert/streak.py：同合约同方向、间隔 ≤ 冷却 + 30 秒，第 min_alerts 条时报一次；
+规则同 src/price_alert/detectors/move/streak.py：同合约同方向、间隔 ≤ 冷却 + 30 秒，第 min_alerts 条时报一次；
 这里没有模拟「累计方向不一致时先不报」，只用来比较数量级。
 """
 

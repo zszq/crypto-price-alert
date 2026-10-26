@@ -28,7 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from paths import DATA  # noqa: E402
 
-from price_alert.gate import GATE_MINUTE_HISTORY, GateRestClient, RateLimiter, fetch_minute_candles
+from price_alert.exchange.gate import GATE_MINUTE_HISTORY, GateRestClient, RateLimiter, fetch_minute_candles
 
 RAW = DATA / "raw"
 RECENT = DATA / "recent"

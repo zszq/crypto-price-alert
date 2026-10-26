@@ -3,19 +3,20 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from pydantic import ValidationError
 
-from price_alert import cli, sounds
+from price_alert import cli
 from price_alert.assembly import build_detectors
+from price_alert.common.formatting import BEIJING_TIME, beijing_time
+from price_alert.common.models import Candle, PriceTick
 from price_alert.config import AppConfig
-from price_alert.formatting import BEIJING_TIME, beijing_time
-from price_alert.models import Candle, PriceTick
-from price_alert.notifier import REVERSAL_LABEL_COLOR, colorize_alert, format_alert
-from price_alert.replay import ReplayData, fetch_replay_data
-from price_alert.reversal.config import ReversalConfig
-from price_alert.reversal.detector import ReversalDetector
-from price_alert.reversal.replay import plan_reversal_replay, render_reversal_replay, run_reversal_replay
-from price_alert.reversal.rule import CANDLE_INTERVAL as REVERSAL_INTERVAL
-from price_alert.reversal.simulate import simulate_reversal
-from price_alert.universe import VolumeRange
+from price_alert.detectors.replay import ReplayData
+from price_alert.detectors.reversal.config import ReversalConfig
+from price_alert.detectors.reversal.detector import ReversalDetector
+from price_alert.detectors.reversal.replay import plan_reversal_replay, render_reversal_replay, run_reversal_replay
+from price_alert.detectors.reversal.rule import CANDLE_INTERVAL as REVERSAL_INTERVAL
+from price_alert.detectors.reversal.simulate import simulate_reversal
+from price_alert.exchange.universe import VolumeRange
+from price_alert.notify import sounds
+from price_alert.notify.notifier import REVERSAL_LABEL_COLOR, colorize_alert, format_alert
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
 SYMBOL = "LAB_USDT"
@@ -213,16 +214,15 @@ def test_replay_explains_a_move_blocked_by_missing_trade_rush():
     assert "成交 ×1.0" in text
 
 
-def test_replay_command_fetches_one_minute_candles():
+def test_replay_command_fetches_one_minute_candles(monkeypatch, capsys):
     args = cli.build_parser().parse_args(["reversal-replay", "LAB", "--start", "2026-01-01 09:30", "--all"])
     assert (args.symbol, args.all) == ("LAB", True)
 
     rest = FakeRest()
-    plan = replay_plan()
+    monkeypatch.setattr(cli, "build_rest_client", lambda config: rest)
     # 秒级异动改用 5 分钟 K 线时，反弹回落的回放仍按自己固定的 1 分钟预热。
-    config = AppConfig.model_validate({"move": {"candle_interval": "5m"}})
-    fetch_replay_data(rest, plan, config, candle_interval=REVERSAL_INTERVAL)
-    assert rest.intervals == ["1m"]
+    cli.reversal_replay(AppConfig.model_validate({"move": {"candle_interval": "5m"}}), args)
+    assert rest.intervals == [REVERSAL_INTERVAL] == ["1m"]
 
 
 class FakeRest:

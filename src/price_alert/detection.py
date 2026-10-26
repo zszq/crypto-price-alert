@@ -12,15 +12,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from price_alert.dormant.alerts import DormantAlert
-from price_alert.launch.alerts import LaunchAlert
-from price_alert.models import Candle, PriceAlert, PriceTick
-from price_alert.reversal.alerts import ReversalAlert
-from price_alert.streak import StreakAlert
-from price_alert.trend.alerts import TrendAlert
-from price_alert.universe import VolumeRange
-
-Alert = PriceAlert | StreakAlert | TrendAlert | LaunchAlert | DormantAlert | ReversalAlert
+from price_alert.common.models import Candle, PriceTick
+from price_alert.detectors.alerts import Alert
+from price_alert.exchange.universe import VolumeRange
 
 
 class Detector(Protocol):

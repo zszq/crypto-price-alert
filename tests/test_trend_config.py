@@ -3,8 +3,8 @@ from pydantic import ValidationError
 
 from price_alert.assembly import build_detectors, build_trend_detector
 from price_alert.config import AppConfig, load_config
-from price_alert.trend.config import TrendConfig
-from price_alert.universe import VolumeRange
+from price_alert.detectors.trend.config import TrendConfig
+from price_alert.exchange.universe import VolumeRange
 
 
 def test_defaults_enable_three_periods_with_period_specific_thresholds():

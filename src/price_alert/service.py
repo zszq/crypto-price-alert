@@ -12,12 +12,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from price_alert.assembly import build_detectors, build_rest_client
-from price_alert.config import INTERVAL_SECONDS, AppConfig
+from price_alert.common.models import INTERVAL_SECONDS, Candle, ContractTicker
+from price_alert.config import AppConfig
 from price_alert.detection import MonitoredDetector
-from price_alert.gate import GateRestClient, GateTradeFeed
-from price_alert.models import Candle, ContractTicker
-from price_alert.notifier import AlertDispatcher, build_notifiers
-from price_alert.universe import select_liquid_contracts
+from price_alert.exchange.gate import GateRestClient, GateTradeFeed
+from price_alert.exchange.universe import select_liquid_contracts
+from price_alert.notify.notifier import AlertDispatcher, build_notifiers
 
 LOGGER = logging.getLogger(__name__)
 

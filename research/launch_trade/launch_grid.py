@@ -610,9 +610,9 @@ def cmd_evaluate() -> None:
 
 def cmd_verify() -> None:
 
-    from price_alert.launch.detector import LaunchDetector
-    from price_alert.launch.rule import LaunchRule
-    from price_alert.models import Candle
+    from price_alert.detectors.launch.detector import LaunchDetector
+    from price_alert.detectors.launch.rule import LaunchRule
+    from price_alert.common.models import Candle
 
     contracts = load_contracts()
     symbols = json.loads((OUT / "symbols.json").read_text(encoding="utf-8"))

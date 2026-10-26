@@ -8,15 +8,15 @@ from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
 
-from price_alert import sounds
-from price_alert.dormant.alerts import DormantAlert
-from price_alert.dormant.rule import DormantMetrics
-from price_alert.launch.alerts import LaunchAlert
-from price_alert.launch.rule import LaunchMetrics
-from price_alert.models import PriceAlert
-from price_alert.streak import StreakAlert
-from price_alert.trend.alerts import TrendAlert
-from price_alert.trend.pattern import PatternMetrics
+from price_alert.detectors.dormant.alerts import DormantAlert
+from price_alert.detectors.dormant.rule import DormantMetrics
+from price_alert.detectors.launch.alerts import LaunchAlert
+from price_alert.detectors.launch.rule import LaunchMetrics
+from price_alert.detectors.move.alerts import PriceAlert
+from price_alert.detectors.move.streak import StreakAlert
+from price_alert.detectors.trend.alerts import TrendAlert
+from price_alert.detectors.trend.pattern import PatternMetrics
+from price_alert.notify import sounds
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
 PRICE_ALERT = PriceAlert(
@@ -175,15 +175,15 @@ def test_families_share_timbre_so_each_kind_is_recognizable():
 
 def test_default_sound_dir_avoids_system_temp(monkeypatch, tmp_path):
     # 系统临时目录会被存储感知等清理工具在运行中清空，导致提示音静默失效。
-    monkeypatch.setattr("price_alert.sounds.sys.platform", "win32")
+    monkeypatch.setattr("price_alert.notify.sounds.sys.platform", "win32")
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     assert sounds.default_sound_dir() == tmp_path / "price-alert" / "sounds"
 
     monkeypatch.delenv("LOCALAPPDATA")
     assert sounds.default_sound_dir() == Path(tempfile.gettempdir()) / "price-alert-sounds"
 
-    monkeypatch.setattr("price_alert.sounds.sys.platform", "darwin")
-    monkeypatch.setattr("price_alert.sounds.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("price_alert.notify.sounds.sys.platform", "darwin")
+    monkeypatch.setattr("price_alert.notify.sounds.Path.home", lambda: tmp_path)
     assert sounds.default_sound_dir() == tmp_path / "Library" / "Caches" / "price-alert" / "sounds"
 
 

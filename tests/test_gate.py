@@ -9,8 +9,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from price_alert import gate
-from price_alert.gate import (
+from price_alert.exchange import gate
+from price_alert.exchange.gate import (
     GateRestClient,
     GateTradeFeed,
     build_subscription,

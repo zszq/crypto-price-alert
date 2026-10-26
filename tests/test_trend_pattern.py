@@ -2,8 +2,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from price_alert.models import Candle
-from price_alert.trend.pattern import Condition, TrendRule, aggregate_candles, evaluate_pattern
+from price_alert.common.models import Candle
+from price_alert.detectors.trend.pattern import Condition, TrendRule, aggregate_candles, evaluate_pattern
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
 

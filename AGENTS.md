@@ -15,8 +15,8 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 
 .\.venv\Scripts\python.exe -m pytest                                   # 全部测试（离线）
-.\.venv\Scripts\python.exe -m pytest tests/test_detector.py            # 单个文件
-.\.venv\Scripts\python.exe -m pytest tests/test_detector.py -k cooldown # 单个用例
+.\.venv\Scripts\python.exe -m pytest tests/test_move_detector.py       # 单个文件
+.\.venv\Scripts\python.exe -m pytest tests/test_move_detector.py -k cooldown # 单个用例
 .\.venv\Scripts\python.exe -m pytest --cov=price_alert                 # 覆盖率
 .\.venv\Scripts\ruff.exe check src tests                               # lint（E/F/I/UP/B，行宽 120）
 
@@ -36,7 +36,19 @@ python -m venv .venv
 
 ## 架构
 
-数据流：`universe.py` 筛选合约池 → `gate.py` REST 拉 K 线预热 → `gate.py` WebSocket `futures.trades` 推送成交 → 各检测器判定（`detector.py` 秒级 ATR 异动、`trend/` K 线形态趋势、`launch/` 放量启动、`dormant/` 冷门启动、`reversal/` 反弹回落）→ `notifier.py` 分发（控制台 / JSONL / Webhook）。`service.py::run_monitor` 负责把这些串起来。
+### 代码布局
+
+`src/price_alert/` 按依赖方向分层：`common/` ← `exchange/` ← `detectors/` ← `notify/` ← 顶层。检测器的判定代码（`detector.py`、`rule.py`/`pattern.py`/`windows.py`、`alerts.py`、`config.py`）只依赖 `common/` 与其他检测器的同类模块；离线入口例外：各子包的 `replay.py`、`simulate.py` 通过顶层 `assembly` 组装检测器（与实时监控同一套组装），`move/replay.py` 还用 `notify.notifier.format_alert` 输出提醒原文。`assembly` 不能反过来导入这些 `replay`/`simulate` 模块，否则会循环导入。
+
+- `common/`：不依赖交易所与检测器的基础。`models.py`（`Candle`、`PriceTick`、`ContractTicker` 与 K 线周期秒数 `INTERVAL_SECONDS`）、`formatting.py`、`indicators.py`、`minute_bars.py`（1 分钟 K 线检测器骨架，见下文）。
+- `exchange/`：`gate.py`（REST / WebSocket 与解析）、`universe.py`（合约池筛选）、`config.py`（`GateConfig`）。
+- `detectors/`：五个检测器子包 `move/`、`trend/`、`launch/`、`dormant/`、`reversal/`，各自带 `config.py`、判定、`alerts.py`、`replay.py`、`simulate.py`；`alerts.py` 汇总全部提醒类型 `Alert`；`replay.py` 是各回放共用的时间解析、报价精度与取数。子包之间互不依赖（`reversal` 继承 `move` 的检测器除外）。
+- `notify/`：`notifier.py`、`sounds.py`、`config.py`（`AlertConfig`）。
+- 顶层：`config.py`（`AppConfig` 汇总各段与 `load_config`）、`detection.py`（服务对检测器的约定 `Detector` / `MonitoredDetector`）、`assembly.py`、`service.py`、`instance.py`、`cli.py`（入口仍是 `python -m price_alert.cli`）。
+
+下文的 `gate.py`、`notifier.py`、`trend/` 等都按这个布局定位。
+
+数据流：`universe.py` 筛选合约池 → `gate.py` REST 拉 K 线预热 → `gate.py` WebSocket `futures.trades` 推送成交 → 各检测器判定（`move/` 秒级 ATR 异动、`trend/` K 线形态趋势、`launch/` 放量启动、`dormant/` 冷门启动、`reversal/` 反弹回落）→ `notifier.py` 分发（控制台 / JSONL / Webhook）。`service.py::run_monitor` 负责把这些串起来。
 
 ### 服务主循环（service.py）
 
@@ -50,7 +62,9 @@ python -m venv .venv
 - 提醒通过 `AlertDispatcher.publish` 非阻塞投递，每个通道独立队列和后台任务，绝不能在成交循环里 `await` 通知发送。
 - `GateRestClient` 是同步 `urllib` 实现，异步代码中通过 `asyncio.to_thread` 调用。只重试 408/429/5xx 与网络/读取/JSON 解析类临时错误，其他 4xx 直接抛出。
 
-### 检测器（detector.py + windows.py）
+### 秒级异动（move/）
+
+子包，与其他检测器一样只经 `assembly.build_detector` / `build_windows` / `build_detectors` 接入（这两个函数收 `MoveConfig`，与 `build_trend_detector` 收 `TrendConfig` 一致）：`detector.py::AtrMoveDetector`、`windows.py`（窗口规则、`Outcome`、`WindowEvaluation`）、`streak.py`（连续提醒）、`alerts.py`（`PriceAlert` 与文本格式，`notifier` 只做分派与着色）、`config.py`（`MoveConfig` 等）、`replay.py`（`cli replay`）、`simulate.py`。`reversal/` 继承 `AtrMoveDetector`，所以它不能像其他子包那样整个删掉。
 
 检测器持有一组有序的 `MoveWindow`（`windows.py`，目前是 `short` 与可关闭的 `long`），每个窗口有独立的 lookback、门槛、确认秒数、最低笔数和冷却时长；所有窗口共用同一份秒级桶与 ATR。每个合约一个 `_SymbolState`，每个窗口一个 `_Candidate` 确认进度。核心语义：
 
@@ -63,12 +77,16 @@ python -m venv .venv
 - 多窗口互不影响（`_evaluate`）：每秒各窗口独立评估、独立提醒，同一秒多个窗口满足就各报一条（按窗口顺序，短窗口在前）；冷却按（合约, 窗口）记录 `_last_alert`，只从本窗口自己的上次提醒算起、按本窗口的冷却计时长（`move.short_window.cooldown_seconds`、`move.long_window.cooldown_seconds`，后者 ≥ 其窗口长度，配置层强制；冷却属于判定逻辑，不在 `alerts` 下）；提醒或冷却拦下后只重置该窗口自己的候选。
 - 秒级桶按最长窗口保留；空秒补齐上限是**最短**窗口的 lookback，保证短窗口行为与单窗口时一致。窗口起点落在更长的空档里时，`_find_baseline` 沿用空档前最后成交价作基准，前提是空档不长于该窗口（短窗口的这类空档都已补齐，走不到这里）。基准定位用二分查找，窗口笔数用桶上的累计笔数 `trades_before` 相减，长窗口不必逐桶扫描。
 - 构造时可传 `observer`，每秒每个窗口回调一条 `WindowEvaluation`（含 `Outcome` 判定结果与涨跌幅、ATR 倍数、笔数等指标），回放靠它解释原因；实时监控不传。
-- 连续提醒（`streak.py`）：构造时传 `streak: StreakRule`（`assembly.build_detector` 按 `move.streak` 生成，`simulate` 传 `streak=False`）后，每条**短窗口**提醒交给 `StreakTracker.observe`：同一合约同方向、相邻间隔 ≤ `StreakRule.max_gap_seconds`（= `short_window.cooldown_seconds + streak.gap_tolerance_seconds`，跟随冷却，没有跨字段校验）的短窗口提醒连成一串，第 `min_alerts` 条时紧跟其后追加一条 `StreakAlert`（`kind: "streak"`，累计涨跌幅从第一条提醒的窗口起点算），每串只报一次；累计涨跌方向与提醒方向不一致（冷却期内急跌又拉回没触发反向提醒）时先不报、计数照常累加，之后某条提醒让方向一致时再报；反向短窗口提醒或间隔超限重新计数，长窗口提醒不参与也不打断，记录不随合约移出清除。默认值（3 条、容差 30 秒即间隔 ≤ 60 秒）来自实际提醒日志，README「连续提醒」一节有数据。`replay` 的连续提醒随触发它的短窗口提醒一起按区间取舍。
+- 连续提醒（`move/streak.py`）：构造时传 `streak: StreakRule`（`assembly.build_detector` 按 `move.streak` 生成，`simulate` 传 `streak=False`）后，每条**短窗口**提醒交给 `StreakTracker.observe`：同一合约同方向、相邻间隔 ≤ `StreakRule.max_gap_seconds`（= `short_window.cooldown_seconds + streak.gap_tolerance_seconds`，跟随冷却，没有跨字段校验）的短窗口提醒连成一串，第 `min_alerts` 条时紧跟其后追加一条 `StreakAlert`（`kind: "streak"`，累计涨跌幅从第一条提醒的窗口起点算），每串只报一次；累计涨跌方向与提醒方向不一致（冷却期内急跌又拉回没触发反向提醒）时先不报、计数照常累加，之后某条提醒让方向一致时再报；反向短窗口提醒或间隔超限重新计数，长窗口提醒不参与也不打断，记录不随合约移出清除。默认值（3 条、容差 30 秒即间隔 ≤ 60 秒）来自实际提醒日志，README「连续提醒」一节有数据。`replay` 的连续提醒随触发它的短窗口提醒一起按区间取舍。
 - `remove_symbols` 不清除冷却记录。`mark_stream_gap` 清空秒级窗口和确认进度并置 `atr_stale`：失效期间不判定、不向 ATR 喂 K 线（也不补平线），直到 `resync_symbol` 用 REST K 线重建 ATR。重建时若本地实时 K 线与交易所当前 K 线同一周期，高低点取并集；若本地已跨入新周期，交易所的“当前 K 线”按已收盘计入 ATR。`resync_symbol` 只作用于仍处于失效状态的合约。回补保留秒级桶，回补前还没结算、且早于重建后实时 K 线周期的秒，其所在周期的 ATR 已被替换，`_atr_before` 返回 None，按 `ATR_UNAVAILABLE` 放弃判定，不拿含之后周期的 ATR 充数。
+
+### 1 分钟 K 线检测器骨架（common/minute_bars.py）
+
+趋势、放量启动、冷门启动三个检测器都继承 `MinuteBarDetector`，K 线聚合、空分钟补平线、断线失效与回补、`symbols`/`add_symbol`/`remove_symbols`/`mark_*_gap`/`resync_symbol`/`add_tick`/`add_candle` 都在基类，子类只实现 `_evaluate(symbol, state, closed_at, latest_price)`（`closed_at` 那一分钟已追加进 `state.minutes`，返回提醒列表）。差异用类属性表达：`requires_quote`（放量、冷门为 True：没有合约面值的合约不聚合、不判定）、`state_class`（冷门启动用带滚动累计值的 `MinuteState` 子类，覆盖 `append`/`clear`）。`latest_price` 只在隔了空档才结算时不为 None，放量、冷门用它复核，趋势忽略。下面三节里关于结算时机、补平线、回补合并的描述都是基类的行为，改动时三者一起受影响，要跑三个检测器的测试。
 
 ### K 线形态趋势（trend/）
 
-独立子包，只经 `assembly.build_trend_detector` / `build_detectors` 接入，删除时去掉这两处、`config.AppConfig.trend`、`notifier` 中的 `TrendAlert` 分派与 `cli` 的 `trend-replay`/`simulate` 调用即可。只描述已形成的健康单边走势，不跟踪、不预测后续。
+独立子包，只经 `assembly.build_trend_detector` / `build_detectors` 接入，删除时去掉这两处、`config.AppConfig.trend`、`detectors/alerts.py` 的 `Alert` 与 `notifier` 中的 `TrendAlert` 分派、`cli` 的 `trend-replay`/`simulate` 调用即可。只描述已形成的健康单边走势，不跟踪、不预测后续。
 
 - `pattern.py`：纯函数。`TrendRule` 描述一个周期的门槛；`evaluate_pattern(window, rule)` 对最近 `candles` 根周期 K 线判定，返回 `PatternMetrics`（含未满足的 `Condition`）。七个条件：累计涨跌幅（第一根开盘到最后一根收盘）、反向 K 线根数（实体 ÷ 本根振幅低于 `min_candle_body_ratio` 的小实体 K 线与十字星也算反向，≤ `max_counter_candles`；判定在 `_is_counter`，首尾顺势、反向后突破共用这份标记）、首尾顺势（反向 K 线不能是第一根或最后一根）、反向后突破（每段连续反向 K 线之后的第一根，收盘要严格突破这段之前那根的收盘价，没有配置项）、最大反弹比例（按收盘价从滚动极值算，起点之后先反向走也算反弹）、总实体占比（实体和 ÷ 振幅和）、最大实体占比（最大一根顺势 K 线实体 ÷ 整段累计位移，反向 K 线不计）。`PERIOD_MINUTES` 是趋势周期到分钟数的唯一映射；`aggregate_candles` 把对齐的 1 分钟 K 线合成周期 K 线。
 - `detector.py::TrendDetector`：由成交聚合 1 分钟 K 线，**下一分钟第一笔成交到达时**才结算上一分钟；空分钟按上一收盘价补平线，一次补出的多根平线逐根追加、逐根判定（`_filled` + `_close_minute`），判定某一分钟时窗口里没有它之后的 K 线。保留最长周期所需的 `candles × 分钟数` 根 1 分钟 K 线（预热请求 `warmup_candles` 为其 + 1）。每结算一分钟，对收盘时刻落在周期边界的各周期判定。**每个周期各自独立**：`_holding` 记录各周期上一次判定时成立的方向，形态从不成立（或反向）变为成立时提醒，持续成立时按 `trend.alert_continuing`（默认开启）发 `continuing=True` 的延续提醒（`CONTINUING_ALERT`）或只记 `CONTINUING`，形态被破坏（判定不成立、K 线不足或没有方向）即清空，再次成立就是新的一段；不同周期互不影响，同一分钟多个周期新成立会各报一条（短周期在前）。`_holding` 不随合约移出清除。`add_candle` 直接喂已收盘 1 分钟 K 线（回放、模拟用），不能与 `add_tick` 混用。断线：`mark_stream_gap` 后只维护当前分钟、不结算不判定；`resync_symbol` 用 REST 1 分钟 K 线重建历史（当前分钟与交易所同一分钟时高低点取并集；本地已跨入新分钟则交易所当前 K 线按已收盘计入），`_holding` 保留。
@@ -78,7 +96,7 @@ python -m venv .venv
 
 ### 放量启动（launch/）
 
-独立子包，只经 `assembly.build_launch_detector` / `build_detectors` 接入，删除时去掉这两处、`config.AppConfig.launch`、`detection.Alert` 与 `notifier` 中的 `LaunchAlert` 分派、`cli` 的 `launch-replay`/`simulate`/`check-config` 调用即可（`Detector.add_symbol` 的 `quanto_multiplier` 参数可保留）。面向启动前成交较少、进不了另两者合约池的币，默认合约池下限 100 万（低于它的币拉升后多半没人跟进），约 100 个合约。**放量上涨与放量下跌是两个检测器**（`build_detectors` 为 `LaunchConfig.sides()` 中每个启用方向建一个 `LaunchDetector`，名称「放量上涨」「放量下跌」），全部参数、合约池（各自的 `VolumeRange`）、K 线保留长度、冷却与波次互不影响。
+独立子包，只经 `assembly.build_launch_detector` / `build_detectors` 接入，删除时去掉这两处、`config.AppConfig.launch`、`detectors/alerts.py` 的 `Alert` 与 `notifier` 中的 `LaunchAlert` 分派、`cli` 的 `launch-replay`/`simulate`/`check-config` 调用即可（`Detector.add_symbol` 的 `quanto_multiplier` 参数可保留）。面向启动前成交较少、进不了另两者合约池的币，默认合约池下限 100 万（低于它的币拉升后多半没人跟进），约 100 个合约。**放量上涨与放量下跌是两个检测器**（`build_detectors` 为 `LaunchConfig.sides()` 中每个启用方向建一个 `LaunchDetector`，名称「放量上涨」「放量下跌」），全部参数、合约池（各自的 `VolumeRange`）、K 线保留长度、冷却与波次互不影响。
 
 - `rule.py`：纯函数。`LaunchRule` 是一个方向（`direction`：`surge`/`drop`）的全部门槛；`evaluate_launch(history, rule)` 对最近 `baseline_minutes + window_minutes` 根连续 1 分钟 K 线判定，返回 `LaunchMetrics`（含未满足的 `Condition`）。条件：窗口成交额 ≥ `min_window_quote`、量比（窗口成交额 ÷ 基准期同长度**均值**，基准为 0 时 `volume_ratio=None` 视为满足）≥ `min_volume_ratio`、窗口开始前一根收盘到最后一根收盘的涨跌幅 ≥ `min_change_percent`、`require_breakout` 时收盘越过基准期最高价/最低价、涨跌幅（绝对值）不超过 `max_change_percent`（`LaunchRule.overshoots`，None 不限，否则记 `OVERSHOOT`）、涨跌方向与规则相反记 `DIRECTION`（此时突破按规则方向判定，通常也一并失败）。`LaunchMetrics.direction` 是规则的方向，不是行情实际涨跌方向。
 - `detector.py::LaunchDetector`：成交额 = 张数 × `quanto_multiplier` × 价格，面值为 None 的合约保留在池里但不聚合、不判定。与趋势检测器相同，**下一分钟第一笔成交到达时**结算上一分钟，空分钟按上一收盘价补成交额为 0 的平线；补齐的多根 K 线**逐根追加、逐根判定**（`_filled` + `_close_minute`），判定某一分钟时看不到它之后的 K 线。保留 `history_minutes` 根，预热请求 `warmup_candles` 为其 + 1。重复提醒按（合约, 方向）记在 `_last_alerts`（不随合约移出清除）：距上次不足 `cooldown_minutes` → `COOLDOWN`（先于基准期重置判断，冷却长于基准期也生效）；距上次已满一个基准期则重新从第 1 波算；否则价格须比上次提醒价再推进 `realert_step_percent` → 不够为 `NOT_EXTENDED`，满足则 `wave + 1`。只因 `OVERSHOOT` 失败的分钟由 `_record_overshoot` 走同一个 `_repeat_outcome`，判定为 `ALERT` 时静默写入 `_last_alerts`（波次不加），该分钟判定记为 `LaunchOutcome.OVERSHOOT`（回放默认列出），防止窗口滑过插针后在高位补报；`still_launching` 只防回落，不查上限。隔了空档才结算的分钟（触发结算的成交不在紧邻的下一分钟）用这笔成交价经 `rule.still_launching` 复核涨跌幅与突破，不成立记 `EXPIRED`、不提醒也不记录；回放用 `add_candle` 不复核。断线处理同趋势检测器，`resync_symbol` 同一分钟时高低点取并集、成交额取两边较大值（两边成交有重叠，不能相加）。`add_candle` 供回放、模拟，不能与 `add_tick` 混用。
@@ -89,7 +107,7 @@ python -m venv .venv
 
 ### 冷门启动（dormant/）
 
-独立子包，只经 `assembly.build_dormant_detector` / `build_detectors` 接入，删除时去掉这两处、`config.AppConfig.dormant`、`detection.Alert` 与 `notifier`/`sounds` 中的 `DormantAlert` 分派、`cli` 的 `dormant-replay`/`simulate`/`check-config` 调用即可。面向连放量上涨合约池都进不去的冷门币（合约池默认 24 小时成交额 0~300 万，约 550 个合约）。准确率低于放量上涨，是用户知情后作为例外采用的：代码默认值是 `research/launch_trade/dormant_calm.md` 的选中方案加用户指定的总实体占比 ≥ 60% 与涨前波动 ≤ 0.5%，`default.yaml` 取 `dormant_early.md` 第三轮（研究经过见「回测研究」一节）；改默认值或判定逻辑时同步 README「冷门启动」一节。
+独立子包，只经 `assembly.build_dormant_detector` / `build_detectors` 接入，删除时去掉这两处、`config.AppConfig.dormant`、`detectors/alerts.py` 的 `Alert` 与 `notifier`/`sounds` 中的 `DormantAlert` 分派、`cli` 的 `dormant-replay`/`simulate`/`check-config` 调用即可。面向连放量上涨合约池都进不去的冷门币（合约池默认 24 小时成交额 0~300 万，约 550 个合约）。准确率低于放量上涨，是用户知情后作为例外采用的：代码默认值是 `research/launch_trade/dormant_calm.md` 的选中方案加用户指定的总实体占比 ≥ 60% 与涨前波动 ≤ 0.5%，`default.yaml` 取 `dormant_early.md` 第三轮（研究经过见「回测研究」一节）；改默认值或判定逻辑时同步 README「冷门启动」一节。
 
 - `rule.py`：纯函数。`DormantRule`；`evaluate_dormant(window, start_price, prior_quote, pre_volatility_percent, rule)` 对最近 `window_minutes` 根 1 分钟 K 线判定。窗口之前 `PRIOR_MINUTES`（1440）根只用到成交额合计，窗口之前 `CALM_MINUTES`（240）根只用到 `minute_range_percent`（真实波幅，含跳空，平线为 0）的平均值（涨前波动），两个长度都固定、不开放配置；两者由检测器滚动维护后传入（`_SymbolState.total_quote` 与和 `minutes` 一一对应的累计和 `range_totals`，两次取值相减即得一段之和；每分钟对上千根重新求和，沉寂很久的币一笔成交补出上千根平线时会卡住成交循环）。返回 `DormantMetrics`（含未满足的 `Condition`）。条件：窗口之前 24 小时成交额 ≤ `max_prior_quote`（`PRIOR`）、窗口成交额 ≥ `min_window_quote`、窗口涨幅（窗口前一根收盘 → 最后一根收盘）≥ `min_change_percent`（只看上涨）、窗口内有成交的分钟数 ≥ `min_active_minutes`、涨幅 ÷ 涨前波动 ≥ `min_calm_multiple`（`CALM`，涨前波动为 0 时倍数为无穷大）、涨前波动 ≤ `max_pre_volatility_percent`（`VOLATILE`，None 不限；倍数只看相对大小，这一项挡掉涨前乱跳但涨得够多的币，用户要求，`dormant_calm.md` 第六节）、窗口内单分钟收盘涨幅 ≤ `max_minute_change_percent`（`JUMP`）、窗口总实体占比（实体和 ÷ 振幅和，与趋势形态同一口径，振幅和为 0 时为 0）≥ `min_body_ratio`（`BODY`，用户指定的形态，未经选参，`dormant_calm.md` 第四节）、窗口最后一根成交额 ≥ `min_last_minute_quote`（`LAST`）、最后 `late_minutes(window)` = ⌈W/2⌉ 根成交额 ÷ 窗口成交额 ≥ `min_late_quote_share`（`LATE`，窗口无成交时为 0）；这两项代码默认 0 不限，`default.yaml` 连同窗口 15、成交额 2 万、8 分钟有成交按 `dormant_early.md` 第三轮「假启动更少」开启（判据未通过，用户知情后的例外）。量比、突破、回吐等研究中没让提醒更准的条件都不设。
 - `detector.py::DormantDetector`：K 线聚合、空分钟补平线逐根判定、空档后用触发结算的成交价复核（`still_rising`，不成立记 `EXPIRED`、不记冷却）、断线与回补都与 `LaunchDetector` 相同。重复提醒按合约记上次提醒（`_LastAlert`：时间、价格、波次，`_last_alerts` 不随合约移出清除）：距上次（含补报）不足 `cooldown_minutes` 时，收盘价比上次提醒价再涨 `realert_step_percent` 才报下一波（`wave + 1`，标签「冷门启动·第N波」），否则记 `COOLDOWN`（`realert_step_percent` 为 None 时冷却内一律不报）；超过冷却就从第 1 波重新算；空档后复核同时检查这笔成交价仍比上次提醒价高够步长。没有涨幅上限。`simulate` 报出第一条即停（继续上涨会报第 N 波）。`add_candle` 供回放、模拟，不能与 `add_tick` 混用。
@@ -99,41 +117,42 @@ python -m venv .venv
 
 ### 反弹回落（reversal/）
 
-独立子包，只经 `assembly.build_reversal_detector` / `build_detectors` 接入，删除时去掉这两处、`config.AppConfig.reversal`、`detection.Alert` 与 `notifier`/`sounds` 中的 `ReversalAlert` 分派、`cli` 的 `reversal-replay`/`simulate`/`check-config` 调用即可。只报「此前已反向走了一大段、急动时成交突然涌入」的急动：急拉报「下跌反弹」、急砸报「冲高回落」，提醒之后几分钟更可能沿急动方向继续走。来自 `research/move_accuracy/move_accuracy.md` 第二轮：秒级异动提醒后的方向保持率与随机相同，只有这两个条件同时满足才明显有效（样本外 hold5 51%、约七成提醒 1~10 分钟后在提醒方向一侧、每天约 3 条），代码默认值就是选中的一组；改默认值或判定逻辑时同步 README「反弹回落」一节与研究报告。
+独立子包，只经 `assembly.build_reversal_detector` / `build_detectors` 接入，删除时去掉这两处、`config.AppConfig.reversal`、`detectors/alerts.py` 的 `Alert` 与 `notifier`/`sounds` 中的 `ReversalAlert` 分派、`cli` 的 `reversal-replay`/`simulate`/`check-config` 调用即可。只报「此前已反向走了一大段、急动时成交突然涌入」的急动：急拉报「下跌反弹」、急砸报「冲高回落」，提醒之后几分钟更可能沿急动方向继续走。来自 `research/move_accuracy/move_accuracy.md` 第二轮：秒级异动提醒后的方向保持率与随机相同，只有这两个条件同时满足才明显有效（样本外 hold5 51%、约七成提醒 1~10 分钟后在提醒方向一侧、每天约 3 条），代码默认值就是选中的一组；改默认值或判定逻辑时同步 README「反弹回落」一节与研究报告。
 
 - `rule.py`：`ReversalRule` 与固定常量：成交暴增的 1 分钟对 1 小时（`BURST_SECONDS`/`BURST_BASE_SECONDS`，倍数理论上限 `MAX_BURST_RATIO` = 60，配置校验门槛必须小于它）、ATR 口径（14 根 1 分钟 K 线、预热 50 根、过期 180 秒，与研究一致，不开放配置）；`history_seconds` 为窗口 + 前置回看与 1 小时中较长者。
-- `detector.py::ReversalDetector` **继承 `AtrMoveDetector`**（单个 `short` 窗口、不带连续提醒），急动判定、空秒补齐、ATR、空档复核、冷却全部沿用基类，研究也是按这套判定选的参数；不改 `detector.py`，只覆盖两个私有方法：`_settle_through` 在结算真实秒前把（秒、最后成交价、累计笔数 `trades_through`）记入 `_history`（按 `history_seconds` 保留，留一个不晚于最早所需时刻的点；`remove_symbols`、`mark_stream_gap`、`mark_symbol_gap` 时丢弃：断线期间成交缺失、基类清空秒桶后累计笔数也从 0 重新计数，重连后重新攒满 1 小时才判定）；`_evaluate` 调基类 `_evaluate_window`，得到 `ALERT` 后再判前置走势（窗口开始前 `prior_seconds` 秒那一刻 ≤ 该时刻最后一个真实秒的最后成交价，到基准价顺急动方向的涨跌幅 ≤ −`min_prior_move_percent`）与成交暴增（最近 60 秒笔数 ÷（最近 3600 秒笔数 ÷ 60）≥ `min_trade_burst_ratio`，没有 1 小时前的记录不报），任一不满足只拦这一秒、不清零确认；都满足后按基类同样的方式处理冷却并清零确认。依赖基类的私有成员（`_SymbolState`、`_SecondBucket`、`_evaluate_window`、`_last_alert`、`_cooldowns`），改 `AtrMoveDetector` 内部时要跑 `tests/test_reversal.py`。构造时可传 `observer`，每秒回调一条 `ReversalEvaluation`（急动窗口的 `WindowEvaluation`、`ReversalOutcome`：急动未达标 / 前置走势 / 成交暴增 / 冷却 / 提醒，以及两个条件的取值和提醒本身）；传了观察者时，急动达到涨跌幅与 ATR 门槛的秒（确认中、补齐、复核失败）也会算两个条件的取值供回放展示，判定结果不受影响。
+- `detector.py::ReversalDetector` **继承 `AtrMoveDetector`**（单个 `short` 窗口、不带连续提醒），急动判定、空秒补齐、ATR、空档复核、冷却全部沿用基类，研究也是按这套判定选的参数；不改 `move/detector.py`，只覆盖两个私有方法：`_settle_through` 在结算真实秒前把（秒、最后成交价、累计笔数 `trades_through`）记入 `_history`（按 `history_seconds` 保留，留一个不晚于最早所需时刻的点；`remove_symbols`、`mark_stream_gap`、`mark_symbol_gap` 时丢弃：断线期间成交缺失、基类清空秒桶后累计笔数也从 0 重新计数，重连后重新攒满 1 小时才判定）；`_evaluate` 调基类 `_evaluate_window`，得到 `ALERT` 后再判前置走势（窗口开始前 `prior_seconds` 秒那一刻 ≤ 该时刻最后一个真实秒的最后成交价，到基准价顺急动方向的涨跌幅 ≤ −`min_prior_move_percent`）与成交暴增（最近 60 秒笔数 ÷（最近 3600 秒笔数 ÷ 60）≥ `min_trade_burst_ratio`，没有 1 小时前的记录不报），任一不满足只拦这一秒、不清零确认；都满足后按基类同样的方式处理冷却并清零确认。依赖基类的私有成员（`_SymbolState`、`_SecondBucket`、`_evaluate_window`、`_last_alert`、`_cooldowns`），改 `AtrMoveDetector` 内部时要跑 `tests/test_reversal.py`。构造时可传 `observer`，每秒回调一条 `ReversalEvaluation`（急动窗口的 `WindowEvaluation`、`ReversalOutcome`：急动未达标 / 前置走势 / 成交暴增 / 冷却 / 提醒，以及两个条件的取值和提醒本身）；传了观察者时，急动达到涨跌幅与 ATR 门槛的秒（确认中、补齐、复核失败）也会算两个条件的取值供回放展示，判定结果不受影响。
 - `alerts.py`：`ReversalAlert`（`direction` 为急动方向，`prior_change_percent` 为带符号的实际前置涨跌幅、与急动方向相反），`to_dict()` 带 `kind: "reversal"`；文本把急动涨跌幅写在前置涨跌幅之前（着色按首次出现替换）。
 - `config.py`：`ReversalConfig`（`enabled`、合约池 `min_volume_24h_quote`/`max_volume_24h_quote`、急动窗口六项、`prior_seconds`、`min_prior_move_percent`、`min_trade_burst_ratio`），校验确认秒数 ≤ 窗口、设了上限时上限大于下限。
-- `replay.py`：`cli reversal-replay` 用 REST 历史成交逐秒回放，取数复用 `replay.fetch_replay_data`（传 `candle_interval="1m"`，不跟随 `move.candle_interval`）；`plan_reversal_replay` 从开始时间往前留 `history_seconds`（1 小时）再对齐到分钟；提醒按判定所属的秒在区间内取舍；输出急动窗口判定统计（窗口层面的 `ALERT` 写成「急动达标、可以提醒」，不是真正的提醒）、急动可以提醒之后各条件拦下的秒数、急动最接近门槛的一秒，以及急动过门槛的每一秒。
+- `replay.py`：`cli reversal-replay` 用 REST 历史成交逐秒回放，取数复用 `price_alert.replay.fetch_replay_data`（预热周期固定传 `"1m"`，不跟随 `move.candle_interval`）；`plan_reversal_replay` 从开始时间往前留 `history_seconds`（1 小时）再对齐到分钟；提醒按判定所属的秒在区间内取舍；输出急动窗口判定统计（窗口层面的 `ALERT` 写成「急动达标、可以提醒」，不是真正的提醒）、急动可以提醒之后各条件拦下的秒数、急动最接近门槛的一秒，以及急动过门槛的每一秒。
 - `simulate.py`：平稳 1 小时 → 从前置回看起点开始的一段下跌（门槛的 1.5 倍）→ 窗口内停在低位 → 急拉前 50 秒起成交涌入（每秒笔数加倍搜索到倍数达门槛的 1.2 倍）→ 急拉，恰好一条「下跌反弹」。
 
-### 回放（replay.py）
+### 回放（detectors/replay.py + 各子包 replay.py）
 
-`cli replay` 用 Gate REST 历史成交离线重放一段行情：`plan_replay` 推算喂入起点（开始时间减最长窗口，向下对齐 K 线边界）与 K 线预热区间，`fetch_replay_data` 联网取合约精度、K 线和成交，`run_replay` 用 `build_detector(observer=...)` 驱动同一个检测器，`render_replay` 输出规则、提醒、各窗口统计与「最接近触发」的秒。回放从空白冷却开始、不模拟断线。
+`detectors/replay.py` 放各回放共用的部分：`parse_time`、`normalize_symbol`、`fetch_price_decimals`；成交逐秒回放（秒级异动、反弹回落）的 `ReplayPlan`、`ReplayData`、`fetch_replay_data`（按传入的预热周期取合约精度、K 线和成交，区间末尾不够结算时继续向后找一笔）；1 分钟 K 线回放（趋势、放量、冷门）的 `MinuteReplayPlan` 与 `plan_minute_replay`（起点对齐到分钟、往前留判定所需根数，并预先检查是否超出 Gate 只保留的最近 10000 根，`now` 供测试固定）。`cli` 的五个回放命令共用 `_plan_or_exit`（解析 `--start`/`--end`、推算区间，`ValueError` 转成一行错误退出）、`_fetch_trades_or_exit`、`_fetch_minutes_or_exit`。`cli replay` 在 `move/replay.py`：`plan_replay` 推算喂入起点（开始时间减最长窗口，向下对齐 K 线边界）与 K 线预热区间，`run_replay` 用 `build_detector(move, observer=...)` 驱动同一个检测器，`render_replay` 输出规则、提醒、各窗口统计与「最接近触发」的秒。回放从空白冷却开始、不模拟断线。
 
 `GateRestClient.fetch_trades` 按 `[from, to)` 取成交：Gate 从新到旧分页、每页 1000 笔，翻页靠把 `to` 收缩到本页最早秒 + 1 并按 id 去重；整页落在同一秒时才用 `offset`（offset 在十万级会被拒绝）。REST 成交的 `create_time_ms` 实际单位是秒，只能用 `create_time`（`parse_rest_trade`），与 WebSocket 的解析不同。
 
 ### 配置（config.py + config/default.yaml）
 
+- 顶层 `config.py` 只有 `AppConfig` 与 `load_config`，各段模型放在所属的包里：`gate` 在 `exchange/config.py`，`alerts` 在 `notify/config.py`，`move`/`trend`/`launch`/`dormant`/`reversal` 在各检测器子包的 `config.py`。
 - pydantic 模型全部 `extra="forbid"`，YAML 中出现未知键会直接报错。
 - `PRICE_ALERT_WEBHOOK_URL` 环境变量覆盖 `alerts.webhook_url`。
 - `config.py` 中的代码默认值固定不变，没有特别要求不要改；它只在 YAML 缺少对应项时生效，实际运行以 YAML 为准。
 - `config/default.yaml` 每项注释中的「默认 X」标注的是代码默认值。调参时只改 YAML 的取值，注释里的默认值和 `config.py` 都不动，两者允许不一致；配置测试只校验 YAML 能通过校验。
 - README 中的参数、例子和回放结果一律按代码默认值写（复现时给 `--config` 传只含 `{}` 的配置文件），调 YAML 不需要改 README；只有改代码默认值或判定逻辑时才同步更新。
-- 秒级异动的配置段是 `move`（`MoveConfig`），放合约池门槛 `min_volume_24h_quote` 与各窗口共用的 K 线/ATR 参数（`candle_interval`、`atr_period`、`warmup_candles`、`max_atr_age_seconds`），窗口参数在结构相同的 `short_window`（`ShortWindowConfig`）与 `long_window`（`LongWindowConfig`，多一个 `enabled`）里，二者继承 `WindowConfig`，只在默认值、取值范围和冷却规则上不同。校验：`warmup_candles > atr_period`、`max_atr_age_seconds ≥ 2 个 K 线周期`（未显式设置时自动取 3 个周期）；`WindowConfig` 校验确认秒数 ≤ 窗口长度；启用长窗口时 `long_window.lookback_seconds > short_window.lookback_seconds`；`LongWindowConfig` 额外校验冷却 ≥ 窗口长度（未显式设置时等于窗口长度）。`GateConfig` 校验 `reconnect_max_seconds ≥ reconnect_initial_seconds`。
+- 秒级异动的配置段是 `move`（`move/config.py::MoveConfig`），放合约池门槛 `min_volume_24h_quote` 与各窗口共用的 K 线/ATR 参数（`candle_interval`、`atr_period`、`warmup_candles`、`max_atr_age_seconds`），窗口参数在结构相同的 `short_window`（`ShortWindowConfig`）与 `long_window`（`LongWindowConfig`，多一个 `enabled`）里，二者继承 `WindowConfig`，只在默认值、取值范围和冷却规则上不同。校验：`warmup_candles > atr_period`、`max_atr_age_seconds ≥ 2 个 K 线周期`（未显式设置时自动取 3 个周期）；`WindowConfig` 校验确认秒数 ≤ 窗口长度；启用长窗口时 `long_window.lookback_seconds > short_window.lookback_seconds`；`LongWindowConfig` 额外校验冷却 ≥ 窗口长度（未显式设置时等于窗口长度）。`GateConfig` 校验 `reconnect_max_seconds ≥ reconnect_initial_seconds`。
 
 ### 新增/修改检测参数时需要同步的位置
 
-`AtrMoveDetector` 统一由 `assembly.build_detector` 组装、`TrendDetector` 由 `assembly.build_trend_detector` 组装（`run_monitor`、`cli.simulate`、`replay` 共用，REST 客户端同样由 `assembly.build_rest_client` 组装），窗口参数由 `assembly.build_windows` 从配置生成。各入口只依赖 `assembly`，不为了拿检测器去依赖实时编排模块 `service`。新增指标参数需要同时改 `config.py` 模型、`config/default.yaml`、`build_windows`/`build_detector`、README 的配置说明。`simulate` 为每个启用的窗口各用一个只含该窗口的检测器跑一遍（`move.enabled: false` 时跳过），再为每个启用的趋势周期、放量方向、冷门启动和反弹回落各跑一遍，正常时提醒数等于窗口数加趋势周期数、启用的放量方向数，冷门启动、反弹回落启用时各再加一（`cli.expected_simulated_alerts`）。`build_detectors` 只创建启用的检测器，`AppConfig` 校验五者至少启用一个。趋势参数改在 `trend/config.py`（周期子类的默认值）、`config/default.yaml` 的 `trend` 段、README；放量参数改在 `launch/config.py`（`LaunchSideConfig`）、`LaunchRule`、`config/default.yaml` 的 `launch.rise`/`launch.fall` 段、README；冷门启动参数改在 `dormant/config.py`、`DormantRule`、`config/default.yaml` 的 `dormant` 段、README；反弹回落参数改在 `reversal/config.py`、`ReversalRule`、`config/default.yaml` 的 `reversal` 段、README。K 线周期到秒数的映射只有 `config.INTERVAL_SECONDS` 一份。
+`AtrMoveDetector` 统一由 `assembly.build_detector` 组装、`TrendDetector` 由 `assembly.build_trend_detector` 组装（`run_monitor`、`cli.simulate`、`replay` 共用，REST 客户端同样由 `assembly.build_rest_client` 组装），窗口参数由 `assembly.build_windows` 从配置生成。各入口只依赖 `assembly`，不为了拿检测器去依赖实时编排模块 `service`。新增指标参数需要同时改 `move/config.py` 模型、`config/default.yaml`、`build_windows`/`build_detector`、README 的配置说明。`simulate` 为每个启用的窗口各用一个只含该窗口的检测器跑一遍（`move/simulate.py`）（`move.enabled: false` 时跳过），再为每个启用的趋势周期、放量方向、冷门启动和反弹回落各跑一遍，正常时提醒数等于窗口数加趋势周期数、启用的放量方向数，冷门启动、反弹回落启用时各再加一（`cli.expected_simulated_alerts`）。`build_detectors` 只创建启用的检测器，`AppConfig` 校验五者至少启用一个。趋势参数改在 `trend/config.py`（周期子类的默认值）、`config/default.yaml` 的 `trend` 段、README；放量参数改在 `launch/config.py`（`LaunchSideConfig`）、`LaunchRule`、`config/default.yaml` 的 `launch.rise`/`launch.fall` 段、README；冷门启动参数改在 `dormant/config.py`、`DormantRule`、`config/default.yaml` 的 `dormant` 段、README；反弹回落参数改在 `reversal/config.py`、`ReversalRule`、`config/default.yaml` 的 `reversal` 段、README。K 线周期到秒数的映射只有 `common/models.py` 的 `INTERVAL_SECONDS` 一份（放在 `common` 而不是顶层 `config`：`move/config.py` 校验要用它，`config.py` 又要导入 `move/config.py`，放 `config` 会循环导入）。
 
-### 合约池筛选（universe.py）
+### 合约池筛选（exchange/universe.py）
 
 筛选结果 `ContractTicker` 带 `price_decimals`（由 `gate.price_decimals` 把合约的 `order_price_round` 换算成小数位数，仅用于展示；回放取精度也用它），经 `detector.add_symbol` 传到 `PriceAlert`；还带 `quanto_multiplier`（`gate.quanto_multiplier` 解析合约面值，非正或无法识别为 None），供放量检测把成交张数换算成计价成交额。只接受 `contract_type == ""`（字段必须存在且为空，非币类资产会有分类值）、`status == "trading"`、`in_delisting` 不为真、以 `_USDT` 结尾、`volume_24h_quote` **严格大于**下限、且不超过可选上限（含等于）的合约。秒级异动的下限是 `move.min_volume_24h_quote`，冷门启动的范围是 `dormant.min_volume_24h_quote` / `dormant.max_volume_24h_quote`（默认 0~300 万），反弹回落的范围是 `reversal.min_volume_24h_quote` / `reversal.max_volume_24h_quote`（默认 > 800 万、上限不设），趋势提醒的范围是 `trend.min_volume_24h_quote` / `trend.max_volume_24h_quote`（上限默认不设），放量上涨、放量下跌分别是 `launch.rise.*` / `launch.fall.*` 的 `min_volume_24h_quote` / `max_volume_24h_quote`（下限默认 100 万），由 `assembly.build_detectors` 装进各自的 `VolumeRange`。已在监控中的合约（`retained_symbols`，按各检测器自己的池）退出线两侧放宽：下限 × `universe_exit_volume_ratio`、上限 ÷ 该比例。`volume_24h_usd` 已被 Gate 弃用，仅作缺字段时的回退。`is_internal=true` 的成交在 `gate.parse_trade_payload` 中被忽略。
 
-### 通知（notifier.py）
+### 通知（notify/notifier.py）
 
-提醒类型是 `detection.Alert = PriceAlert | StreakAlert | TrendAlert | LaunchAlert | DormantAlert | ReversalAlert`，`format_alert`/`colorize_alert` 按类型分派（趋势提醒的标签用亮紫色 `TREND_LABEL_COLOR`，放量启动用金黄色 `LAUNCH_LABEL_COLOR`，冷门启动用亮蓝色 `DORMANT_LABEL_COLOR`，反弹回落用亮白色 `REVERSAL_LABEL_COLOR`，连续提醒的标签沿用方向色、不另外着色）。`AlertDispatcher` 为每个通道建立独立的有界队列（`alerts.queue_size`）和后台任务：`publish` 非阻塞，队列满时丢弃并记错误日志；单个通道失败只记日志；退出时最多等待 `drain_timeout` 秒把积压发完。`build_notifiers` 按配置返回通道列表。`JsonlNotifier` 按 `jsonl_max_bytes` 整文件轮转。价格、窗口长度（整分钟显示为「N分钟」）和北京时间的格式都在 `formatting.py`，提醒与回放共用；价格按合约报价精度显示，缺失时按 8 位有效数字、不截断整数部分。提醒时间统一转为北京时间；控制台急涨绿色、急跌红色，涨跌幅用同方向亮色高亮，长窗口提醒的窗口长度用不分方向的亮青色（`LONG_WINDOW_COLOR`）高亮（短窗口保持正文色）；JSONL/Webhook 保留完整结构化字段（`PriceAlert.to_dict()`）。控制台提醒附带的交易地址由 `gate.futures_trade_url` 生成，Gate 网页地址只维护在 `gate.py`。修改提醒文本格式时注意 README 中的示例。
+提醒类型是 `detectors/alerts.py` 的 `Alert = PriceAlert | StreakAlert | TrendAlert | LaunchAlert | DormantAlert | ReversalAlert`，`format_alert`/`colorize_alert` 按类型分派（趋势提醒的标签用亮紫色 `TREND_LABEL_COLOR`，放量启动用金黄色 `LAUNCH_LABEL_COLOR`，冷门启动用亮蓝色 `DORMANT_LABEL_COLOR`，反弹回落用亮白色 `REVERSAL_LABEL_COLOR`，连续提醒的标签沿用方向色、不另外着色）。`AlertDispatcher` 为每个通道建立独立的有界队列（`alerts.queue_size`）和后台任务：`publish` 非阻塞，队列满时丢弃并记错误日志；单个通道失败只记日志；退出时最多等待 `drain_timeout` 秒把积压发完。`build_notifiers` 按配置返回通道列表。`JsonlNotifier` 按 `jsonl_max_bytes` 整文件轮转。价格、窗口长度（整分钟显示为「N分钟」）和北京时间的格式都在 `formatting.py`，提醒与回放共用；价格按合约报价精度显示，缺失时按 8 位有效数字、不截断整数部分。提醒时间统一转为北京时间；控制台急涨绿色、急跌红色，涨跌幅用同方向亮色高亮，长窗口提醒的窗口长度用不分方向的亮青色（`LONG_WINDOW_COLOR`）高亮（短窗口保持正文色）；JSONL/Webhook 保留完整结构化字段（`PriceAlert.to_dict()`）。控制台提醒附带的交易地址由 `gate.futures_trade_url` 生成，Gate 网页地址只维护在 `gate.py`。修改提醒文本格式时注意 README 中的示例。
 
 提示音（`sounds.py`）：`beep` 开启时 Windows（`winsound` 异步播放）与 macOS（`afplay`）播放同一套代码合成的 WAV（`synthesize` 纯函数，`write_sound_files` 写到 `default_sound_dir()`、文件名带内容哈希；Windows 用 `%LOCALAPPDATA%`、macOS 用 `~/Library/Caches`，不用系统临时目录——存储感知会在运行中清掉它，而 winsound 找不到文件时静默不出声），其他平台或生成失败时退回终端响铃。`ConsoleNotifier._sound_path` 每次发声前检查文件，被删就重新生成（失败则本次不发声，警告按 `SOUND_REGENERATE_LOG_INTERVAL_SECONDS` 限流）。`sound_for` 按提醒类型选八种音效：音色分大类（秒级异动/连续提醒为木琴且音量最小、趋势为无 4kHz 以上分音的钟音、放量为号角琶音且音量最大、冷门启动为只有奇次谐波的簧管音三步上行，时长与放量启动相同、音色与节奏不同、音量稍小，反弹回落为拨弦音先落后起 E6-B5-E6），敲两下表示连续/延续。正在播放时按 `SOUND_PRIORITY`（放量启动 > 冷门启动 = 反弹回落 > 连续提醒 > 趋势 > 秒级异动）只让更高优先级打断，同级或更低跳过；`MUST_PLAY`（放量启动，优先级必须最高）例外：播放中再来的同类提醒若晚于开播 `MUST_PLAY_MERGE_SECONDS`，播完后补响一次（合并）。Windows 没有播放结束通知，按音效时长加 `WINDOWS_PLAYBACK_MARGIN_SECONDS` 等待来判断是否仍在播放。各音效结尾淡出（`fade_out_seconds`）要让最后 50 毫秒低于峰值 -30 dB，有测试约束。改音效时同步 README「提示音」一节。
 

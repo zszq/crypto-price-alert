@@ -5,8 +5,8 @@ import pytest
 
 from price_alert import cli
 from price_alert.config import AppConfig
-from price_alert.dormant.simulate import simulate_dormant
-from price_alert.launch.simulate import simulate_launch
+from price_alert.detectors.dormant.simulate import simulate_dormant
+from price_alert.detectors.launch.simulate import simulate_launch
 
 
 @pytest.mark.parametrize(
@@ -144,7 +144,7 @@ def test_replay_rejects_end_before_start(tmp_path):
 def test_trend_replay_survives_missing_contract_precision(monkeypatch, capsys):
     from datetime import UTC, datetime, timedelta
 
-    from price_alert.models import Candle
+    from price_alert.common.models import Candle
 
     class FakeRest:
         def fetch_candles_between(self, symbol, interval, start, end):
@@ -240,7 +240,7 @@ def test_simulated_launch_satisfies_extreme_thresholds(launch):
 def test_launch_replay_runs_against_fake_exchange(monkeypatch, capsys):
     from datetime import UTC, datetime, timedelta
 
-    from price_alert.models import Candle
+    from price_alert.common.models import Candle
 
     class FakeRest:
         def fetch_candles_between(self, symbol, interval, start, end):
@@ -290,7 +290,7 @@ def test_preview_sounds_plays_every_kind_in_order(monkeypatch, capsys):
 
 
 def test_preview_sounds_explains_unsupported_platform(monkeypatch):
-    monkeypatch.setattr("price_alert.notifier.sys.platform", "linux")
+    monkeypatch.setattr("price_alert.notify.notifier.sys.platform", "linux")
 
     with pytest.raises(SystemExit, match="只支持 Windows 与 macOS"):
         asyncio.run(cli.preview_sounds())
@@ -337,7 +337,7 @@ def test_simulated_dormant_satisfies_extreme_thresholds(dormant):
 def test_dormant_replay_runs_against_fake_exchange(monkeypatch, capsys):
     from datetime import UTC, datetime, timedelta
 
-    from price_alert.models import Candle
+    from price_alert.common.models import Candle
 
     class FakeRest:
         def fetch_candles_between(self, symbol, interval, start, end):

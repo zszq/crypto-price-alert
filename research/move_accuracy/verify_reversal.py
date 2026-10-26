@@ -13,9 +13,9 @@ from common import load_klines, month_start, previous_month
 from engine import EXTRA_WARM, load_trades
 from sim import COLUMNS, EXTRA_COLUMNS, Params, Simulator, files_for, load, row_count
 
-from price_alert.models import Candle, PriceTick
-from price_alert.reversal.config import ReversalConfig
-from price_alert.reversal.detector import ReversalDetector
+from price_alert.common.models import Candle, PriceTick
+from price_alert.detectors.reversal.config import ReversalConfig
+from price_alert.detectors.reversal.detector import ReversalDetector
 
 # 研究里第二轮选中的一组（= ReversalConfig 的代码默认值），引擎侧用同样的门槛与新条件。
 P = Params(1.5, 1.0, 1, 5, 30)

@@ -144,9 +144,9 @@ def run() -> None:
 
 def verify(symbols: list[str]) -> None:
     """与真 LaunchDetector 逐条对照 2025-10~11 两个月（这段没有数据缺口、合约池始终满足）。"""
-    from price_alert.launch.detector import LaunchDetector
-    from price_alert.launch.rule import LaunchRule
-    from price_alert.models import Candle
+    from price_alert.detectors.launch.detector import LaunchDetector
+    from price_alert.detectors.launch.rule import LaunchRule
+    from price_alert.common.models import Candle
 
     contracts = load_contracts()
     for name in symbols:

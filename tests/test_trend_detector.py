@@ -2,9 +2,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from price_alert.models import Candle, PriceTick
-from price_alert.trend.detector import TrendDetector, TrendOutcome
-from price_alert.trend.pattern import TrendRule
+from price_alert.common.models import Candle, PriceTick
+from price_alert.detectors.trend.detector import TrendDetector, TrendOutcome
+from price_alert.detectors.trend.pattern import TrendRule
 
 # 整点起步，1m/3m/5m/15m 的周期边界都对齐。
 BASE = datetime(2026, 1, 1, tzinfo=UTC)

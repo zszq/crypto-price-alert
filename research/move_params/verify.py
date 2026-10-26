@@ -9,9 +9,9 @@ from datetime import UTC, datetime
 import sim
 from record import load_trades, seed_candles
 
-from price_alert.detector import AtrMoveDetector
-from price_alert.models import PriceTick
-from price_alert.windows import MoveWindow
+from price_alert.detectors.move.detector import AtrMoveDetector
+from price_alert.common.models import PriceTick
+from price_alert.detectors.move.windows import MoveWindow
 
 PARAM_SETS = [
     sim.CURRENT,

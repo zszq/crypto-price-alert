@@ -3,15 +3,15 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from price_alert.assembly import build_trend_detector
+from price_alert.common.formatting import BEIJING_TIME
+from price_alert.common.models import Candle
 from price_alert.config import AppConfig
-from price_alert.formatting import BEIJING_TIME
-from price_alert.gate import fetch_minute_candles
-from price_alert.models import Candle
-from price_alert.trend.replay import (
+from price_alert.detectors.trend.replay import (
     plan_trend_replay,
     render_trend_replay,
     run_trend_replay,
 )
+from price_alert.exchange.gate import fetch_minute_candles
 
 START = datetime(2026, 9, 30, 22, 0, tzinfo=BEIJING_TIME)
 # 固定“当前时间”：回放会检查区间是否超出 Gate 的保留范围，不能依赖真实时钟。

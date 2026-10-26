@@ -6,9 +6,10 @@ import argparse
 import asyncio
 import http.client
 import logging
-import math
-from datetime import UTC, datetime, timedelta
+from collections.abc import Callable
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import TypeVar
 
 import yaml
 from pydantic import ValidationError
@@ -20,42 +21,44 @@ from price_alert.assembly import (
     build_trend_detector,
     build_windows,
 )
-from price_alert.config import INTERVAL_SECONDS, AppConfig, load_config
-from price_alert.dormant.alerts import describe_dormant_rule
-from price_alert.dormant.replay import plan_dormant_replay, render_dormant_replay, run_dormant_replay
-from price_alert.dormant.simulate import simulate_dormant
-from price_alert.formatting import BEIJING_TIME, format_amount
-from price_alert.gate import GateRestClient, fetch_minute_candles, price_decimals
-from price_alert.instance import AlreadyRunningError, ProcessLock
-from price_alert.launch.alerts import LABELS as LAUNCH_LABELS
-from price_alert.launch.alerts import describe_launch_rule
-from price_alert.launch.replay import plan_launch_replay, render_launch_replay, run_launch_replay
-from price_alert.launch.simulate import simulate_launch
-from price_alert.models import Candle, PriceTick
-from price_alert.notifier import ConsoleNotifier
-from price_alert.replay import (
+from price_alert.common.formatting import BEIJING_TIME, format_amount
+from price_alert.common.models import Candle
+from price_alert.config import AppConfig, load_config
+from price_alert.detectors.dormant.alerts import describe_dormant_rule
+from price_alert.detectors.dormant.replay import plan_dormant_replay, render_dormant_replay, run_dormant_replay
+from price_alert.detectors.dormant.simulate import simulate_dormant
+from price_alert.detectors.launch.alerts import LABELS as LAUNCH_LABELS
+from price_alert.detectors.launch.alerts import describe_launch_rule
+from price_alert.detectors.launch.replay import plan_launch_replay, render_launch_replay, run_launch_replay
+from price_alert.detectors.launch.simulate import simulate_launch
+from price_alert.detectors.move.replay import plan_replay, render_replay, run_replay
+from price_alert.detectors.move.simulate import simulate_move
+from price_alert.detectors.move.streak import describe_streak_rule
+from price_alert.detectors.move.windows import describe_rule
+from price_alert.detectors.replay import (
+    MinuteReplayPlan,
+    ReplayData,
+    ReplayPlan,
+    fetch_price_decimals,
     fetch_replay_data,
     normalize_symbol,
     parse_time,
-    plan_replay,
-    render_replay,
-    run_replay,
 )
-from price_alert.reversal.alerts import describe_reversal_rule
-from price_alert.reversal.replay import plan_reversal_replay, render_reversal_replay, run_reversal_replay
-from price_alert.reversal.rule import CANDLE_INTERVAL as REVERSAL_INTERVAL
-from price_alert.reversal.simulate import simulate_reversal
+from price_alert.detectors.reversal.alerts import describe_reversal_rule
+from price_alert.detectors.reversal.replay import plan_reversal_replay, render_reversal_replay, run_reversal_replay
+from price_alert.detectors.reversal.rule import CANDLE_INTERVAL as REVERSAL_INTERVAL
+from price_alert.detectors.reversal.simulate import simulate_reversal
+from price_alert.detectors.trend.alerts import describe_trend_rule
+from price_alert.detectors.trend.replay import plan_trend_replay, render_trend_replay, run_trend_replay
+from price_alert.detectors.trend.simulate import simulate_trend
+from price_alert.exchange.gate import fetch_minute_candles
+from price_alert.exchange.universe import select_liquid_contracts
+from price_alert.instance import AlreadyRunningError, ProcessLock
+from price_alert.notify.notifier import ConsoleNotifier
+from price_alert.notify.sounds import SOUND_LABELS, SOUND_NAMES, SOUND_PRIORITY
 from price_alert.service import run_monitor
-from price_alert.sounds import SOUND_LABELS, SOUND_NAMES, SOUND_PRIORITY
-from price_alert.streak import describe_streak_rule
-from price_alert.trend.alerts import describe_trend_rule
-from price_alert.trend.replay import plan_trend_replay, render_trend_replay, run_trend_replay
-from price_alert.trend.simulate import simulate_trend
-from price_alert.universe import select_liquid_contracts
-from price_alert.windows import MoveWindow, describe_rule
 
 LOGGER = logging.getLogger(__name__)
-DEMO_ATR = 2.0
 # 只给开始时间时回放的时长：足够覆盖长窗口一个完整周期以及前后的行情。
 DEFAULT_REPLAY_MINUTES = 15
 # 趋势回放只给开始时间时的时长：趋势以十几分钟到数小时计，区间要能容下一段完整的开始到结束。
@@ -67,6 +70,10 @@ DEFAULT_DORMANT_REPLAY_HOURS = 6
 # 反弹回落回放只给开始时间时的时长：判定是秒级的，还要多取 1 小时成交作基准，区间不宜太长。
 DEFAULT_REVERSAL_REPLAY_MINUTES = 30
 SOUND_PREVIEW_PAUSE_SECONDS = 0.8
+# REST 重试用尽后会原样抛出的错误：回放命令把它们转成一行提示退出。
+FETCH_ERRORS = (OSError, ValueError, TypeError, http.client.HTTPException)
+
+PlanT = TypeVar("PlanT")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -121,23 +128,8 @@ def _add_replay_arguments(command: argparse.ArgumentParser, end_default: str, al
     command.add_argument("--all", action="store_true", help=all_help)
 
 
-def _build_demo_candles(end: datetime, count: int, interval_seconds: int) -> list[Candle]:
-    # 每根 K 线高低差恰好为 DEMO_ATR 且收盘不跳空，种子 ATR 因此确定等于 DEMO_ATR。
-    half_range = DEMO_ATR / 2
-    return [
-        Candle(
-            end - timedelta(seconds=interval_seconds * (count - index)),
-            100.0,
-            100.0 + half_range,
-            100.0 - half_range,
-            100.0,
-        )
-        for index in range(count)
-    ]
-
-
 def expected_simulated_alerts(config: AppConfig) -> int:
-    windows = len(build_windows(config)) if config.move.enabled else 0
+    windows = len(build_windows(config.move)) if config.move.enabled else 0
     trend_periods = len(config.trend.rules()) if config.trend.enabled else 0
     singles = int(config.dormant.enabled) + int(config.reversal.enabled)
     return windows + trend_periods + len(config.launch.sides()) + singles
@@ -148,8 +140,10 @@ async def simulate(config: AppConfig) -> int:
     正常时等于 expected_simulated_alerts。"""
     notifier = ConsoleNotifier(beep=False, colors=config.alerts.console_colors)
     alert_count = 0
-    for window in build_windows(config, cooldown_seconds=0) if config.move.enabled else []:
-        alert_count += await _simulate_window(config, window, notifier)
+    if config.move.enabled:
+        for alert in simulate_move(config.move):
+            alert_count += 1
+            await notifier.send(alert)
     if config.trend.enabled:
         for alert in simulate_trend(config.trend):
             alert_count += 1
@@ -169,52 +163,6 @@ async def simulate(config: AppConfig) -> int:
     return alert_count
 
 
-async def _simulate_window(config: AppConfig, window: MoveWindow, notifier: ConsoleNotifier) -> int:
-    move = config.move
-    interval_seconds = INTERVAL_SECONDS[move.candle_interval]
-    # 每个窗口用只含它自己的检测器：要验证的是这个窗口的门槛能否被满足，不能让另一个窗口先提醒掩盖问题。
-    detector = build_detector(config, windows=[window], streak=False)
-
-    # 让异动恰好从 K 线边界开始：异动秒全部落在同一根未收盘 K 线里，不会被提前计入 ATR 而削弱倍数，
-    # 同时之前的平稳 K 线按时收盘，ATR 始终新鲜，结果不随 lookback 等参数变化而失效。
-    now = datetime.now(UTC)
-    move_start = datetime.fromtimestamp(int(now.timestamp()) // interval_seconds * interval_seconds, tz=UTC)
-    flat_start = move_start - timedelta(seconds=window.lookback_seconds + 1)
-    history_end = datetime.fromtimestamp(
-        int(flat_start.timestamp()) // interval_seconds * interval_seconds,
-        tz=UTC,
-    )
-    detector.add_symbol(
-        "BTC_USDT",
-        _build_demo_candles(history_end, move.atr_period + 1, interval_seconds),
-        1_000_000_000,
-    )
-
-    # 每秒成交笔数要足以让一个观察窗口满足 min_window_trades。
-    trades_per_second = max(1, math.ceil(window.min_window_trades / window.lookback_seconds))
-
-    def ticks_at(second: datetime, price: float, label: str) -> list[PriceTick]:
-        return [
-            PriceTick("BTC_USDT", price, 1.0, second + timedelta(milliseconds=index), f"{label}-{index}")
-            for index in range(trades_per_second)
-        ]
-
-    for offset in range(window.lookback_seconds + 1):
-        for tick in ticks_at(flat_start + timedelta(seconds=offset), 100.0, f"flat-{offset}"):
-            detector.add_tick(tick)
-
-    # 平稳段跨过的 K 线只会让 ATR 衰减，按 DEMO_ATR 计算的位移因此总能满足 ATR 倍数。
-    moved_price = 100.0 + max(DEMO_ATR * window.trigger_atr_multiple, window.min_change_percent) * 1.1
-    alert_count = 0
-    # 多送一秒用于结算最后一个确认桶，与真实行情的完整秒检测保持一致。
-    for offset in range(window.confirmation_seconds + 1):
-        for tick in ticks_at(move_start + timedelta(seconds=offset), moved_price, f"demo-{offset}"):
-            for alert in detector.add_tick(tick):
-                alert_count += 1
-                await notifier.send(alert)
-    return alert_count
-
-
 async def preview_sounds() -> None:
     # 试听不看 alerts.beep：关掉提醒声音时也要能先听一下再决定。
     notifier = ConsoleNotifier(beep=True, colors=False)
@@ -227,109 +175,97 @@ async def preview_sounds() -> None:
 
 
 def replay(config: AppConfig, args: argparse.Namespace) -> None:
-    try:
-        start, end = _replay_range(args, timedelta(minutes=DEFAULT_REPLAY_MINUTES))
-        plan = plan_replay(normalize_symbol(args.symbol), start, end, config)
-    except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
-    try:
-        data = fetch_replay_data(build_rest_client(config), plan, config)
-    except (OSError, ValueError, TypeError, http.client.HTTPException) as exc:
-        # REST 重试用尽后原样抛出，这里转成一行可读的错误，而不是整段堆栈。
-        raise SystemExit(f"获取 {plan.symbol} 历史数据失败：{exc}") from exc
-    if not data.trades:
-        raise SystemExit(f"{plan.symbol} 在该时间段没有取到成交：合约名可能有误，或 Gate 已不再提供这么早的成交")
-    result = run_replay(config, plan, data)
-    print("\n".join(render_replay(result, show_all=args.all)))
+    plan = _plan_or_exit(
+        args,
+        timedelta(minutes=DEFAULT_REPLAY_MINUTES),
+        lambda symbol, start, end: plan_replay(symbol, start, end, config.move),
+    )
+    data = _fetch_trades_or_exit(config, plan, config.move.candle_interval)
+    print("\n".join(render_replay(run_replay(config.move, plan, data), show_all=args.all)))
 
 
 def reversal_replay(config: AppConfig, args: argparse.Namespace) -> None:
     rule = config.reversal.to_rule()
-    try:
-        start, end = _replay_range(args, timedelta(minutes=DEFAULT_REVERSAL_REPLAY_MINUTES))
-        plan = plan_reversal_replay(normalize_symbol(args.symbol), start, end, rule)
-    except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
-    try:
-        data = fetch_replay_data(build_rest_client(config), plan, config, candle_interval=REVERSAL_INTERVAL)
-    except (OSError, ValueError, TypeError, http.client.HTTPException) as exc:
-        raise SystemExit(f"获取 {plan.symbol} 历史数据失败：{exc}") from exc
-    if not data.trades:
-        raise SystemExit(f"{plan.symbol} 在该时间段没有取到成交：合约名可能有误，或 Gate 已不再提供这么早的成交")
-    result = run_reversal_replay(rule, plan, data)
-    print("\n".join(render_reversal_replay(result, show_all=args.all)))
-
-
-def _replay_range(args: argparse.Namespace, default_length: timedelta) -> tuple[datetime, datetime]:
-    start = parse_time(args.start)
-    # 结束时间只写时分时取开始那天，否则回放昨天时 --end 会被当成今天，区间意外拉长到一整天。
-    end_day = start.astimezone(BEIJING_TIME).date()
-    end = parse_time(args.end, today=end_day) if args.end else start + default_length
-    return start, end
+    plan = _plan_or_exit(
+        args,
+        timedelta(minutes=DEFAULT_REVERSAL_REPLAY_MINUTES),
+        lambda symbol, start, end: plan_reversal_replay(symbol, start, end, rule),
+    )
+    data = _fetch_trades_or_exit(config, plan, REVERSAL_INTERVAL)
+    print("\n".join(render_reversal_replay(run_reversal_replay(rule, plan, data), show_all=args.all)))
 
 
 def trend_replay(config: AppConfig, args: argparse.Namespace) -> None:
     if not config.trend.rules():
         raise SystemExit("trend.periods 没有启用任何周期，无法回放")
     detector = build_trend_detector(config.trend)
-    try:
-        start, end = _replay_range(args, timedelta(hours=DEFAULT_TREND_REPLAY_HOURS))
-        plan = plan_trend_replay(normalize_symbol(args.symbol), start, end, detector)
-    except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
-    rest = build_rest_client(config)
-    try:
-        candles = fetch_minute_candles(rest, plan.symbol, plan.warmup_start, plan.end)
-    except (OSError, ValueError, TypeError, http.client.HTTPException) as exc:
-        raise SystemExit(f"获取 {plan.symbol} 历史 K 线失败：{exc}") from exc
-    if not candles:
-        raise SystemExit(f"{plan.symbol} 在该时间段没有取到 K 线：合约名可能有误")
-    result = run_trend_replay(config.trend, plan, candles, _fetch_price_decimals(rest, plan.symbol))
-    print("\n".join(render_trend_replay(result, show_all=args.all)))
+    plan = _plan_or_exit(
+        args,
+        timedelta(hours=DEFAULT_TREND_REPLAY_HOURS),
+        lambda symbol, start, end: plan_trend_replay(symbol, start, end, detector),
+    )
+    candles, decimals = _fetch_minutes_or_exit(config, plan)
+    print("\n".join(render_trend_replay(run_trend_replay(config.trend, plan, candles, decimals), show_all=args.all)))
 
 
 def launch_replay(config: AppConfig, args: argparse.Namespace) -> None:
-    try:
-        start, end = _replay_range(args, timedelta(hours=DEFAULT_LAUNCH_REPLAY_HOURS))
-        plan = plan_launch_replay(normalize_symbol(args.symbol), start, end, config.launch.rules())
-    except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
-    rest = build_rest_client(config)
-    try:
-        candles = fetch_minute_candles(rest, plan.symbol, plan.warmup_start, plan.end)
-    except (OSError, ValueError, TypeError, http.client.HTTPException) as exc:
-        raise SystemExit(f"获取 {plan.symbol} 历史 K 线失败：{exc}") from exc
-    if not candles:
-        raise SystemExit(f"{plan.symbol} 在该时间段没有取到 K 线：合约名可能有误")
-    result = run_launch_replay(config.launch, plan, candles, _fetch_price_decimals(rest, plan.symbol))
+    plan = _plan_or_exit(
+        args,
+        timedelta(hours=DEFAULT_LAUNCH_REPLAY_HOURS),
+        lambda symbol, start, end: plan_launch_replay(symbol, start, end, config.launch.rules()),
+    )
+    candles, decimals = _fetch_minutes_or_exit(config, plan)
+    result = run_launch_replay(config.launch, plan, candles, decimals)
     print("\n".join(render_launch_replay(result, show_all=args.all)))
 
 
 def dormant_replay(config: AppConfig, args: argparse.Namespace) -> None:
     rule = config.dormant.to_rule()
+    plan = _plan_or_exit(
+        args,
+        timedelta(hours=DEFAULT_DORMANT_REPLAY_HOURS),
+        lambda symbol, start, end: plan_dormant_replay(symbol, start, end, rule),
+    )
+    candles, decimals = _fetch_minutes_or_exit(config, plan)
+    print("\n".join(render_dormant_replay(run_dormant_replay(rule, plan, candles, decimals), show_all=args.all)))
+
+
+def _plan_or_exit(
+    args: argparse.Namespace,
+    default_length: timedelta,
+    plan: Callable[[str, datetime, datetime], PlanT],
+) -> PlanT:
+    """解析 --start/--end 并推算回放区间；时间写错、超出 Gate 保留范围等都转成一行错误退出。"""
     try:
-        start, end = _replay_range(args, timedelta(hours=DEFAULT_DORMANT_REPLAY_HOURS))
-        plan = plan_dormant_replay(normalize_symbol(args.symbol), start, end, rule)
+        start = parse_time(args.start)
+        # 结束时间只写时分时取开始那天，否则回放昨天时 --end 会被当成今天，区间意外拉长到一整天。
+        end_day = start.astimezone(BEIJING_TIME).date()
+        end = parse_time(args.end, today=end_day) if args.end else start + default_length
+        return plan(normalize_symbol(args.symbol), start, end)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+
+
+def _fetch_trades_or_exit(config: AppConfig, plan: ReplayPlan, candle_interval: str) -> ReplayData:
+    try:
+        data = fetch_replay_data(build_rest_client(config), plan, candle_interval)
+    except FETCH_ERRORS as exc:
+        # REST 重试用尽后原样抛出，这里转成一行可读的错误，而不是整段堆栈。
+        raise SystemExit(f"获取 {plan.symbol} 历史数据失败：{exc}") from exc
+    if not data.trades:
+        raise SystemExit(f"{plan.symbol} 在该时间段没有取到成交：合约名可能有误，或 Gate 已不再提供这么早的成交")
+    return data
+
+
+def _fetch_minutes_or_exit(config: AppConfig, plan: MinuteReplayPlan) -> tuple[list[Candle], int | None]:
     rest = build_rest_client(config)
     try:
         candles = fetch_minute_candles(rest, plan.symbol, plan.warmup_start, plan.end)
-    except (OSError, ValueError, TypeError, http.client.HTTPException) as exc:
+    except FETCH_ERRORS as exc:
         raise SystemExit(f"获取 {plan.symbol} 历史 K 线失败：{exc}") from exc
     if not candles:
         raise SystemExit(f"{plan.symbol} 在该时间段没有取到 K 线：合约名可能有误")
-    result = run_dormant_replay(rule, plan, candles, _fetch_price_decimals(rest, plan.symbol))
-    print("\n".join(render_dormant_replay(result, show_all=args.all)))
-
-
-def _fetch_price_decimals(rest: GateRestClient, symbol: str) -> int | None:
-    try:
-        return price_decimals(rest.fetch_contract(symbol).get("order_price_round"))
-    except Exception as exc:
-        # 与成交回放一致：精度只影响价格显示，取不到就按有效数字显示。
-        LOGGER.warning("%s 合约信息获取失败，价格按有效数字显示：%s", symbol, exc)
-        return None
+    return candles, fetch_price_decimals(rest, plan.symbol)
 
 
 def print_universe(config: AppConfig) -> None:
@@ -378,9 +314,9 @@ def main() -> None:
         ranges = "，".join(f"{entry.name} {entry.volume.describe()}" for entry in build_detectors(config))
         print(f"配置有效：Gate.io USDT 永续，24h 计价成交额范围：{ranges}")
         if config.move.enabled:
-            for window in build_windows(config):
+            for window in build_windows(config.move):
                 print(f"  {describe_rule(window)}")
-            streak_rule = build_detector(config).streak_rule
+            streak_rule = build_detector(config.move).streak_rule
             if streak_rule is not None:
                 print(f"  {describe_streak_rule(streak_rule)}")
         else:

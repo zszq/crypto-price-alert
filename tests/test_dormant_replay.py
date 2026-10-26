@@ -2,10 +2,10 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from price_alert.dormant.replay import plan_dormant_replay, render_dormant_replay, run_dormant_replay
-from price_alert.dormant.rule import PRIOR_MINUTES, DormantRule
-from price_alert.formatting import BEIJING_TIME
-from price_alert.models import Candle
+from price_alert.common.formatting import BEIJING_TIME
+from price_alert.common.models import Candle
+from price_alert.detectors.dormant.replay import plan_dormant_replay, render_dormant_replay, run_dormant_replay
+from price_alert.detectors.dormant.rule import PRIOR_MINUTES, DormantRule
 
 START = datetime(2026, 10, 21, 14, 50, tzinfo=BEIJING_TIME)
 # 固定“当前时间”：回放会检查区间是否超出 Gate 的保留范围，不能依赖真实时钟。

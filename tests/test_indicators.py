@@ -2,8 +2,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from price_alert.indicators import WilderAtr
-from price_alert.models import Candle
+from price_alert.common.indicators import WilderAtr
+from price_alert.common.models import Candle
 
 
 def candle(minute: int, high: float, low: float, close: float) -> Candle:

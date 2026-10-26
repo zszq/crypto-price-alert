@@ -1,4 +1,4 @@
-from price_alert.universe import VolumeRange, select_liquid_contracts
+from price_alert.exchange.universe import VolumeRange, select_liquid_contracts
 
 
 def test_selects_only_usdt_contracts_strictly_above_quote_volume_threshold():

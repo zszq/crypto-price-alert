@@ -2,10 +2,10 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from price_alert.common.formatting import BEIJING_TIME
+from price_alert.common.models import Candle
 from price_alert.config import AppConfig
-from price_alert.formatting import BEIJING_TIME
-from price_alert.launch.replay import plan_launch_replay, render_launch_replay, run_launch_replay
-from price_alert.models import Candle
+from price_alert.detectors.launch.replay import plan_launch_replay, render_launch_replay, run_launch_replay
 
 START = datetime(2026, 10, 5, 17, 50, tzinfo=BEIJING_TIME)
 # 固定“当前时间”：回放会检查区间是否超出 Gate 的保留范围，不能依赖真实时钟。

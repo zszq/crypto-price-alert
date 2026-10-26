@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
-from price_alert.gate import GateRestClient, RateLimiter
+from price_alert.exchange.gate import GateRestClient, RateLimiter
 
 # 行情、记录与结果只放本机（data/backtest/move/，不进版本库），代码在这里
 DATA = Path(__file__).resolve().parents[2] / "data" / "backtest" / "move"

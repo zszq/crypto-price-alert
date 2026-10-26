@@ -2,9 +2,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from price_alert.dormant.detector import DormantDetector, DormantOutcome
-from price_alert.dormant.rule import CALM_MINUTES, PRIOR_MINUTES, Condition, DormantRule, minute_range_percent
-from price_alert.models import Candle, PriceTick
+from price_alert.common.models import Candle, PriceTick
+from price_alert.detectors.dormant.detector import DormantDetector, DormantOutcome
+from price_alert.detectors.dormant.rule import CALM_MINUTES, PRIOR_MINUTES, Condition, DormantRule, minute_range_percent
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
 SYMBOL = "IRYS_USDT"

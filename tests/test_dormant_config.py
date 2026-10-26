@@ -7,10 +7,10 @@ from pydantic import ValidationError
 
 from price_alert.assembly import build_detectors
 from price_alert.config import AppConfig
-from price_alert.dormant.alerts import DormantAlert, describe_dormant_rule, format_dormant_alert
-from price_alert.dormant.config import DormantConfig
-from price_alert.dormant.rule import DormantMetrics, DormantRule
-from price_alert.universe import VolumeRange
+from price_alert.detectors.dormant.alerts import DormantAlert, describe_dormant_rule, format_dormant_alert
+from price_alert.detectors.dormant.config import DormantConfig
+from price_alert.detectors.dormant.rule import DormantMetrics, DormantRule
+from price_alert.exchange.universe import VolumeRange
 
 
 def test_defaults_are_the_research_selection():

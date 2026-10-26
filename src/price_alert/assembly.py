@@ -8,34 +8,35 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from price_alert.config import INTERVAL_SECONDS, AppConfig, WindowConfig
+from price_alert.common.models import INTERVAL_SECONDS
+from price_alert.config import AppConfig
 from price_alert.detection import MonitoredDetector
-from price_alert.detector import AtrMoveDetector
-from price_alert.dormant.detector import DormantDetector, DormantEvaluation
-from price_alert.dormant.rule import DormantRule
-from price_alert.gate import GateRestClient, RateLimiter
-from price_alert.launch.alerts import LABELS as LAUNCH_LABELS
-from price_alert.launch.detector import LaunchDetector, LaunchEvaluation
-from price_alert.launch.rule import LaunchRule
-from price_alert.reversal.alerts import NAME as REVERSAL_NAME
-from price_alert.reversal.detector import ReversalDetector
-from price_alert.reversal.rule import CANDLE_INTERVAL as REVERSAL_INTERVAL
-from price_alert.reversal.rule import WARMUP_CANDLES as REVERSAL_WARMUP
-from price_alert.reversal.rule import ReversalRule
-from price_alert.streak import StreakRule
-from price_alert.trend.config import TrendConfig
-from price_alert.trend.detector import TrendDetector, TrendEvaluation
-from price_alert.trend.pattern import TrendRule
-from price_alert.universe import VolumeRange
-from price_alert.windows import MoveWindow, WindowEvaluation, WindowName
+from price_alert.detectors.dormant.detector import DormantDetector, DormantEvaluation
+from price_alert.detectors.dormant.rule import DormantRule
+from price_alert.detectors.launch.alerts import LABELS as LAUNCH_LABELS
+from price_alert.detectors.launch.detector import LaunchDetector, LaunchEvaluation
+from price_alert.detectors.launch.rule import LaunchRule
+from price_alert.detectors.move.config import MoveConfig, WindowConfig
+from price_alert.detectors.move.detector import AtrMoveDetector
+from price_alert.detectors.move.streak import StreakRule
+from price_alert.detectors.move.windows import MoveWindow, WindowEvaluation, WindowName
+from price_alert.detectors.reversal.alerts import NAME as REVERSAL_NAME
+from price_alert.detectors.reversal.detector import ReversalDetector
+from price_alert.detectors.reversal.rule import CANDLE_INTERVAL as REVERSAL_INTERVAL
+from price_alert.detectors.reversal.rule import WARMUP_CANDLES as REVERSAL_WARMUP
+from price_alert.detectors.reversal.rule import ReversalRule
+from price_alert.detectors.trend.config import TrendConfig
+from price_alert.detectors.trend.detector import TrendDetector, TrendEvaluation
+from price_alert.detectors.trend.pattern import TrendRule
+from price_alert.exchange.gate import GateRestClient, RateLimiter
+from price_alert.exchange.universe import VolumeRange
 
 
-def build_windows(config: AppConfig, cooldown_seconds: int | None = None) -> list[MoveWindow]:
+def build_windows(move: MoveConfig, cooldown_seconds: int | None = None) -> list[MoveWindow]:
     """按配置生成观察窗口，短窗口在前：同一秒两个窗口都提醒时，更紧迫的短窗口提醒排在前面。
 
     cooldown_seconds 覆盖全部窗口的冷却，供 simulate 这类不需要冷却的场景使用。
     """
-    move = config.move
     configured: list[tuple[WindowName, WindowConfig]] = [("short", move.short_window)]
     if move.long_window.enabled:
         configured.append(("long", move.long_window))
@@ -54,7 +55,7 @@ def build_windows(config: AppConfig, cooldown_seconds: int | None = None) -> lis
 
 
 def build_detector(
-    config: AppConfig,
+    move: MoveConfig,
     cooldown_seconds: int | None = None,
     *,
     windows: Sequence[MoveWindow] | None = None,
@@ -62,13 +63,12 @@ def build_detector(
     streak: bool = True,
 ) -> AtrMoveDetector:
     """streak=False 不追加连续提醒，供 simulate 这类只验证单个窗口门槛的场景使用。"""
-    move = config.move
     streak_config = move.streak
     return AtrMoveDetector(
         atr_period=move.atr_period,
         candle_interval_seconds=INTERVAL_SECONDS[move.candle_interval],
         max_atr_age_seconds=move.max_atr_age_seconds,
-        windows=build_windows(config, cooldown_seconds) if windows is None else windows,
+        windows=build_windows(move, cooldown_seconds) if windows is None else windows,
         observer=observer,
         streak=(
             StreakRule(
@@ -120,7 +120,7 @@ def build_detectors(config: AppConfig) -> list[MonitoredDetector]:
         detectors.append(
             MonitoredDetector(
                 "ATR 异动",
-                build_detector(config),
+                build_detector(move),
                 move.candle_interval,
                 move.warmup_candles,
                 VolumeRange(move.min_volume_24h_quote),
