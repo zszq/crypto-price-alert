@@ -1,6 +1,6 @@
 # 放量启动研究的数据工具
 
-这里只放下载、读取历史 1 分钟 K 线的工具，供放量启动（`src/price_alert/launch/`）相关的回测研究使用。
+这里只放下载、读取历史 1 分钟 K 线的工具，供放量启动（`src/price_alert/detectors/launch/`）相关的回测研究使用。
 以前的研究脚本与结论已全部删除，新研究的脚本也放在本目录。
 
 不参与实时监控，也不在 `ruff check src tests` 与 pytest 的范围内（提交前可单独运行 `ruff check research`）。
