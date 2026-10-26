@@ -6,5 +6,5 @@ if not exist ".venv\Scripts\python.exe" (
   pause
   exit /b 1
 )
-".venv\Scripts\python.exe" -m price_alert.cli run --config config/default.yaml
+".venv\Scripts\python.exe" -m price_alert.cli run --config config/default
 if errorlevel 1 pause

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from price_alert.assembly import build_detectors
@@ -44,13 +45,49 @@ def test_noise_protection_defaults_are_enabled():
     assert short.cooldown_seconds == 30
 
 
-def test_default_yaml_passes_validation(monkeypatch):
-    # default.yaml 的取值允许偏离代码默认值（运营随时调参），但仍须能通过校验，
+DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "config" / "default"
+
+
+def test_default_config_passes_validation_and_covers_every_section(monkeypatch):
+    # 日常监控配置的取值允许偏离代码默认值（运营随时调参），但仍须能通过校验，
     # 否则未知键或越界值要等到启动服务时才暴露。
     monkeypatch.delenv("PRICE_ALERT_WEBHOOK_URL", raising=False)
-    default_yaml = Path(__file__).resolve().parents[1] / "config" / "default.yaml"
 
-    load_config(default_yaml)
+    load_config(DEFAULT_CONFIG)
+
+    # 拆成多个文件后，漏掉一个文件不会报错、只会悄悄退回代码默认值，所以要求每一段都在目录里写明。
+    keys = [key for file in DEFAULT_CONFIG.glob("*.yaml") for key in yaml.safe_load(file.read_text(encoding="utf-8"))]
+    assert sorted(keys) == sorted(AppConfig.model_fields)
+
+
+def test_directory_config_merges_top_level_keys_of_every_yaml(tmp_path, monkeypatch):
+    monkeypatch.delenv("PRICE_ALERT_WEBHOOK_URL", raising=False)
+    (tmp_path / "common.yaml").write_text("gate:\n  rest_retries: 5\nalerts:\n  beep: false\n", encoding="utf-8")
+    (tmp_path / "move.yaml").write_text("move:\n  min_volume_24h_quote: 123\n", encoding="utf-8")
+    (tmp_path / "empty.yaml").write_text("# 只有注释\n", encoding="utf-8")
+    # 只读 .yaml：备份、草稿等其他扩展名不参与合并。
+    (tmp_path / "trend.yaml.bak").write_text("trend:\n  unknown: 1\n", encoding="utf-8")
+
+    config = load_config(tmp_path)
+
+    assert (config.gate.rest_retries, config.alerts.beep, config.move.min_volume_24h_quote) == (5, False, 123)
+
+
+def test_directory_config_rejects_a_section_split_across_files(tmp_path):
+    (tmp_path / "a.yaml").write_text("move:\n  enabled: true\n", encoding="utf-8")
+    (tmp_path / "b.yaml").write_text("move:\n  min_volume_24h_quote: 1\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="顶层键 move 同时出现在 a.yaml 与 b.yaml"):
+        load_config(tmp_path)
+
+
+def test_rejects_empty_directory_and_non_mapping_file(tmp_path):
+    with pytest.raises(ValueError, match="没有 .yaml 文件"):
+        load_config(tmp_path)
+
+    (tmp_path / "list.yaml").write_text("- move\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="顶层必须是键值对"):
+        load_config(tmp_path)
 
 
 def test_launch_trade_yaml_runs_only_the_launch_detector(monkeypatch):
@@ -61,7 +98,7 @@ def test_launch_trade_yaml_runs_only_the_launch_detector(monkeypatch):
     config = load_config(config_dir / "launch-trade.yaml")
 
     assert [entry.name for entry in build_detectors(config)] == ["放量上涨"]
-    assert config.alerts.jsonl_path != load_config(config_dir / "default.yaml").alerts.jsonl_path
+    assert config.alerts.jsonl_path != load_config(DEFAULT_CONFIG).alerts.jsonl_path
     (rule,) = config.launch.rules()
     assert (rule.direction, rule.min_window_quote, rule.require_breakout, rule.max_change_percent) == (
         "surge",
@@ -79,7 +116,7 @@ def test_launch_f1_yaml_runs_both_launch_directions_on_its_own_file(monkeypatch)
     config = load_config(config_dir / "launch-f1.yaml")
 
     assert [entry.name for entry in build_detectors(config)] == ["放量上涨", "放量下跌"]
-    others = {load_config(config_dir / name).alerts.jsonl_path for name in ("default.yaml", "launch-trade.yaml")}
+    others = {load_config(path).alerts.jsonl_path for path in (DEFAULT_CONFIG, config_dir / "launch-trade.yaml")}
     assert config.alerts.jsonl_path not in others
 
 
@@ -118,15 +155,12 @@ def test_atr_age_default_follows_candle_interval_but_explicit_value_is_validated
         AppConfig.model_validate({"move": {"candle_interval": "5m", "max_atr_age_seconds": 180}})
 
 
-def test_default_yaml_long_window_cooldown_follows_lookback(monkeypatch, tmp_path):
-    # 运营只改长窗口长度时不应被冷却校验卡住，所以 default.yaml 刻意不写死冷却。
+def test_default_config_long_window_cooldown_follows_lookback(monkeypatch, tmp_path):
+    # 运营只改长窗口长度时不应被冷却校验卡住，所以日常监控配置刻意不写死冷却。
     monkeypatch.delenv("PRICE_ALERT_WEBHOOK_URL", raising=False)
-    default_yaml = Path(__file__).resolve().parents[1] / "config" / "default.yaml"
+    move_yaml = (DEFAULT_CONFIG / "move.yaml").read_text(encoding="utf-8")
     edited = tmp_path / "config.yaml"
-    edited.write_text(
-        default_yaml.read_text(encoding="utf-8").replace("lookback_seconds: 180", "lookback_seconds: 300"),
-        encoding="utf-8",
-    )
+    edited.write_text(move_yaml.replace("lookback_seconds: 180", "lookback_seconds: 300"), encoding="utf-8")
 
     assert load_config(edited).move.long_window.cooldown_seconds == 300
 

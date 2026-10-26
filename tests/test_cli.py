@@ -192,6 +192,8 @@ def test_simulate_skips_windows_when_move_is_disabled(capsys):
 
 
 def test_lock_path_is_per_config_file_and_default_keeps_its_old_name():
+    assert cli.lock_path("config/default") == Path("data/price-alert.lock")
+    assert cli.lock_path("config/default/") == Path("data/price-alert.lock")
     assert cli.lock_path("config/default.yaml") == Path("data/price-alert.lock")
     assert cli.lock_path("config/launch-trade.yaml") == Path("data/price-alert-launch-trade.lock")
 

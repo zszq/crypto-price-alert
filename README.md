@@ -127,7 +127,7 @@ ATR 异动强度 = |当前完整秒 VWAP - N 秒前完整秒 VWAP| / Wilder ATR
 
 合约池下限（`launch.rise.min_volume_24h_quote`，默认 100 万 USDT）：按半年 1736 条首波提醒（量比 5 倍、窗口成交额 ≥ 10 万时）统计，提醒前 24 小时成交额不足 100 万的币，提醒后 30 分钟成交额的中位数只有窗口成交额的 0.65~0.92 倍，拉升后基本没人跟进；100~200 万为 1.6 倍，200 万以上稳定在 2.5~3 倍。启动中的币成交额涨得很快，多数第一波刚过就会入池，所以下限定在 100 万：用检测器按每 10 分钟刷新合约池重跑上述 6.6 天，每天提醒从 17.4 条降到 14.3 条、涉及合约从 54 个降到 40 个，大行情同样报到 24/29 段，前三分之一报出从 9 段降到 8 段（AIN_USDT 10-03 首次提醒从 22:47 推迟到次日 00:00）。代价是冷门币的第一波：RLC_USDT 启动前 24 小时成交额只有约 7 万，20:10 前后才入池，首次提醒推迟到 20:11（0.4981），算作第 1 波。下限再提高，去掉的无人跟进提醒更多，但漏掉的大行情也更多（半年样本按提醒前 24 小时成交额直接筛选，之后 4 小时内涨超 20% 的提醒，100 万时少约 9%，200 万时少约 14%），而且越接近另两者的门槛，三者的合约池重叠越多。
 
-放量下跌：`launch.fall` 是与 `launch.rise` 结构完全相同的另一套参数，开启 `enabled` 后作为单独的检测器运行，合约池、K 线保留长度、冷却与波次都与上涨分开（突破看基准期最低价，涨跌幅按跌幅的绝对值）。代码默认关闭、其余默认值与上涨相同；`config/default.yaml` 中下跌改为基准期 3 小时、量比 2、窗口成交额 5 万、跌幅 3%~15%、冷却 15 分钟、再推进 3%、合约池 > 100 万，上涨保持原取值，依据与检验见 [research/launch_trade/launch_grid.md](research/launch_trade/launch_grid.md) 第三轮。
+放量下跌：`launch.fall` 是与 `launch.rise` 结构完全相同的另一套参数，开启 `enabled` 后作为单独的检测器运行，合约池、K 线保留长度、冷却与波次都与上涨分开（突破看基准期最低价，涨跌幅按跌幅的绝对值）。代码默认关闭、其余默认值与上涨相同；`config/default/launch.yaml` 中下跌改为基准期 3 小时、量比 2、窗口成交额 5 万、跌幅 3%~15%、冷却 15 分钟、再推进 3%、合约池 > 100 万，上涨保持原取值，依据与检验见 [research/launch_trade/launch_grid.md](research/launch_trade/launch_grid.md) 第三轮。
 
 ### 冷门启动：几乎没人交易的币突然拉升
 
@@ -141,7 +141,7 @@ ATR 异动强度 = |当前完整秒 VWAP - N 秒前完整秒 VWAP| / Wilder ATR
   - **涨前平稳**：涨幅 ≥ 涨前波动的 10 倍（`min_calm_multiple`）。涨前波动是窗口之前 240 分钟每分钟真实波幅（含跳空，无成交的分钟为 0）的平均值，一字横盘为 0、倍数无穷大；涨之前就来回乱跳的币，同样的涨幅倍数低，不报；涨前波动本身还不能超过每分钟 0.5%（`max_pre_volatility_percent`），涨前要近乎一条直线，乱跳的币涨得再多也不报；
   - **不靠跳涨**：窗口里每一分钟的收盘涨幅都 ≤ 5%（`max_minute_change_percent`）。一两分钟跳上去的多是几笔单子拉的；
   - **实体饱满**：窗口里各根 K 线实体之和 ÷ 振幅之和 ≥ 60%（`min_body_ratio`，与趋势提醒的总实体占比同一口径）。上影线多说明冲高被砸回、拉升没站稳；每分钟只有一两笔成交、靠跳空往上走的 K 线没有实体，也会被挡掉；
-  - **买盘跟得上**（代码默认不限，`config/default.yaml` 开启）：窗口最后一分钟成交额 ≥ `min_last_minute_quote`、后半窗口（最后 ⌈窗口/2⌉ 分钟）成交额占窗口成交额 ≥ `min_late_quote_share`。成交集中在前半段、拉到后面没人买的多是几笔单子拉完就停。`default.yaml` 按 `research/launch_trade/dormant_early.md` 第三轮「假启动更少」取窗口 15 分钟、成交额 2 万、8 分钟有成交、最后一分钟 1000、后半占比 40%：样本外准确率不变（0.445），每天假启动少约 12%，代价是提醒稍晚（早报分低约 11%）、少报一些；判据未通过，是用户知情后的例外。之后放开全部条件重新选参也没有更好的稳健方案（[dormant_best.md](research/launch_trade/dormant_best.md)）；
+  - **买盘跟得上**（代码默认不限，`config/default/dormant.yaml` 开启）：窗口最后一分钟成交额 ≥ `min_last_minute_quote`、后半窗口（最后 ⌈窗口/2⌉ 分钟）成交额占窗口成交额 ≥ `min_late_quote_share`。成交集中在前半段、拉到后面没人买的多是几笔单子拉完就停。`config/default/dormant.yaml` 按 `research/launch_trade/dormant_early.md` 第三轮「假启动更少」取窗口 15 分钟、成交额 2 万、8 分钟有成交、最后一分钟 1000、后半占比 40%：样本外准确率不变（0.445），每天假启动少约 12%，代价是提醒稍晚（早报分低约 11%）、少报一些；判据未通过，是用户知情后的例外。之后放开全部条件重新选参也没有更好的稳健方案（[dormant_best.md](research/launch_trade/dormant_best.md)）；
 - 距上次提醒（含补报）不足 60 分钟（`cooldown_minutes`）时，只有价格比上次提醒价再涨 ≥ 3%（`realert_step_percent`）才再报「冷门启动·第N波」，第一次没注意到还有补报；超过 60 分钟再满足条件就当作新的启动，从第 1 波算。拉升之后之前 24 小时的成交额很快超过冷门门槛，自然不再提醒；合约移出合约池后提醒记录仍然保留；
 - 隔了空档才结算的分钟用触发结算的那笔成交价复核涨幅，价格已回落就不再提醒；断线时暂停判定，恢复后从 REST 回补（与放量启动相同）；
 - 合约池默认是 24 小时成交额 0~300 万的全部虚拟币合约（约 550 个）。冷门与否由检测器按自己的 K 线判断，合约池上限只是不必订阅早就不冷门的币，要明显高于冷门门槛，否则刚启动的币可能在合约池刷新时被移出。
@@ -206,7 +206,7 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 
 停止监控请按 `Ctrl+C`。
 
-一个监控进程会同时订阅全部符合条件的交易对。放量启动默认监控 24 小时成交额超过 100 万 USDT 的约 100 个合约，启动时要为它们各拉一次 1 分钟 K 线（受 REST 限速约束，约十几秒；下限设为 0 时约 600 个、约 1.5 分钟）。冷门启动默认监控 24 小时成交额 0~300 万的约 550 个合约，每个要拉约 1450 根 1 分钟 K 线，约 1 分钟。预热按检测器分批：秒级异动与趋势用到的合约先预热、先订阅，启动几秒后就开始接收成交；只有反弹回落用到的合约（成交额 800 万~1000 万）其次，只有放量启动、冷门启动用到的合约最后，各批预热完再增量订阅，断线回补也按同样的顺序。程序使用进程锁阻止重复启动：同一份配置文件已有进程在运行时，再次启动会直接退出，从而避免同一行情被重复提醒。锁按配置文件区分（`config/default.yaml` 用 `data/price-alert.lock`，其他配置用 `data/price-alert-<文件名>.lock`），不同配置可以同时运行。
+一个监控进程会同时订阅全部符合条件的交易对。放量启动默认监控 24 小时成交额超过 100 万 USDT 的约 100 个合约，启动时要为它们各拉一次 1 分钟 K 线（受 REST 限速约束，约十几秒；下限设为 0 时约 600 个、约 1.5 分钟）。冷门启动默认监控 24 小时成交额 0~300 万的约 550 个合约，每个要拉约 1450 根 1 分钟 K 线，约 1 分钟。预热按检测器分批：秒级异动与趋势用到的合约先预热、先订阅，启动几秒后就开始接收成交；只有反弹回落用到的合约（成交额 800 万~1000 万）其次，只有放量启动、冷门启动用到的合约最后，各批预热完再增量订阅，断线回补也按同样的顺序。程序使用进程锁阻止重复启动：同一份配置文件已有进程在运行时，再次启动会直接退出，从而避免同一行情被重复提醒。锁按配置文件区分（日常监控的 `config/default` 用 `data/price-alert.lock`，其他配置用 `data/price-alert-<文件名>.lock`），不同配置可以同时运行。
 
 ### 交易用的放量实例
 
@@ -220,7 +220,7 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 
 ### 待验证的放量参数
 
-`config/launch-f1.yaml` 存的是 [research/launch_trade/launch_grid.md](research/launch_trade/launch_grid.md) 第二轮（准确率与召回率同等看重）选出的放量上涨、放量下跌参数，只开放量启动，提醒写到 `data/alerts/launch-f1.jsonl`。回测中它报到的大行情约为现行配置的 2 倍，提醒量约 2.6 倍、上涨准确率略低，所以没有写进 `default.yaml`。可以与日常监控同时运行对照，或用回放对照同一段行情：
+`config/launch-f1.yaml` 存的是 [research/launch_trade/launch_grid.md](research/launch_trade/launch_grid.md) 第二轮（准确率与召回率同等看重）选出的放量上涨、放量下跌参数，只开放量启动，提醒写到 `data/alerts/launch-f1.jsonl`。回测中它报到的大行情约为现行配置的 2 倍，提醒量约 2.6 倍、上涨准确率略低，所以没有写进日常监控的 `config/default/`。可以与日常监控同时运行对照，或用回放对照同一段行情：
 
 ```powershell
 .\.venv\Scripts\python.exe -m price_alert.cli run --config config/launch-f1.yaml
@@ -275,7 +275,7 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 
 - `--end` 默认为开始后 3 小时，时间与合约名的写法同 `replay`；Gate 只保留最近 10000 根 1 分钟 K 线（约 6.9 天），更早的区间会直接提示最早可回放的时间；
 - 输出依次是：各周期规则、回放得到的提醒、各周期的判定统计（含每个条件未满足的次数和「最接近成立」的一次），以及所有形态成立的时刻；加 `--all` 输出每个周期每根 K 线的判定；
-- 本文的例子按代码默认值回放：用一个只含 `{}` 的配置文件传给 `--config` 即可复现，不传时按 `config/default.yaml` 的取值回放；
+- 本文的例子按代码默认值回放：用一个只含 `{}` 的配置文件传给 `--config` 即可复现，不传时按 `config/default/` 的取值回放；
 - 实时监控由成交聚合 1 分钟 K 线，回放直接用交易所的 1 分钟 K 线（同样由成交生成、排除内部成交），两者可能有细微差别；回放从空白状态开始，区间开始时已在延续的走势也会提醒。
 
 放量启动提醒同样用历史 1 分钟 K 线（自带计价成交额）回放：
@@ -383,7 +383,7 @@ JSONL/Webhook 中趋势提醒带 `kind: "trend"`，并有 `period`、`candles`�
 
 ## Webhook
 
-可以在 `config/default.yaml` 填写通用 HTTP Webhook，也可以用环境变量覆盖：
+可以在 `config/default/common.yaml` 的 `alerts.webhook_url` 填写通用 HTTP Webhook，也可以用环境变量覆盖：
 
 ```powershell
 $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
@@ -394,9 +394,11 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 
 ## 配置说明
 
-本文中的参数取值、例子和回放结果都按代码默认值（`config.py` / `trend/config.py` / `launch/config.py` / `dormant/config.py` / `reversal/config.py`）给出，与 `config/default.yaml` 中调过的取值可能不同，实际运行以 YAML 为准。
+本文中的参数取值、例子和回放结果都按代码默认值（`config.py` / `trend/config.py` / `launch/config.py` / `dormant/config.py` / `reversal/config.py`）给出，与 `config/default/` 中调过的取值可能不同，实际运行以 YAML 为准。
 
-`config/default.yaml` 的主要参数：
+日常监控的配置是 `config/default/` 目录，`--config` 不传时就用它：程序读取目录下全部 `.yaml` 文件，按顶层键合并成一份配置，同一个顶层键出现在两个文件里会直接报错。`common.yaml` 放交易所连接 `gate` 与提醒分发 `alerts`，每种提醒单独一个文件：`move.yaml`（秒级异动）、`launch.yaml`（放量启动）、`trend.yaml`（趋势）、`dormant.yaml`（冷门启动）、`reversal.yaml`（反弹回落）。`--config` 也可以传单个 YAML 文件（如 `config/launch-trade.yaml`），各段写在同一个文件里。
+
+主要参数：
 
 - `gate.universe_exit_volume_ratio`：已在监控中的合约的退出门槛比例，成交额低于或等于 `所在合约池的下限 × 该比例` 即移除（准入与退出都是严格大于下限才保留）；设了上限的，超过 `上限 ÷ 该比例` 才移除，默认 0.8，所有检测器共用；
 - `gate.universe_refresh_seconds`：交易对池刷新周期；
@@ -461,7 +463,13 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 ## 工程结构
 
 ```text
-config/default.yaml          Gate、ATR、趋势、放量启动、冷门启动、反弹回落、提醒配置
+config/default/              日常监控配置（目录下全部 .yaml 合并）
+├── common.yaml              Gate 连接与提醒分发
+├── move.yaml                秒级异动（ATR）
+├── launch.yaml              放量启动（上涨、下跌）
+├── trend.yaml               K 线趋势
+├── dormant.yaml             冷门启动
+└── reversal.yaml            反弹回落
 config/launch-trade.yaml     交易用的放量启动实例（只开放量上涨，参数取 S5）
 config/launch-f1.yaml        待验证的放量参数（launch_grid.md 第二轮 F1，只开放量启动，与日常监控同时运行对照）
 src/price_alert/              分层：common ← exchange ← detectors ← notify ← 顶层（回放、模拟经 assembly 组装检测器）

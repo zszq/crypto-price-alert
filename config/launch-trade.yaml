@@ -1,8 +1,8 @@
 # 交易用的放量启动提醒（S5）：只跑放量启动，只做多。
-# 与日常监控的 config/default.yaml 分开：日常监控调参不会改变交易信号，交易信号也不会让日常提醒变多变少。
+# 与日常监控的 config/default/ 分开：日常监控调参不会改变交易信号，交易信号也不会让日常提醒变多变少。
 # 两个实例可以同时运行（进程锁按配置文件区分）：
 #   .\.venv\Scripts\python.exe -m price_alert.cli run --config config/launch-trade.yaml
-# 或双击 start-launch-trade.bat。键与取值范围同 default.yaml，那里有每一项的完整说明。
+# 或双击 start-launch-trade.bat。键与取值范围同 config/default/ 下的同名段，那里有每一项的完整说明。
 # 本文件没写的项（gate 整段等）取 config.py 的代码默认值。
 #
 # 提醒只负责「何时、哪个币」。下面的交易规则监控程序不执行，由交易程序（或人工）按提醒照做：

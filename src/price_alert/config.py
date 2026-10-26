@@ -43,8 +43,9 @@ class AppConfig(BaseModel):
 
 
 def load_config(path: str | Path) -> AppConfig:
+    """读取单个 YAML 文件，或一个目录下全部 .yaml 文件（各文件的顶层键合并为一份配置）。"""
     source = Path(path)
-    raw = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+    raw = _read_directory(source) if source.is_dir() else _read_file(source)
     config = AppConfig.model_validate(raw)
 
     # Webhook 常包含密钥，环境变量覆盖可避免敏感地址进入配置文件。
@@ -52,3 +53,31 @@ def load_config(path: str | Path) -> AppConfig:
     if webhook_url:
         config.alerts.webhook_url = webhook_url
     return config
+
+
+def _read_file(source: Path) -> dict:
+    # 传文件对象而不是字符串，YAML 语法错误的提示里才会带上文件名，目录配置下能直接定位到出错的文件。
+    with source.open(encoding="utf-8") as stream:
+        raw = yaml.safe_load(stream)
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{source} 的顶层必须是键值对")
+    return raw
+
+
+def _read_directory(directory: Path) -> dict:
+    # 每种提醒一个文件，方便单独查看和维护；只做顶层合并而不深度合并，
+    # 同一段拆在两个文件里时一处的修改会被另一处悄悄覆盖，所以重复的顶层键直接报错。
+    files = sorted(directory.glob("*.yaml"))
+    if not files:
+        raise ValueError(f"配置目录 {directory} 下没有 .yaml 文件")
+    merged: dict = {}
+    origins: dict[str, Path] = {}
+    for file in files:
+        for key, value in _read_file(file).items():
+            if key in origins:
+                raise ValueError(f"顶层键 {key} 同时出现在 {origins[key].name} 与 {file.name}")
+            origins[key] = file
+            merged[key] = value
+    return merged

@@ -92,7 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("sounds", "依次试听各类提醒的提示音"),
     ):
         command = commands.add_parser(name, help=help_text)
-        command.add_argument("--config", default="config/default.yaml")
+        command.add_argument("--config", default="config/default", help="配置文件，或目录（合并其中全部 .yaml）")
     _add_replay_arguments(
         commands.choices["replay"],
         f"默认开始后 {DEFAULT_REPLAY_MINUTES} 分钟",
@@ -284,7 +284,8 @@ def print_universe(config: AppConfig) -> None:
 
 def lock_path(config_path: str) -> Path:
     """同一份配置只允许一个实例（重复订阅、重复提醒、抢写同一个 JSONL），不同配置可以同时运行，
-    例如日常监控与给交易单独开的放量实例。默认配置沿用原来的锁文件名，升级时仍能挡住旧版本的实例。"""
+    例如日常监控与给交易单独开的放量实例。默认配置（config/default 目录，拆分前是 config/default.yaml）
+    沿用原来的锁文件名，升级时仍能挡住旧版本的实例。"""
     stem = Path(config_path).stem
     return Path("data/price-alert.lock" if stem == "default" else f"data/price-alert-{stem}.lock")
 
@@ -303,6 +304,9 @@ def _load_config_or_exit(path: str) -> AppConfig:
             for error in exc.errors()
         )
         raise SystemExit(f"配置文件 {path} 校验失败：\n{details}") from exc
+    except ValueError as exc:
+        # 顶层不是键值对、目录为空或顶层键重复；须放在 ValidationError（ValueError 的子类）之后。
+        raise SystemExit(f"配置文件 {path} 读取失败：{exc}") from exc
 
 
 def main() -> None:

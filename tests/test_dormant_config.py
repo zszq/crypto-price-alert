@@ -56,7 +56,7 @@ def test_rejects_inconsistent_values(values, message):
 def test_joins_monitor_as_its_own_detector_and_pool():
     entries = {entry.name: entry for entry in build_detectors(AppConfig())}
 
-    # 冷门启动之后只有反弹回落（顺序与 default.yaml 一致）。
+    # 冷门启动之后只有反弹回落（顺序固定）。
     assert list(entries)[-2:] == ["冷门启动", "反弹回落"]
     entry = entries["冷门启动"]
     assert entry.volume == VolumeRange(0, 3_000_000)
