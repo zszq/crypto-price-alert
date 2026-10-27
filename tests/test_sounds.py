@@ -128,7 +128,7 @@ def test_launch_sound_is_the_loudest():
 
 
 def test_frequent_second_level_sounds_are_quieter_than_the_rest():
-    # 秒级异动最常响：音量低于趋势与放量，连续提醒稍响。
+    # 短时异动最常响：音量低于趋势与放量，连续提醒稍响。
     specs = sounds.SOUND_SPECS
     for name in ("short", "long", "streak"):
         assert specs[name].peak_level < specs["trend"].peak_level == specs["trend_continuing"].peak_level

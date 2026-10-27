@@ -230,11 +230,11 @@ def test_higher_priority_sound_interrupts_and_lower_is_skipped(monkeypatch, tmp_
         notifier = ConsoleNotifier(beep=True, colors=False, sound_dir=tmp_path)
         await notifier.send(make_alert())
         await asyncio.sleep(0)
-        # 放量启动打断正在播放的秒级异动，被打断的 afplay 要结束掉。
+        # 放量启动打断正在播放的短时异动，被打断的 afplay 要结束掉。
         await notifier.send(make_launch())
         await asyncio.sleep(0)
         assert calls[0][1].killed
-        # 放量启动正在播放，秒级异动不能打断它。
+        # 放量启动正在播放，短时异动不能打断它。
         await notifier.send(make_alert("ETH_USDT"))
         await asyncio.sleep(0)
         assert [played_sound(call) for call in calls] == ["short", "launch"]

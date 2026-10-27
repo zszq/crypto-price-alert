@@ -59,7 +59,7 @@ from price_alert.notify.sounds import SOUND_LABELS, SOUND_NAMES, SOUND_PRIORITY
 from price_alert.service import run_monitor
 
 LOGGER = logging.getLogger(__name__)
-# 以下是只给开始时间时各回放的时长。秒级异动：覆盖长窗口一个完整周期及前后行情。
+# 以下是只给开始时间时各回放的时长。短时异动：覆盖长窗口一个完整周期及前后行情。
 DEFAULT_REPLAY_MINUTES = 15
 # 趋势以十几分钟到数小时计，要容下一段完整的开始到结束。
 DEFAULT_TREND_REPLAY_HOURS = 3
@@ -82,7 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("run", "启动 Gate.io 全市场实时监控"),
         ("universe", "查看当前满足成交额条件的合约"),
         ("check-config", "校验配置文件"),
-        ("simulate", "使用合成行情验证 ATR 异动提醒"),
+        ("simulate", "使用合成行情验证短时异动提醒"),
         ("replay", "用历史成交回放某个合约，逐秒解释为什么提醒或没有提醒"),
         ("trend-replay", "用历史 1 分钟 K 线回放某个合约的趋势提醒，逐根解释判定结果"),
         ("launch-replay", "用历史 1 分钟 K 线回放某个合约的放量启动提醒，逐分钟解释判定结果"),
@@ -322,7 +322,7 @@ def main() -> None:
             if streak_rule is not None:
                 print(f"  {describe_streak_rule(streak_rule)}")
         else:
-            print("  秒级异动提醒：已关闭")
+            print("  短时异动提醒：已关闭")
         if config.trend.enabled:
             for rule in config.trend.rules():
                 print(f"  {describe_trend_rule(rule)}")

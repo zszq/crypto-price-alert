@@ -19,7 +19,7 @@ class ReversalAlert:
     symbol: str
     # 急动方向（surge 急拉 / drop 急砸），也是提醒之后预期延续的方向。
     direction: Literal["surge", "drop"]
-    # 触发提醒的那笔成交的时间（与秒级异动相同：下一秒第一笔成交结算上一秒）。
+    # 触发提醒的那笔成交的时间（与短时异动相同：下一秒第一笔成交结算上一秒）。
     timestamp: datetime
     # 急动那一秒的 VWAP 与窗口起点的基准价。
     price: float

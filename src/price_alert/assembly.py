@@ -113,14 +113,14 @@ def build_reversal_detector(rule: ReversalRule) -> ReversalDetector:
 
 
 def build_detectors(config: AppConfig) -> list[MonitoredDetector]:
-    """实时监控运行的全部检测器，顺序固定为秒级异动、放量上涨、放量下跌、趋势、冷门启动、反弹回落；
+    """实时监控运行的全部检测器，顺序固定为短时异动、放量上涨、放量下跌、趋势、冷门启动、反弹回落；
     关闭的检测器不创建，不多订阅、不多拉 K 线。"""
     move = config.move
     detectors: list[MonitoredDetector] = []
     if move.enabled:
         detectors.append(
             MonitoredDetector(
-                "ATR 异动",
+                "短时异动",
                 build_detector(move),
                 move.candle_interval,
                 move.warmup_candles,

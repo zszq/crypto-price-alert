@@ -54,7 +54,7 @@ def monitor(detector, rest=None, feed=None, app_config=None, sem=None) -> servic
         detectors = tuple(detector)
     else:
         move = app_config.move
-        entry = MonitoredDetector("ATR 异动", detector, move.candle_interval, move.warmup_candles, ANY_VOLUME)
+        entry = MonitoredDetector("短时异动", detector, move.candle_interval, move.warmup_candles, ANY_VOLUME)
         detectors = (entry,)
     return service._Monitor(
         detectors=detectors,
@@ -305,7 +305,7 @@ def test_warmup_logs_progress_and_failures(monkeypatch, caplog):
     assert "正在从 Gate.io 获取合约列表" in caplog.text
     assert "Gate.io 共 4 个合约，符合条件 3 个" in caplog.text
     assert caplog.text.index("符合条件 3 个") < caplog.text.index("开始为 3 个新合约")
-    assert "开始为 3 个新合约拉取 K 线预热（ATR 异动，并发 8）" in caplog.text
+    assert "开始为 3 个新合约拉取 K 线预热（短时异动，并发 8）" in caplog.text
     # 最后一个完成时由“预热完成”收尾，不再重复报告 3/3。
     assert "K 线预热进度：2/3" in caplog.text
     assert "K 线预热进度：3/3" not in caplog.text
@@ -525,7 +525,7 @@ class RecordingDetector:
 def atr_and_trend(atr, trend, trend_candles: int = 331) -> list[MonitoredDetector]:
     """实时监控的两个检测器，成交额范围相同。"""
     return [
-        MonitoredDetector("ATR 异动", atr, "1m", 50, ANY_VOLUME),
+        MonitoredDetector("短时异动", atr, "1m", 50, ANY_VOLUME),
         MonitoredDetector("K 线趋势", trend, "1m", trend_candles, ANY_VOLUME),
     ]
 
@@ -550,7 +550,7 @@ class IntervalRest(FakeRest):
 def test_detectors_sharing_an_interval_share_one_request_and_keep_their_own_depth():
     atr, trend, other = RecordingDetector("atr"), RecordingDetector("trend"), RecordingDetector("other")
     detectors = [
-        MonitoredDetector("ATR 异动", atr, "1m", 50, ANY_VOLUME),
+        MonitoredDetector("短时异动", atr, "1m", 50, ANY_VOLUME),
         MonitoredDetector("K 线趋势", trend, "1m", 331, ANY_VOLUME),
         MonitoredDetector("其他", other, "5m", 20, ANY_VOLUME),
     ]
@@ -572,7 +572,7 @@ def test_detectors_sharing_an_interval_share_one_request_and_keep_their_own_dept
 def test_each_detector_keeps_its_own_volume_range_and_feed_subscribes_the_union():
     atr, trend = RecordingDetector("atr"), RecordingDetector("trend")
     detectors = [
-        MonitoredDetector("ATR 异动", atr, "1m", 50, VolumeRange(10_000_000)),
+        MonitoredDetector("短时异动", atr, "1m", 50, VolumeRange(10_000_000)),
         MonitoredDetector("K 线趋势", trend, "1m", 331, VolumeRange(10_000_000, 50_000_000)),
     ]
     feed = GateTradeFeed("wss://example.test")
@@ -599,7 +599,7 @@ def test_each_detector_keeps_its_own_volume_range_and_feed_subscribes_the_union(
 def test_refresh_fails_only_when_every_detector_selects_nothing():
     atr, trend = RecordingDetector("atr"), RecordingDetector("trend")
     detectors = [
-        MonitoredDetector("ATR 异动", atr, "1m", 50, VolumeRange(10_000_000)),
+        MonitoredDetector("短时异动", atr, "1m", 50, VolumeRange(10_000_000)),
         MonitoredDetector("K 线趋势", trend, "1m", 331, VolumeRange(30_000_000, 50_000_000)),
     ]
     feed = GateTradeFeed("wss://example.test")
@@ -646,10 +646,10 @@ def test_resync_covers_symbols_stale_in_any_detector():
 
 
 def test_resync_and_warmup_serve_earlier_detectors_first():
-    """放量启动监控全市场，回补要几百次请求：秒级异动与趋势的合约排在前面，不必等它们排完才恢复判定。"""
+    """放量启动监控全市场，回补要几百次请求：短时异动与趋势的合约排在前面，不必等它们排完才恢复判定。"""
     atr, launch = RecordingDetector("atr"), RecordingDetector("launch")
     detectors = [
-        MonitoredDetector("ATR 异动", atr, "1m", 50, ANY_VOLUME),
+        MonitoredDetector("短时异动", atr, "1m", 50, ANY_VOLUME),
         MonitoredDetector("放量启动", launch, "1m", 366, VolumeRange(0)),
     ]
     atr.add_symbol("ZEC_USDT", [], 1e9)
@@ -665,7 +665,7 @@ def test_resync_and_warmup_serve_earlier_detectors_first():
     # 首次预热同理：只进放量合约池的合约排在后面。
     atr, launch = RecordingDetector("atr"), RecordingDetector("launch")
     detectors = [
-        MonitoredDetector("ATR 异动", atr, "1m", 50, ANY_VOLUME),
+        MonitoredDetector("短时异动", atr, "1m", 50, ANY_VOLUME),
         MonitoredDetector("放量启动", launch, "1m", 366, VolumeRange(0)),
     ]
     rest = IntervalRest(
@@ -681,7 +681,7 @@ def test_tiers_follow_volume_floor_not_detector_order():
     """放量启动在列表里排在趋势之前，但合约池最大，只归它的合约仍排在只归趋势的合约之后。"""
     atr, launch, trend = RecordingDetector("atr"), RecordingDetector("launch"), RecordingDetector("trend")
     detectors = [
-        MonitoredDetector("ATR 异动", atr, "1m", 50, ANY_VOLUME),
+        MonitoredDetector("短时异动", atr, "1m", 50, ANY_VOLUME),
         MonitoredDetector("放量启动", launch, "1m", 366, VolumeRange(1_000_000)),
         MonitoredDetector("K 线趋势", trend, "1m", 331, VolumeRange(3_000_000)),
     ]
@@ -696,7 +696,7 @@ def test_tiers_follow_volume_floor_not_detector_order():
 
 
 def test_earlier_detectors_are_subscribed_before_later_ones_finish_warming():
-    """首次初始化时，秒级异动的合约预热完就订阅，不必等放量启动的几百个合约。"""
+    """首次初始化时，短时异动的合约预热完就订阅，不必等放量启动的几百个合约。"""
 
     class RecordingFeed:
         def __init__(self) -> None:
@@ -709,7 +709,7 @@ def test_earlier_detectors_are_subscribed_before_later_ones_finish_warming():
 
     atr, launch = RecordingDetector("atr"), RecordingDetector("launch")
     detectors = [
-        MonitoredDetector("ATR 异动", atr, "1m", 50, ANY_VOLUME),
+        MonitoredDetector("短时异动", atr, "1m", 50, ANY_VOLUME),
         MonitoredDetector("放量启动", launch, "1m", 366, VolumeRange(0)),
     ]
     rest = IntervalRest(
@@ -813,11 +813,11 @@ def test_detector_faults_throttle_logs_and_repairs_and_report_counts(caplog):
     # 同一检测器同一合约 60 秒内只修复一次；不同合约、不同检测器各自计时。
     assert [fail("K 线趋势", "BTC_USDT", t) for t in (0, 10, 59)] == [True, False, False]
     assert fail("K 线趋势", "ETH_USDT", 20) is True
-    assert fail("ATR 异动", "BTC_USDT", 30) is True
+    assert fail("短时异动", "BTC_USDT", 30) is True
     assert fail("K 线趋势", "BTC_USDT", 60) is True
-    # 日志按检测器限流：K 线趋势在 0、60 秒各一次，ATR 异动一次。
+    # 日志按检测器限流：K 线趋势在 0、60 秒各一次，短时异动一次。
     assert caplog.text.count("K 线趋势检测器处理") == 2
-    assert caplog.text.count("ATR 异动检测器处理") == 1
+    assert caplog.text.count("短时异动检测器处理") == 1
 
-    assert faults.summary() == "，K 线趋势检测器出错 5 次，ATR 异动检测器出错 1 次"
+    assert faults.summary() == "，K 线趋势检测器出错 5 次，短时异动检测器出错 1 次"
     assert faults.summary() == ""

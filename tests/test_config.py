@@ -197,7 +197,7 @@ def test_rejects_long_window_not_longer_than_short_window():
         {"move": {"lookback_seconds": 30}},
         {"move": {"cooldown_seconds": 30}},
         {"alerts": {"cooldown_seconds": 30}},
-        # 秒级异动段由 indicator 改名为 move，合约池门槛从 gate 移到 move。
+        # 短时异动段由 indicator 改名为 move，合约池门槛从 gate 移到 move。
         {"indicator": {"atr_period": 14}},
         {"gate": {"min_volume_24h_quote": 8_000_000}},
     ],

@@ -74,9 +74,9 @@ def test_counter_candles_must_be_fewer_than_candles():
 
 def test_disabled_trend_is_not_built_into_monitor():
     names = [entry.name for entry in build_detectors(AppConfig())]
-    assert names == ["ATR 异动", "放量上涨", "K 线趋势", "冷门启动", "反弹回落"]
+    assert names == ["短时异动", "放量上涨", "K 线趋势", "冷门启动", "反弹回落"]
     disabled = AppConfig.model_validate({"trend": {"enabled": False}})
-    assert [entry.name for entry in build_detectors(disabled)] == ["ATR 异动", "放量上涨", "冷门启动", "反弹回落"]
+    assert [entry.name for entry in build_detectors(disabled)] == ["短时异动", "放量上涨", "冷门启动", "反弹回落"]
 
 
 def test_trend_volume_range_is_configured_separately_from_atr():
@@ -94,7 +94,7 @@ def test_trend_volume_range_is_configured_separately_from_atr():
 
     assert atr.volume == VolumeRange(8_000_000)
     assert trend.volume == VolumeRange(3_000_000, 50_000_000)
-    # 上限默认不设，下限默认与秒级异动的代码默认值一致。
+    # 上限默认不设，下限默认与短时异动的代码默认值一致。
     assert TrendConfig().max_volume_24h_quote is None
     assert TrendConfig().min_volume_24h_quote == AppConfig().move.min_volume_24h_quote
 

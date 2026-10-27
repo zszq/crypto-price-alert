@@ -2,13 +2,13 @@
 
 音色区分大类、敲击方式区分小类，听到就能分辨是哪一类提醒：
 
-- 秒级异动（短窗口、长窗口、连续提醒）：木琴音色，短促。短窗口敲一下，长窗口音更低、余音更长，
+- 短时异动（短窗口、长窗口、连续提醒）：木琴音色，短促。短窗口敲一下，长窗口音更低、余音更长，
   连续提醒是短窗口的音连敲两下。数量最多，音量最小。
 - 趋势（新成立、延续）：清亮但不刺耳的钟音。新成立敲一下，延续连敲两下（与连续提醒一样，“两下”表示延续）。
 - 放量启动：明亮的号角音色快速上行琶音（大三和弦），音量最大，最醒目，但收得干脆。
 - 冷门启动：簧管音色（只有奇次谐波，比号角空、闷）三个音一步一步上行，时长与放量启动相同、音量稍小：
   同样醒目，但音色和节奏都与放量启动不同，不会听混。
-- 反弹回落：拨弦音色（衰减快、干净利落）先落后起三个音，音高的「拐弯」对应走势的反转；比秒级异动响，比两种启动轻。
+- 反弹回落：拨弦音色（衰减快、干净利落）先落后起三个音，音高的「拐弯」对应走势的反转；比短时异动响，比两种启动轻。
 """
 
 from __future__ import annotations
@@ -45,8 +45,8 @@ SOUND_NAMES: tuple[SoundName, ...] = (
     "launch",
 )
 SOUND_LABELS: dict[SoundName, str] = {
-    "short": "秒级异动·短窗口",
-    "long": "秒级异动·长窗口",
+    "short": "短时异动·短窗口",
+    "long": "短时异动·长窗口",
     "streak": "连续提醒",
     "trend": "趋势提醒",
     "trend_continuing": "趋势提醒·延续",
@@ -104,9 +104,9 @@ class _SoundSpec:
     fade_out_seconds: float = FADE_OUT_SECONDS
 
 
-# 木琴：第二分音约 3.9 倍、衰减很快，短促不拖尾，适合最常响的秒级异动。
+# 木琴：第二分音约 3.9 倍、衰减很快，短促不拖尾，适合最常响的短时异动。
 WOOD = (_Partial(1.0, 1.0, 0.16), _Partial(3.93, 0.30, 0.035), _Partial(9.2, 0.08, 0.012))
-# 秒级异动的音量：最常响，压低到其他提醒以下；连续提醒稍响一点。
+# 短时异动的音量：最常响，压低到其他提醒以下；连续提醒稍响一点。
 SECOND_LEVEL_PEAK = 0.5
 STREAK_PEAK = 0.6
 # 钟音：八度泛音和 2.76 倍分音给出清亮质感；最高分音控制在 4kHz 以内（5~10kHz 的分音刺耳），只留基音又发闷。
@@ -144,7 +144,7 @@ DOUBLE_STRIKE_GAP = 0.11
 
 SOUND_SPECS: dict[SoundName, _SoundSpec] = {
     "short": _SoundSpec(WOOD, (_Strike(659.0),), 0.5, SECOND_LEVEL_PEAK),
-    # 长窗口音更低、余音更长：窗口越长音越沉，同一音色仍能一听就归到秒级异动。
+    # 长窗口音更低、余音更长：窗口越长音越沉，同一音色仍能一听就归到短时异动。
     "long": _SoundSpec(WOOD, (_Strike(440.0, sustain=1.5),), 0.7, SECOND_LEVEL_PEAK),
     "streak": _SoundSpec(WOOD, (_Strike(659.0), _Strike(659.0, DOUBLE_STRIKE_GAP)), 0.6, STREAK_PEAK),
     "trend": _SoundSpec(
@@ -174,7 +174,7 @@ SOUND_SPECS: dict[SoundName, _SoundSpec] = {
         peak_level=0.95,
         fade_out_seconds=LONG_FADE_OUT_SECONDS,
     ),
-    # E6-B5-E6 先落后起：音高的「拐弯」对应走势的反转，比秒级异动响、比两种启动轻。
+    # E6-B5-E6 先落后起：音高的「拐弯」对应走势的反转，比短时异动响、比两种启动轻。
     "reversal": _SoundSpec(
         PLUCK,
         (_Strike(1319.0), _Strike(988.0, TURN_GAP), _Strike(1319.0, TURN_GAP * 2, sustain=1.3)),

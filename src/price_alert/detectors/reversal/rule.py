@@ -10,7 +10,7 @@ BURST_SECONDS = 60
 BURST_BASE_SECONDS = 3600
 # 全部成交都落在最近 1 分钟时倍数最大，等于两个长度之比；门槛不小于它就永远不会提醒。
 MAX_BURST_RATIO = BURST_BASE_SECONDS / BURST_SECONDS
-# ATR 口径与秒级异动的代码默认值相同（研究用的就是这一套），不单独开放配置。
+# ATR 口径与短时异动的代码默认值相同（研究用的就是这一套），不单独开放配置。
 ATR_PERIOD = 14
 CANDLE_INTERVAL = "1m"
 CANDLE_INTERVAL_SECONDS = 60
@@ -22,7 +22,7 @@ EXTREME_MINUTES = 1440
 
 @dataclass(frozen=True, slots=True)
 class ReversalRule:
-    # 急动窗口：与秒级异动相同的判定（秒级 VWAP、基准桶、ATR、连续确认、空档复核、冷却）。
+    # 急动窗口：与短时异动相同的判定（秒级 VWAP、基准桶、ATR、连续确认、空档复核、冷却）。
     lookback_seconds: int
     min_change_percent: float
     trigger_atr_multiple: float

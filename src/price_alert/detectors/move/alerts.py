@@ -1,4 +1,4 @@
-"""秒级 ATR 异动提醒的数据模型与文本格式。"""
+"""短时异动提醒的数据模型与文本格式。"""
 
 from __future__ import annotations
 

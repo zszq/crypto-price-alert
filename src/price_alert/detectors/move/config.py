@@ -1,4 +1,4 @@
-"""秒级 ATR 异动的配置：合约池门槛、共用的 K 线/ATR 参数、短/长观察窗口与连续提醒。"""
+"""短时异动的配置：合约池门槛、共用的 K 线/ATR 参数、短/长观察窗口与连续提醒。"""
 
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ class StreakConfig(BaseModel):
 
 
 class MoveConfig(BaseModel):
-    """秒级 ATR 异动：合约池门槛、共用的 K 线/ATR 参数与各观察窗口。"""
+    """短时异动：合约池门槛、共用的 K 线/ATR 参数与各观察窗口。"""
 
     model_config = ConfigDict(extra="forbid")
 

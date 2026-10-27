@@ -57,14 +57,14 @@ DROP_CHANGE_COLOR = Fore.LIGHTRED_EX
 TRADE_URL_COLOR = Fore.LIGHTBLACK_EX
 # 长窗口的窗口长度（3分钟）：亮青色。
 LONG_WINDOW_COLOR = Fore.LIGHTCYAN_EX
-# 趋势提醒的标签（[趋势下跌] 等）：亮紫色，与秒级异动提醒一眼区分。
+# 趋势提醒的标签（[趋势下跌] 等）：亮紫色，与短时异动提醒一眼区分。
 TREND_LABEL_COLOR = Fore.LIGHTMAGENTA_EX
 # 放量启动提醒的标签（[放量上涨] 等）：金黄色（标准黄），偏橙，与淡黄的交易对分得开，不带涨跌含义。
 LAUNCH_LABEL_COLOR = Fore.YELLOW
 # 冷门启动提醒的标签：亮蓝色，与放量启动分开，准确率较低的这一类一眼就能认出。
 DORMANT_LABEL_COLOR = Fore.LIGHTBLUE_EX
 # 反弹回落提醒的标签（[下跌反弹]/[冲高回落]）：亮白色，不与方向色、交易对、其他标签撞色；
-# 正文仍按急动方向着色，靠标签与秒级异动区分。
+# 正文仍按急动方向着色，靠标签与短时异动区分。
 REVERSAL_LABEL_COLOR = Fore.LIGHTWHITE_EX
 
 
@@ -120,7 +120,7 @@ def colorize_alert(alert: Alert, text: str, enabled: bool = True) -> str:
             label_color = DORMANT_LABEL_COLOR
         text = text.replace(label, f"{label_color}{label}{Style.RESET_ALL}{color}", 1)
     elif isinstance(alert, StreakAlert):
-        # 连续提醒是秒级异动的延伸，标签沿用方向色，靠文字区分即可。
+        # 连续提醒是短时异动的延伸，标签沿用方向色，靠文字区分即可。
         pass
     elif alert.window == "long":
         # 只高亮长窗口，短窗口保持正文色。窗口字样带“秒”或“分钟”，按首次出现替换不会误伤。
@@ -201,7 +201,7 @@ class ConsoleNotifier:
     def _play(self, name: sounds.SoundName) -> bool:
         """返回这次是否开始了新的播放；被跳过、并入补响或文件不可用时返回 False。"""
         # 放到后台播放：等待播完会让集中异动时的文字提醒排队延迟。正在播放时只让更重要的提醒打断，
-        # 同级或更低的跳过：一波异动只响一次，又不会因秒级异动正在响而漏掉放量启动的声音。
+        # 同级或更低的跳过：一波异动只响一次，又不会因短时异动正在响而漏掉放量启动的声音。
         priority = sounds.SOUND_PRIORITY[name]
         now = asyncio.get_running_loop().time()
         if self._sound_task is not None and not self._sound_task.done():
