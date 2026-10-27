@@ -1,5 +1,5 @@
 # 交易用的放量启动提醒（S5）：只跑放量启动，只做多。
-# 与日常监控的 config/default/ 分开：日常监控调参不会改变交易信号，交易信号也不会让日常提醒变多变少。
+# 与日常监控的 config/default/ 分开，两边调参互不影响。
 # 两个实例可以同时运行（进程锁按配置文件区分）：
 #   .\.venv\Scripts\python.exe -m price_alert.cli run --config config/launch-trade.yaml
 # 或双击 start-launch-trade.bat。键与取值范围同 config/default/ 下的同名段，那里有每一项的完整说明。
@@ -15,18 +15,16 @@
 # - 最长持有 18 小时，到时按收盘价平仓。
 # - 仓位：最多同时持 5 仓，每仓本金的 1/5、1 倍杠杆；满仓时新提醒放弃，同一个币已有持仓时不再开。
 
+# 其他提醒由日常监控负责，这里关掉，免得重复订阅和重复提醒。
 move:
-  # 秒级异动由日常监控负责，这里关掉，免得重复订阅和重复提醒。
   enabled: false
 
 trend:
   enabled: false
 
-# 冷门启动由日常监控负责，这里关掉。
 dormant:
   enabled: false
 
-# 反弹回落由日常监控负责，这里关掉。
 reversal:
   enabled: false
 

@@ -1,8 +1,7 @@
 """放量启动的判定规则：纯函数，实时检测、回放与测试共用。
 
-思路取自量化里常见的「相对成交量（RVOL）+ 价格突破」：最近一小段时间的成交额相对自身基准期显著放大，
-同时价格朝一个方向明显移动、并越过基准期的高点（或低点），才算从沉寂中启动。只看量会被对倒、大单
-误导，只看价会被冷门币的单笔插针误导，两者同时出现才说明有真金白银推动价格离开原来的区间。
+思路取自「相对成交量（RVOL）+ 价格突破」：最近一小段的成交额相对基准期显著放大，同时价格明显移动并越过
+基准期的高点（或低点），才算从沉寂中启动。只看量会被对倒误导，只看价会被单笔插针误导。
 """
 
 from __future__ import annotations
@@ -38,8 +37,8 @@ CONDITION_LABELS: dict[Condition, str] = {
 
 @dataclass(frozen=True, slots=True)
 class LaunchRule:
-    """一个方向的全部门槛。放量上涨与放量下跌各用一份、由两个检测器分别判定：放量下跌之后常有恐慌盘回补，
-    同样的门槛对两个方向的效果不同，回测选出的窗口、基准期、成交额门槛也不一样，所以全部分开设置。"""
+    """一个方向的全部门槛。放量上涨与放量下跌各用一份：放量下跌之后常有恐慌盘回补，
+    同样的门槛对两个方向效果不同，回测选出的参数也不一样。"""
 
     direction: Direction
     window_minutes: int
@@ -85,8 +84,7 @@ class LaunchMetrics:
     window_quote: float
     # 基准期内与窗口等长的平均成交额。
     baseline_quote: float
-    # 量比 = 窗口成交额 ÷ 基准平均，即最近一个窗口（默认 5 分钟）的成交额是它平时同样长度成交额的多少倍；
-    # 基准期完全无成交时为 None，视为满足。
+    # 量比 = 窗口成交额 ÷ 基准平均；基准期完全无成交时为 None，视为满足。
     volume_ratio: float | None
     # 基准期最高价（上涨）或最低价（下跌）：收盘越过它才算离开原来的区间。
     breakout_price: float
@@ -102,8 +100,7 @@ class LaunchMetrics:
 
 
 def still_launching(metrics: LaunchMetrics, price: float, rule: LaunchRule) -> bool:
-    """用更新的成交价按同样的涨跌幅与突破门槛复核：空档之后才结算的分钟，收盘价已经过期，
-    价格已经回落的不应再带着旧价格提醒。"""
+    """用更新的成交价按同样的涨跌幅与突破门槛复核：空档后才结算的分钟收盘价已过期，价格已回落的不应再提醒。"""
     if (price / metrics.start_price - 1) * 100 * rule.sign < rule.min_change_percent:
         return False
     return not rule.require_breakout or breaks_out(metrics.direction, price, metrics.breakout_price)

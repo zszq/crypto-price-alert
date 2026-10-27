@@ -69,9 +69,8 @@ class StreakConfig(BaseModel):
     enabled: bool = True
     # 实际日志中同向连发 3 条的几乎都是累计 5% 以上的单边行情，2 条则大量是一次插针的余波。
     min_alerts: int = Field(default=3, ge=2, le=10)
-    # 相邻同向提醒至少隔一个短窗口冷却，这里只配冷却之外还能容忍多少秒（重新确认、行情短暂停顿）。
-    # 按冷却加容差而不是写死间隔上限：调短窗口冷却时不会让连续提醒失效或校验失败。
-    # 实际日志里冷却 30 秒时，一段持续行情的间隔在 30~60 秒之间。
+    # 相邻同向提醒至少隔一个短窗口冷却，这里只配冷却之外的容差（重新确认、短暂停顿）；按冷却加容差，
+    # 调短窗口冷却时连续提醒不会失效。实际日志里冷却 30 秒时，持续行情的间隔在 30~60 秒之间。
     gap_tolerance_seconds: int = Field(default=30, ge=1, le=3600)
 
 
@@ -82,7 +81,7 @@ class MoveConfig(BaseModel):
 
     # 只跑放量启动（例如给交易单独开一个实例）时关掉，不必为用不到的合约订阅成交、预热 K 线。
     enabled: bool = True
-    # 合约池门槛与趋势、放量启动一样放在本段：它只决定这个检测器监控哪些合约，与交易所连接无关。
+    # 合约池门槛与其他检测器一样放在本段：它只决定本检测器监控哪些合约，与交易所连接无关。
     min_volume_24h_quote: float = Field(default=10_000_000, gt=0)
     candle_interval: Literal["1m", "5m", "15m"] = "1m"
     atr_period: int = Field(default=14, ge=2, le=200)

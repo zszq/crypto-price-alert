@@ -17,10 +17,9 @@ class GateConfig(BaseModel):
     universe_refresh_seconds: int = Field(default=600, ge=60, le=86400)
     rest_timeout_seconds: float = Field(default=15.0, gt=0, le=60)
     rest_retries: int = Field(default=3, ge=1, le=10)
-    # 所有 REST 出口共用的长期平均速率上限。合约池再大、重连再频繁，都只是拉长一轮预热/回补的耗时。
+    # 所有 REST 出口共用的平均速率上限：合约池再大、重连再频繁，都只是拉长预热/回补的耗时。
     rest_rate_limit_per_second: float = Field(default=10.0, gt=0, le=1000)
-    # 攒满后可一次放行的瞬时额度：让启动预热不必逐个等令牌。它是任意一刻的绝对上限，
-    # 不应超过交易所单个窗口的配额；长期平均速率仍由上面的值决定。
+    # 攒满后可一次放行的瞬时额度，让启动预热不必逐个等令牌；不应超过交易所单个窗口的配额。
     rest_rate_limit_burst: int = Field(default=20, ge=1, le=1000)
     warmup_concurrency: int = Field(default=8, ge=1, le=32)
     subscription_chunk_size: int = Field(default=100, ge=1, le=500)

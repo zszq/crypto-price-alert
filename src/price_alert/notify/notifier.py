@@ -38,13 +38,11 @@ except ImportError:  # 只有 Windows 有 winsound
 
 LOGGER = logging.getLogger(__name__)
 MACOS_SOUND_PLAYER = "/usr/bin/afplay"
-# winsound 按音效时长判断是否播完，但声音实际要晚一些才出来（音频设备唤醒、缓冲），
-# 不多等一会儿，紧接着的下一个 PlaySound 会切掉上一个的尾音。
+# winsound 按音效时长判断是否播完，但声音要晚一些才出来（设备唤醒、缓冲），不多等会被下一个 PlaySound 切掉尾音。
 WINDOWS_PLAYBACK_MARGIN_SECONDS = 0.3
-# 必须完整播放的音效开播后这么久以内到达的同类提醒，由正在播放的这一声代表，不再补响：
-# 同一分钟结算的一批放量启动几乎同时到达，听起来就是一起响的，补响反而像重复。
+# 必须完整播放的音效开播后这么久以内到达的同类提醒不再补响：同一分钟结算的一批放量启动几乎同时到达，补响像重复。
 MUST_PLAY_MERGE_SECONDS = 0.3
-# 提示音文件重新生成失败的警告最短间隔：失败通常是持续性的（目录不可写），每条提醒都记一次会刷屏。
+# 提示音文件重新生成失败的警告间隔：失败通常是持续的（目录不可写），每条提醒都记会刷屏。
 SOUND_REGENERATE_LOG_INTERVAL_SECONDS = 60.0
 # 控制台颜色只用标准 16 色，各终端都能显示。
 # 正文：急涨绿色、急跌红色。
@@ -61,13 +59,12 @@ TRADE_URL_COLOR = Fore.LIGHTBLACK_EX
 LONG_WINDOW_COLOR = Fore.LIGHTCYAN_EX
 # 趋势提醒的标签（[趋势下跌] 等）：亮紫色，与秒级异动提醒一眼区分。
 TREND_LABEL_COLOR = Fore.LIGHTMAGENTA_EX
-# 放量启动提醒的标签（[放量上涨] 等）：金黄色（标准黄）。偏橙，与淡黄的交易对分得开，
-# 也不带涨跌含义，两个方向共用。
+# 放量启动提醒的标签（[放量上涨] 等）：金黄色（标准黄），偏橙，与淡黄的交易对分得开，不带涨跌含义。
 LAUNCH_LABEL_COLOR = Fore.YELLOW
-# 冷门启动提醒的标签（[冷门启动]）：亮蓝色。与放量启动的金黄色分开：冷门启动准确率较低，一眼就能看出是哪一类。
+# 冷门启动提醒的标签：亮蓝色，与放量启动分开，准确率较低的这一类一眼就能认出。
 DORMANT_LABEL_COLOR = Fore.LIGHTBLUE_EX
-# 反弹回落提醒的标签（[下跌反弹]/[冲高回落]）：亮白色，不和方向色、交易对、其他标签撞色；
-# 正文仍按急动方向着绿/红，标签单独亮起来就能和同样是秒级急动的秒级异动分开。
+# 反弹回落提醒的标签（[下跌反弹]/[冲高回落]）：亮白色，不与方向色、交易对、其他标签撞色；
+# 正文仍按急动方向着色，靠标签与秒级异动区分。
 REVERSAL_LABEL_COLOR = Fore.LIGHTWHITE_EX
 
 
@@ -123,7 +120,7 @@ def colorize_alert(alert: Alert, text: str, enabled: bool = True) -> str:
             label_color = DORMANT_LABEL_COLOR
         text = text.replace(label, f"{label_color}{label}{Style.RESET_ALL}{color}", 1)
     elif isinstance(alert, StreakAlert):
-        # 连续提醒的标签沿用方向色：它以「急涨提醒/急跌提醒」开头，是同一类提醒的延伸，靠标签文字区分即可。
+        # 连续提醒是秒级异动的延伸，标签沿用方向色，靠文字区分即可。
         pass
     elif alert.window == "long":
         # 只高亮长窗口，短窗口保持正文色。窗口字样带“秒”或“分钟”，按首次出现替换不会误伤。
@@ -150,9 +147,8 @@ class ConsoleNotifier:
             just_fix_windows_console()
 
     def _prepare_sounds(self) -> dict[sounds.SoundName, Path] | None:
-        # macOS 终端通常会忽略或禁用 ASCII 响铃，Windows 的响铃声由终端和系统设置决定，
-        # 两边听到的不一样，也分不出提醒类型；所以这两个平台都播放同一份合成音效。
-        # 其他平台没有可依赖的播放器，仍用终端响铃。
+        # macOS 终端常禁用响铃，Windows 的响铃声取决于终端与系统设置，也分不出提醒类型，
+        # 所以这两个平台播放同一份合成音效；其他平台没有可依赖的播放器，仍用终端响铃。
         if not self._macos and not (sys.platform == "win32" and winsound is not None):
             return None
         try:
@@ -163,8 +159,7 @@ class ConsoleNotifier:
 
     async def send(self, alert: Alert) -> None:
         text = colorize_alert(alert, format_alert(alert), self.colors)
-        # 完整网址独占一行，便于终端自动识别链接，不支持点击时也能直接复制。
-        # 颜色转义只包在整行首尾、不插入网址中间，终端按显示文本识别链接，不受影响。
+        # 网址独占一行，便于终端识别链接或直接复制；颜色转义只包在整行首尾，不插进网址中间。
         url_line = f"交易地址：{futures_trade_url(alert.symbol)}"
         if self.colors:
             url_line = f"{TRADE_URL_COLOR}{url_line}{Style.RESET_ALL}"
@@ -177,8 +172,7 @@ class ConsoleNotifier:
         """试听用：播放一种音效并等它播完；当前平台没有内置音效或音效文件不可用时返回 False。"""
         if self._sound_files is None:
             return False
-        # 必须以这次是否真的开播为准：文件重新生成失败时没有新任务，
-        # 只看 _sound_task 会等到上一个早已结束的任务，误报为播放成功。
+        # 以这次是否真的开播为准：文件重新生成失败时没有新任务，只看 _sound_task 会误报成功。
         if not self._play(name):
             return False
         assert self._sound_task is not None
@@ -189,8 +183,7 @@ class ConsoleNotifier:
         """返回可播放的音效文件；文件在运行中被删掉时重新生成，生成失败返回 None。"""
         assert self._sound_files is not None
         path = self._sound_files[name]
-        # 每次播放前都检查：只在启动时生成一次的话，文件被清理工具删掉后 winsound 静默不出声，
-        # 日志里也没有任何痕迹，看起来就是“跑着跑着不响了”。一次 stat 的开销可以忽略。
+        # 每次播放前都检查：文件被清理工具删掉后 winsound 静默不出声、日志也没有痕迹。一次 stat 开销可忽略。
         if path.exists():
             return path
         try:
@@ -207,9 +200,8 @@ class ConsoleNotifier:
 
     def _play(self, name: sounds.SoundName) -> bool:
         """返回这次是否开始了新的播放；被跳过、并入补响或文件不可用时返回 False。"""
-        # 音效不到 1 秒，但等待播完会让集中异动时的文字提醒逐条排队延迟，所以放到后台。
-        # 正在播放时只让更重要的提醒打断它，同级或更低的跳过：一波异动只响一次，
-        # 又不会因为秒级异动正在响而漏掉放量启动的声音。
+        # 放到后台播放：等待播完会让集中异动时的文字提醒排队延迟。正在播放时只让更重要的提醒打断，
+        # 同级或更低的跳过：一波异动只响一次，又不会因秒级异动正在响而漏掉放量启动的声音。
         priority = sounds.SOUND_PRIORITY[name]
         now = asyncio.get_running_loop().time()
         if self._sound_task is not None and not self._sound_task.done():
@@ -259,8 +251,7 @@ class ConsoleNotifier:
         try:
             return_code = await process.wait()
         except asyncio.CancelledError:
-            # 被更高优先级的提醒打断或退出时会取消任务；结束并回收子进程，
-            # 既让声音立即停下，也避免 afplay 脱离事件循环后成为孤儿进程。
+            # 被打断或退出时取消任务：结束并回收子进程，让声音立即停下，也不留下孤儿进程。
             with contextlib.suppress(ProcessLookupError):
                 process.kill()
             await process.wait()
@@ -277,7 +268,7 @@ class ConsoleNotifier:
         except RuntimeError as exc:
             LOGGER.warning("Windows 提示音播放失败：%s", exc)
             return
-        # winsound 没有播放结束的通知，按音效时长加出声延迟等待，任务存活期间即视为正在播放，供优先级判断。
+        # winsound 没有播放结束通知，按时长加出声延迟等待，任务存活期间视为正在播放，供优先级判断。
         await asyncio.sleep(duration + WINDOWS_PLAYBACK_MARGIN_SECONDS)
 
 

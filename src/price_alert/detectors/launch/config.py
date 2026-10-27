@@ -8,26 +8,23 @@ from price_alert.detectors.launch.rule import Direction, LaunchRule
 
 
 class LaunchSideConfig(BaseModel):
-    """一个方向的放量启动配置。两个方向分别是 LaunchRiseConfig、LaunchFallConfig，只有 enabled 的默认值不同，
-    其余默认值相同：没有特别设置时，下跌与上涨用同一套门槛。"""
+    """一个方向的放量启动配置。LaunchRiseConfig、LaunchFallConfig 只有 enabled 的默认值不同。"""
 
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
-    # 24 小时成交额不足 100 万的币，提醒后 30 分钟的成交额还不如提醒窗口本身，多是没人跟进的假启动；
-    # 下限定在 100 万而不更高，是因为启动中的币成交额涨得很快，多数第一波刚过就会入池，
-    # 6.6 天回测中报到的大行情没有减少；再提高就开始漏掉之后大涨的提醒。
+    # 24 小时成交额不足 100 万的币提醒后多半没人跟进；不再提高，是因为启动中的币成交额涨得快、
+    # 多数第一波刚过就会入池，再提高就开始漏掉之后大涨的提醒（6.6 天回测）。
     min_volume_24h_quote: float = Field(default=1_000_000, ge=0)
     max_volume_24h_quote: float | None = Field(default=None, gt=0)
     window_minutes: int = Field(default=5, ge=1, le=60)
     # 基准期加窗口不超过 1500 分钟，预热一次请求就能取完（Gate 单次上限 2000 根）。
     baseline_minutes: int = Field(default=360, ge=30, le=1440)
-    # 量比：最近一个窗口（默认 5 分钟）的成交额，是它平时同样长度成交额的多少倍；
-    # 「平时」取基准期的均值，按相对放大衡量，不必给成交额悬殊的各个币分别定门槛。
-    # 半年回测中从 5 降到 3，多报到的都是基准期本来就活跃的币，冷门币已由窗口成交额门槛挡住，假启动不增反降。
+    # 量比：窗口成交额是基准期同长度均值的多少倍，按相对放大衡量，不必按币分别定门槛。
+    # 半年回测中从 5 降到 3，多报的都是基准期本就活跃的币，假启动不增反降。
     min_volume_ratio: float = Field(default=3.0, gt=1, le=1000)
-    # 拉升后成交随即冷清的假启动几乎都出自窗口成交额只有几万的冷门币；回测中门槛提到 10 万，
-    # 与「拉升后再观察几分钟成交」去掉的假启动相当，却不必延迟提醒，大行情也一段不漏。
+    # 拉升后成交随即冷清的假启动几乎都是窗口成交额只有几万的冷门币；提到 10 万的效果与
+    # 「拉升后再观察几分钟成交」相当，却不必延迟提醒，大行情也一段不漏。
     min_window_quote: float = Field(default=100_000, ge=0)
     min_change_percent: float = Field(default=3.0, gt=0, le=100)
     require_breakout: bool = True
@@ -86,8 +83,8 @@ class LaunchConfig(BaseModel):
 
     def configured(self) -> list[tuple[Direction, LaunchSideConfig]]:
         """两个方向（含已关闭的），上涨在前（与 YAML 顺序一致）。"""
-        # YAML 键用 rise/fall 与「上涨/下跌」对应；方向值仍是 surge/drop，提醒的 JSONL 字段与交易程序都按它读。
-        # 键与方向值的对应只写在这里，check-config 等处都从这里取。
+        # YAML 键 rise/fall 对应「上涨/下跌」；方向值仍是 surge/drop，JSONL 字段与交易程序都按它读。
+        # 键与方向值的对应只写在这里。
         return [("surge", self.rise), ("drop", self.fall)]
 
     def sides(self) -> list[tuple[Direction, LaunchSideConfig]]:

@@ -1,14 +1,13 @@
 """放量启动检测器：由实时成交聚合带成交额的 1 分钟 K 线，每分钟收盘判定一次。
 
-一个检测器只判定 rule.direction 一个方向：放量上涨、放量下跌是两个实例，参数、合约池与提醒记录互不影响。
-判定见 rule.evaluate_launch。重复提醒按（合约, 方向）记录上一次提醒：
-- 距上次提醒不足 cooldown_minutes 不再提醒，同一段放量在窗口滑过期间不会每分钟报一次；
+一个检测器只判定 rule.direction 一个方向，放量上涨、放量下跌是两个互不影响的实例。判定见 rule.evaluate_launch。
+重复提醒按（合约, 方向）记录上一次提醒：
+- 距上次提醒不足 cooldown_minutes 不再提醒，窗口滑过期间不会每分钟报一次；
 - 冷却过后，价格还要比上次提醒价再推进 realert_step_percent 才报下一波，原地放量震荡不重复提醒；
-- 上次提醒已超过一个基准期，它的放量和高点都已移出基准期，再次满足条件就是新的启动，从第 1 波重新计数；
-- 只因涨跌幅超过上限（插针）而不提醒的分钟也按提醒记录（波次不变），否则窗口滑过插针、涨幅回到区间内后会在高位补报。
+- 上次提醒已超过一个基准期，再次满足条件就是新的启动，从第 1 波计数；
+- 只因插针（涨跌幅超上限）不提醒的分钟也按提醒记录（波次不变），否则窗口滑过插针后会在高位补报。
 
-K 线聚合、空分钟补平线、断线回补与服务约定的接口都在 common.minute_bars.MinuteBarDetector，这里只写每分钟的判定。
-没有合约面值的合约无法把张数换算成成交额，量比无从谈起，保留在池里但不聚合、不判定。
+K 线聚合、补平线、断线回补都在 MinuteBarDetector。没有合约面值的合约换算不出成交额，保留在池里但不判定。
 """
 
 from __future__ import annotations
@@ -116,8 +115,8 @@ class LaunchDetector(MinuteBarDetector[MinuteState, LaunchAlert]):
         return [] if alert is None else [alert]
 
     def _record_overshoot(self, symbol: str, metrics: LaunchMetrics, closed_at: datetime) -> bool:
-        """其他条件都满足、只是涨跌幅超过上限：不提醒，但当作这段行情已经启动，返回是否写入了提醒记录。
-        之后要过冷却并比插针收盘价再推进一截才提醒；否则几分钟后窗口滑过插针，涨幅回到区间内，会在插针的高位补报一条。"""
+        """其他条件都满足、只是涨跌幅超过上限：不提醒，但当作行情已启动，返回是否写入了提醒记录。
+        之后要过冷却并比插针收盘价再推进才提醒，免得窗口滑过插针后在高位补报。"""
         # 与真提醒走同一套冷却与再推进判断：真提醒也会被拦下的插针不改写记录，免得拉低下一波的门槛。
         outcome, wave = self._repeat_outcome(symbol, metrics, closed_at)
         if outcome is not LaunchOutcome.ALERT:

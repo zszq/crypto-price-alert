@@ -1,8 +1,7 @@
 """由实时成交聚合 1 分钟 K 线、每分钟收盘判定一次的检测器骨架，K 线趋势、放量启动、冷门启动共用。
 
 这里只管 K 线：成交聚合、空分钟补平线、断线失效与 REST 回补，以及服务约定的合约增删接口；
-每根 1 分钟 K 线收盘后怎么判定由子类的 _evaluate 决定。三者原先各写一份，回补合并、补平线这类细节
-改一处漏两处就会出现「同一段断线三个检测器结果不一样」，所以收在一处。
+收盘后怎么判定由子类的 _evaluate 决定。收在一处，免得回补合并、补平线这类细节三处改得不一致。
 
 - 下一分钟第一笔成交到达时才结算上一分钟；中间无人成交的分钟按上一收盘价补平线，与 Gate 的 K 线口径一致。
 - 补出的多根 K 线逐根追加、逐根判定：判定某一分钟时，看不到它之后才收盘的 K 线。
@@ -58,7 +57,7 @@ class MinuteState:
     quanto_multiplier: float | None = None
     live: LiveMinute | None = None
     last_tick_time: datetime | None = None
-    # 断线期间的成交永久缺失，本地 K 线不完整（成交额偏小、有成交的分钟数偏少），必须等 REST 回补后才能继续判定。
+    # 断线期间的成交永久缺失，本地 K 线不完整，要等 REST 回补后才能继续判定。
     stale: bool = False
 
     def append(self, candle: Candle) -> None:
@@ -159,8 +158,8 @@ class MinuteBarDetector(Generic[StateT, AlertT]):
             if live is None or live.timestamp < live_candle.timestamp:
                 live = LiveMinute.from_candle(live_candle)
             elif live.timestamp == live_candle.timestamp:
-                # 本地含请求返回后才到的成交，交易所含断线期间的成交：高低点取并集。两边的成交有重叠、
-                # 无法相加，成交额取较大的一边，宁可略低估也不重复计入而凭空放量。
+                # 本地含请求返回后才到的成交，交易所含断线期间的成交：高低点取并集。两边成交有重叠、不能相加，
+                # 成交额取较大的一边，宁可略低估也不凭空放量。
                 is_local_newer = state.last_tick_time is not None and state.last_tick_time > fetched_at
                 live = LiveMinute(
                     live.timestamp,
@@ -201,12 +200,12 @@ class MinuteBarDetector(Generic[StateT, AlertT]):
         alerts: list[AlertT] = []
         if live is not None and not state.stale:
             closed = [live.to_candle()]
-            # 上一分钟之后无人成交的分钟按平线补齐（_filled 补中间的），与交易所 K 线一样每分钟都按时判定。
+            # 之后无人成交的分钟按平线补齐（中间的由 _filled 补），每分钟都按时判定。
             late = minute - live.timestamp > MINUTE
             if late:
                 closed.append(flat_candle(minute - MINUTE, live.close))
-            # 隔了空档才结算时，这些分钟的收盘价已过期，把这笔成交价交给判定复核；紧邻的下一分钟结算只晚几秒，
-            # 不复核，免得新一分钟的单笔离群成交否掉本该发出的提醒（与 ATR 异动的口径一致）。
+            # 隔了空档才结算时收盘价已过期，用这笔成交价复核；紧邻结算只晚几秒，不复核，
+            # 免得新一分钟的单笔离群成交否掉提醒（与秒级异动口径一致）。
             for candle in closed:
                 alerts.extend(self._close_minute(symbol, state, candle, tick.price if late else None))
         # 失效期间只维护当前这一分钟，已收盘的分钟等 REST 回补。
@@ -251,8 +250,7 @@ class MinuteBarDetector(Generic[StateT, AlertT]):
         self, symbol: str, state: StateT, candle: Candle, latest_price: float | None = None
     ) -> list[AlertT]:
         alerts: list[AlertT] = []
-        # 逐根追加、逐根判定：判定窗口取的是最近的 K 线，一次补出多根平线时若先全部追加，
-        # 判定靠前的分钟会把之后的平线算进窗口，周期 K 线也不再对齐周期边界。
+        # 逐根追加、逐根判定：先全部追加的话，判定靠前的分钟会把之后的平线算进窗口，周期 K 线也对不齐边界。
         for minute in self._filled(state, candle):
             state.append(minute)
             alerts.extend(self._evaluate(symbol, state, minute.timestamp + MINUTE, latest_price))

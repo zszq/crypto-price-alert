@@ -34,9 +34,9 @@ class DormantRuleConfig(BaseModel):
     min_calm_multiple: float
     # 涨前波动（窗口之前 240 分钟平均每分钟真实波幅，百分比）上限：涨前来回乱跳的币不报；null 即不限。
     max_pre_volatility_percent: float | None
-    # 窗口最后一分钟成交额下限（USDT）：拉到最后一分钟没人买了的多是几笔单子拉完就停；0 即不限。
+    # 窗口最后一分钟成交额下限（USDT）：最后一分钟没人买的多是几笔单子拉完就停；0 即不限。
     min_last_minute_quote: float
-    # 后半窗口（最后 ⌈窗口/2⌉ 分钟）成交额占窗口成交额的比例下限：成交集中在前半段的容易回落；0 即不限。
+    # 后半窗口（最后 ⌈窗口/2⌉ 分钟）成交额占比下限：成交集中在前半段的容易回落；0 即不限。
     min_late_quote_share: float
     cooldown_minutes: int
     # 冷却期内价格比上次提醒价再涨这么多（百分比）就再报「第 N 波」；null 即冷却内不再报。
@@ -97,12 +97,10 @@ class DormantMainConfig(DormantRuleConfig):
 class DormantSlowConfig(DormantRuleConfig):
     """慢启动一组（YAML 的 dormant.slow）：涨前近乎一条直线、60 分钟里量价缓慢拉升的冷门币。
 
-    默认值是 dormant_slow.md 第三节第 2 小节按例子 JCT_USDT 的形态挑的第一组：判据未通过，样本外准确率约 0.34
+    默认值是 dormant_slow.md 第三节第 2 小节按 JCT_USDT 的形态挑的一组：判据未通过，样本外准确率约 0.34
     （现行一组约 0.45）、每天多约 6 条，是用户知情后的例外，所以代码默认关闭，只由 YAML 开启。
-    研究没有考察实体占比、涨幅相对涨前波动的倍数、最后一分钟成交额与第 N 波补报，这几项默认不限。
-    效率、量比、回落三项只在这一组开放：现行一组的研究里量比、回吐没有让提醒更准，不给它留这几个键。
-    跟踪补报（follow_*）同样只在这一组：dormant_waves.md 判据未通过（补报条数多于第一次提醒），
-    代码默认不跟踪，由 YAML 开启。
+    研究没考察的实体占比、涨前波动倍数、最后一分钟成交额与第 N 波补报默认不限。
+    效率、量比、回落与跟踪补报（follow_*，dormant_waves.md 判据未通过）只在这一组开放，跟踪补报代码默认关闭。
     """
 
     group: ClassVar[DormantGroup] = DormantGroup.SLOW
@@ -152,9 +150,8 @@ class DormantConfig(BaseModel):
 
     # 关掉整个冷门启动（两组都不报）。
     enabled: bool = True
-    # 合约池按交易所的 24 小时成交额筛选，冷门与否由检测器按自己的 K 线判断（窗口之前 24 小时，见 max_prior_quote）。
-    # 下限 0 即所有有成交的币；上限要明显高于 max_prior_quote：拉升会把 24 小时成交额推高，
-    # 上限贴着冷门门槛的话，刚启动的币可能在合约池刷新时被移出。
+    # 合约池按交易所 24 小时成交额筛选，冷门与否由检测器按自己的 K 线判断（见 max_prior_quote）。
+    # 上限要明显高于 max_prior_quote：拉升会推高 24 小时成交额，贴着冷门门槛的话刚启动的币可能被移出合约池。
     min_volume_24h_quote: float = Field(default=0, ge=0)
     max_volume_24h_quote: float | None = Field(default=3_000_000, gt=0)
     # 两组共用合约池与 K 线，门槛、冷却按组独立配置。

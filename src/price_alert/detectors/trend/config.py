@@ -1,7 +1,7 @@
 """K 线形态趋势提醒的配置模型（YAML 的 trend 段）。
 
-各周期结构相同、默认值不同，沿用短/长窗口的做法：公共字段放在基类，每个周期一个子类只改默认值，
-这样 YAML 里只写某个周期的部分字段时，其余字段取的仍是该周期自己的默认值。
+各周期结构相同、默认值不同：公共字段放基类，每个周期一个子类只改默认值，
+YAML 只写某个周期的部分字段时，其余仍取该周期自己的默认值。
 """
 
 from __future__ import annotations
@@ -22,8 +22,7 @@ class TrendPeriodConfig(BaseModel):
     max_counter_candles: int = Field(ge=0, le=59)
     max_rebound_ratio: float = Field(default=0.3, ge=0, le=1)
     min_body_ratio: float = Field(default=0.5, ge=0, le=1)
-    # 单根顺势 K 线实体 ÷ 本根振幅的下限，不足的视为十字星、算作反向 K 线：总实体占比按窗口合计，
-    # 几根大实体会把末尾停滞的十字星、长影线摊薄，需要逐根约束。
+    # 单根顺势 K 线实体 ÷ 本根振幅的下限，不足的算反向 K 线：总实体占比按窗口合计会被大实体摊薄，要逐根约束。
     min_candle_body_ratio: float = Field(default=0.3, ge=0, le=1)
     # 最大一根顺势 K 线实体 ÷ 累计位移的上限：排除一根急拉急砸加几根小 K 线凑出来的“趋势”。
     max_single_candle_ratio: float = Field(default=0.5, gt=0, le=1)
@@ -85,8 +84,8 @@ class TrendConfig(BaseModel):
     enabled: bool = True
     # 形态持续成立时，每根周期 K 线收盘都再报一条「延续」提醒；关闭后同一段走势只在形成时报一次。
     alert_continuing: bool = True
-    # 趋势合约池的 24 小时计价成交额范围，与秒级异动的 move.min_volume_24h_quote 分开设置：
-    # 严格大于下限才监控；上限可选，不填即不设上限。退出缓冲沿用 gate.universe_exit_volume_ratio。
+    # 趋势合约池的 24 小时计价成交额范围：严格大于下限才监控，上限不填即不设。
+    # 退出缓冲沿用 gate.universe_exit_volume_ratio。
     min_volume_24h_quote: float = Field(default=10_000_000, gt=0)
     max_volume_24h_quote: float | None = Field(default=None, gt=0)
     periods: TrendPeriodsConfig = Field(default_factory=TrendPeriodsConfig)

@@ -147,8 +147,7 @@ class AtrMoveDetector:
         self.windows = tuple(windows)
         self._observer = observer
         self._cooldowns = tuple(timedelta(seconds=window.cooldown_seconds) for window in self.windows)
-        # 秒级数据按最长窗口保留，所有窗口共用同一份；空秒补齐只服务连续确认，以最短窗口为界，
-        # 保证短窗口的行为与单窗口时完全一致。
+        # 秒级数据按最长窗口保留、各窗口共用；空秒补齐以最短窗口为界，保证短窗口行为与单窗口时一致。
         self.max_lookback_seconds = max(window.lookback_seconds for window in self.windows)
         self._retention = timedelta(seconds=self.max_lookback_seconds)
         self._fill_limit = min(window.lookback_seconds for window in self.windows)
@@ -281,8 +280,8 @@ class AtrMoveDetector:
             current = _SecondBucket(second, trades_before=trades_before)
             current.add(tick.price, tick.size)
             state.buckets.append(current)
-        # 这笔成交必须在结算之后才计入 K 线：它可能已属于下一个周期，先计入会让被结算的旧秒提前用上
-        # 本周期收盘乃至空档平线之后的 ATR。同一秒的后续成交也走到这里，否则会漏掉该秒的高低价。
+        # 结算之后才计入 K 线：这笔成交可能已属下一周期，先计入会让被结算的旧秒用上之后周期的 ATR。
+        # 同一秒的后续成交也要计入，否则漏掉该秒的高低价。
         self._update_bar(state, tick.price, timestamp)
         return alerts
 
@@ -300,9 +299,8 @@ class AtrMoveDetector:
             return
         completed = state.buckets[-1]
         missing_seconds = int((second - completed.timestamp).total_seconds()) - 1
-        # 等一秒结束后再使用整秒 VWAP，避免把新一秒的第一笔成交误当成稳定价格。
-        # 空档后才结算的秒，其 VWAP 已是几秒甚至几十秒前的旧价格，必须用当前成交价复核；
-        # 紧邻结算只迟一秒，不复核，以免新一秒的单笔离群成交否掉本该发出的提醒。
+        # 等一秒结束才用整秒 VWAP。空档后才结算的秒 VWAP 已过期，要用当前成交价复核；
+        # 紧邻结算只迟一秒，不复核，免得新一秒的单笔离群成交否掉本该发出的提醒。
         projections: dict[datetime, WilderAtr] = {}
         self._settle(
             symbol,
@@ -313,8 +311,7 @@ class AtrMoveDetector:
             price if missing_seconds > 0 else None,
             self._atr_before(state, completed.timestamp, projections),
         )
-        # 稀疏合约在快速行情中常有空秒，沿用最后成交价补齐才能完成连续确认；
-        # 空档超过（最短）观察窗口说明行情停滞，补齐已无比较意义。
+        # 稀疏合约在快速行情中常有空秒，用最后成交价补齐才能连续确认；空档超过最短窗口说明行情停滞，不再补齐。
         if 0 < missing_seconds <= self._fill_limit:
             last_price = completed.last_price
             assert last_price is not None
@@ -357,14 +354,12 @@ class AtrMoveDetector:
         if state.atr_stale or live_bar is None or bar_timestamp <= live_bar.timestamp:
             last_timestamp = state.atr.last_timestamp
             if not state.atr_stale and last_timestamp is not None and last_timestamp >= bar_timestamp:
-                # 回补会用交易所 K 线整体重建 ATR，却留着回补前还没结算的秒：若这些秒早于重建后的
-                # 实时 K 线，ATR 已含它们所在乃至之后的周期，空档中的平线会把倍数成倍放大。
-                # 旧的 ATR 已被替换无从恢复，只能放弃判定这几秒。正常逐笔推进时 ATR 总早于实时 K 线，不会走到这里。
+                # 回补重建了 ATR，却留着回补前未结算的秒：它们早于重建后的实时 K 线时，ATR 已含其所在及之后的周期，
+                # 旧 ATR 无从恢复，只能放弃判定。正常逐笔推进时 ATR 总早于实时 K 线，走不到这里。
                 return None
             return state.atr
-        # 补齐秒跨入了实时 K 线之后的周期：实时 K 线和其后的空周期对它而言都已收盘。
-        # 只在副本上推演，真正计入仍由触发结算的成交一次完成，处理完每笔成交后的状态因此与
-        # 跨了几个周期、分几段评估都无关；同一周期的补齐秒共用一份推演结果。
+        # 补齐秒跨入了实时 K 线之后的周期，实时 K 线及其后的空周期对它都已收盘。只在副本上推演，
+        # 真正计入仍由触发结算的成交完成，所以每笔成交处理完后的状态与分几段评估无关；同一周期共用一份推演。
         projected = projections.get(bar_timestamp)
         if projected is None:
             projected = state.atr.copy()
@@ -391,8 +386,8 @@ class AtrMoveDetector:
             state.live_bar = _LiveBar(bar_timestamp, price, price, price, price)
 
     def _fill_flat_bars(self, atr: WilderAtr, previous: Candle, next_bar: datetime) -> None:
-        # 连接正常时跨过的周期确实无人成交；Gate 对这类周期返回开高低收都等于上一收盘价的平线 K 线，
-        # 实时计算保持同样口径，ATR 才与预热数据一致，且冷门合约停摆后 ATR 时间戳不会被误判为过期。
+        # 连接正常时跨过的周期确实无人成交，Gate 对它返回开高低收都等于上一收盘价的平线；实时保持同样口径，
+        # ATR 才与预热数据一致，冷门合约停摆后 ATR 也不会被误判过期。
         missing = int((next_bar - previous.timestamp) / self._candle_interval) - 1
         if missing <= 0:
             return
@@ -512,9 +507,8 @@ class AtrMoveDetector:
             # 补齐的空秒只延续确认进度，不能单独触发：否则一笔离群成交后恰好无人成交也会被当成持续异动。
             return measured(Outcome.CARRIED, confirmed)
         if latest_price is not None and not self._still_moving(window, latest_price, baseline_price, atr, direction):
-            # 这一秒是在空档之后才被结算的，它的价格已经过期，而触发结算的那笔成交是此刻唯一的
-            # 价格证据：它若已不满足门槛，说明异动在空档中就结束了，再按旧价格提醒只会误导。
-            # 同样只拦提醒、不重置确认进度，与上面补齐桶的处理保持一致。
+            # 空档后才结算的秒价格已过期，触发结算的成交是唯一的当前价：它不满足门槛说明异动已在空档中结束。
+            # 与补齐桶一样只拦提醒、不重置确认进度。
             return measured(Outcome.MOVE_FADED, confirmed)
         return measured(Outcome.ALERT, confirmed)
 
@@ -534,9 +528,8 @@ class AtrMoveDetector:
         tolerance = timedelta(seconds=window.lookback_seconds + BASELINE_TOLERANCE_SECONDS)
         if current.timestamp - baseline.timestamp <= tolerance:
             return baseline, baseline.price
-        # 窗口起点落在无成交的空档里：空档内价格停在最后一笔成交，只要空档不长于本窗口就沿用它。
-        # 短窗口的这类空档都已补齐、走不到这里，所以它的行为与单窗口时一致；长窗口据此跨过
-        # 比补齐上限更长的短暂空档，而不是整段失明。
+        # 窗口起点落在空档里：空档内价格停在最后成交价，空档不长于本窗口就沿用它。
+        # 短窗口的这类空档都已补齐、走不到这里；长窗口据此跨过比补齐上限更长的空档，不至于整段失明。
         following = buckets[index + 1]
         missing = following.timestamp - baseline.timestamp - timedelta(seconds=1)
         if missing <= timedelta(seconds=window.lookback_seconds):

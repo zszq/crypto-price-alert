@@ -34,10 +34,8 @@ def _simulate_rule(rule: DormantRule) -> list[DormantAlert]:
     ]
     detector.add_symbol(SYMBOL, flat, rule.max_prior_quote / 2, quanto_multiplier=1.0)
 
-    # 窗口每一分钟都有成交（满足任何活跃分钟数门槛），成交额与涨幅都取门槛的 1.5 倍，逐分钟单边上涨且无影线；
-    # 横盘段一字不动，倍数无穷大。每分钟等额上涨，第一分钟涨幅最大，为总涨幅 ÷ 窗口，不超过单分钟上限
-    # （配置已保证窗口 × 单分钟上限不小于涨幅门槛）。单边上涨、收在最高价，效率为 1、回落为 0；
-    # 窗口成交额同时取量比门槛的 1.5 倍。
+    # 窗口每分钟都有成交，成交额（同时满足量比）与涨幅取门槛的 1.5 倍，逐分钟等额上涨、无影线、收在最高价：
+    # 效率为 1、回落为 0；横盘段一字不动，倍数无穷大。单分钟涨幅为总涨幅 ÷ 窗口，配置已保证不超上限。
     window_quote = max(rule.min_window_quote, rule.min_volume_ratio * prior_quote * rule.window_minutes, 1.0) * 1.5
     change = min(
         rule.min_change_percent * 1.5,

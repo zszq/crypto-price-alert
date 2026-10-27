@@ -371,8 +371,8 @@ def test_retry_after_parses_http_date():
 
     assert gate._retry_after_seconds({"Retry-After": future}) == pytest.approx(12, abs=2)
 
-    # -0000 表示时区未知，解析结果是 naive datetime，少了补 UTC 这一步就会因为无法与 aware
-    # 的当前时间相减而抛 TypeError。用"未来 20 秒"而不是写死的远期日期，测试才不会到期失效。
+    # -0000 表示时区未知，解析为 naive datetime，不补 UTC 就会在相减时抛 TypeError。
+    # 用"未来 20 秒"而不是写死的远期日期，测试才不会到期失效。
     unknown_zone = (datetime.now(UTC) + timedelta(seconds=20)).strftime("%a, %d %b %Y %H:%M:%S -0000")
     assert gate._retry_after_seconds({"Retry-After": unknown_zone}) == pytest.approx(20, abs=2)
 
@@ -488,9 +488,9 @@ def test_standard_retry_after_takes_precedence_over_gate_header(monkeypatch):
 
 
 def test_rate_limit_headers_are_read_case_insensitively():
-    """HTTP/2 的头名一律小写，而真实的 HTTPError.headers 是大小写不敏感的 HTTPMessage。
+    """HTTP/2 的头名一律小写，真实的 HTTPError.headers 是大小写不敏感的 HTTPMessage。
 
-    其余用例为了简洁用普通 dict 传头（大小写敏感），这里用真实类型锁住生产路径的取值行为。
+    其余用例用普通 dict 传头，这里用真实类型锁住生产路径的行为。
     """
     raw = "x-gate-ratelimit-reset-timestamp: 99999999999\r\nx-gate-ratelimit-limit: 200\r\n\r\n"
     headers = email.parser.Parser(_class=http.client.HTTPMessage).parsestr(raw)

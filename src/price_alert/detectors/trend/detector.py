@@ -1,9 +1,7 @@
 """K 线形态趋势检测器：由实时成交聚合 1 分钟 K 线，再合成各周期 K 线，形态成立即提醒。
 
-每个周期各自独立：形态从不成立变为成立时提醒，持续成立期间每根周期 K 线收盘再报一条「延续」提醒
-（可关闭，关闭后同一段只报一次），形态被破坏后重新计算，再次成立就是新的一段。不同周期之间互不影响。
-
-K 线聚合、空分钟补平线、断线回补与服务约定的接口都在 common.minute_bars.MinuteBarDetector，这里只写每分钟的判定。
+各周期互不影响：形态从不成立变为成立时提醒，持续成立期间每根周期 K 线收盘再报一条「延续」提醒
+（可关闭），形态被破坏后再次成立就是新的一段。K 线聚合、补平线、断线回补都在 MinuteBarDetector。
 """
 
 from __future__ import annotations
@@ -76,8 +74,8 @@ class TrendDetector(MinuteBarDetector[MinuteState, TrendAlert]):
         self.rules = tuple(sorted(rules, key=lambda rule: rule.minutes))
         self._observer = observer
         self._alert_continuing = alert_continuing
-        # 每个合约各周期最近一次判定时形态成立的方向（不成立为 None）。不随合约移出而清除：
-        # 合约很快重新入池时，仍在延续的同一段走势不应再提醒一次。
+        # 各合约各周期最近一次判定时形态成立的方向（不成立为 None）。不随合约移出清除：
+        # 合约很快重新入池时，同一段走势不应再提醒一次。
         self._holding: dict[str, dict[PeriodName, Direction | None]] = {}
 
     def _evaluate(

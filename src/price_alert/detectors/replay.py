@@ -19,10 +19,9 @@ from price_alert.exchange.gate import GATE_MINUTE_HISTORY, GateRestClient, price
 
 LOGGER = logging.getLogger(__name__)
 
-# 一秒要等下一秒的第一笔成交才会结算，多取一点成交，区间最后几秒才不会因为没人“结算”而漏评。
+# 一秒要等下一秒的第一笔成交才会结算，多取一点成交，区间最后几秒才不会漏评。
 SETTLE_MARGIN = timedelta(seconds=10)
-# 余量内仍没有成交时，继续向后找结算用的那一笔，最远找这么久。实时监控里多晚的成交都会结算，
-# 但冷门合约停摆几小时也没必要一直翻下去，超过后如实标注结果不完整。
+# 余量内仍没有成交时，向后找结算用的那一笔，最远找这么久；冷门合约停摆几小时不必一直翻，超过后标注结果不完整。
 SETTLE_SEARCH_LIMIT = timedelta(hours=1)
 
 
@@ -92,8 +91,8 @@ def plan_minute_replay(
     aligned = datetime.fromtimestamp(int(start.timestamp()) // 60 * 60, tz=start.tzinfo)
     warmup = MINUTE * warmup_minutes
     warmup_start = aligned - warmup
-    # 预先检查而不是等交易所返回含义不明的 400。10000 根含当前未收盘的一根，再留一分钟余量：
-    # 检查之后、请求发出之前跨过一分钟时，边界上的开始时间仍可能被拒绝。
+    # 预先检查，而不是等交易所返回含义不明的 400。10000 根含当前未收盘的一根，再留一分钟余量，
+    # 防止检查之后、请求之前跨过一分钟。
     earliest = (now or datetime.now(UTC)) - MINUTE * (GATE_MINUTE_HISTORY - 2)
     if warmup_start < earliest:
         raise ValueError(
@@ -135,8 +134,8 @@ def second_of(tick: PriceTick) -> datetime:
 def _find_settling_trade(rest: GateRestClient, plan: ReplayPlan) -> PriceTick | None:
     """余量内没有成交时，向后找第一笔成交来结算区间内最后一个有成交的秒；找不到返回 None。
 
-    必须用真实的下一笔成交而不是人为补一笔：空档后结算时要用它的价格复核异动是否仍在，
-    只有它才能还原实时监控当时的判定。查找区间逐段翻倍，停摆不久时只需一两次小请求。
+    必须用真实的下一笔成交：空档后结算要用它的价格复核，才能还原实时监控当时的判定。
+    查找区间逐段翻倍，停摆不久时只需一两次小请求。
     """
     start = plan.end + SETTLE_MARGIN
     limit = start + SETTLE_SEARCH_LIMIT

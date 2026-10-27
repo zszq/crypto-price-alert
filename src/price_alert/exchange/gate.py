@@ -28,10 +28,10 @@ LOGGER = logging.getLogger(__name__)
 
 # 只有限频和服务端临时故障值得重试；其余 4xx 多为参数或合约不存在，重试只会拖慢预热。
 RETRYABLE_HTTP_STATUS = frozenset({408, 429, 500, 502, 503, 504})
-# 普通临时故障的退避基数；限频恢复通常以秒计，用同一个基数会过早重试，所以 429 单独用下面的基数。
+# 普通临时故障的退避基数；限频恢复通常以秒计，429 单独用更大的基数，免得过早重试。
 RETRY_BACKOFF_SECONDS = 0.5
 RATE_LIMITED_BACKOFF_SECONDS = 2.0
-# 退避时长由交易所控制，异常大的值会让线程长期占着不放并拖住整轮预热，必须封顶。
+# 退避时长由交易所给出，异常大的值会长期占住线程、拖住整轮预热，必须封顶。
 MAX_RETRY_AFTER_SECONDS = 30.0
 # Gate 不返回标准的 Retry-After，限频恢复时刻放在这个专有头里（Unix 秒级绝对时间戳）。
 RATE_LIMIT_RESET_HEADER = "X-Gate-RateLimit-Reset-Timestamp"
@@ -69,8 +69,8 @@ def quanto_multiplier(value: Any) -> float | None:
 
 def futures_trade_url(symbol: str) -> str:
     """合约在 Gate 网页上的交易地址。"""
-    # 中文等非 ASCII 字符原样保留，否则地址显示成一串 %XX 难以辨认；浏览器打开时会自行编码。
-    # ASCII 保留字符（/、?、# 等）会破坏路径结构，非 ASCII 的空白和不可见字符会截断终端的链接识别，仍需编码。
+    # 中文等非 ASCII 字符原样保留，否则显示成一串 %XX；浏览器打开时会自行编码。
+    # ASCII 保留字符（/、?、# 等）会破坏路径，非 ASCII 的空白和不可见字符会截断终端的链接识别，仍要编码。
     segment = "".join(
         char if not char.isascii() and char.isprintable() and not char.isspace() else urllib.parse.quote(char, safe="")
         for char in symbol
@@ -81,11 +81,8 @@ def futures_trade_url(symbol: str) -> str:
 class RateLimiter:
     """令牌桶，给所有 REST 出口统一限速。
 
-    限频按单位时间的请求数计算，而合约池大小只决定单轮请求数，所以并发信号量挡不住重连风暴这类
-    "轮数多"的场景——真正的上限必须加在时间维度上，由这里统一承担。
-
-    REST 客户端是同步实现、经 asyncio.to_thread 在多个线程中并发调用，因此用 threading 原语而
-    不是 asyncio 原语。
+    限频按单位时间的请求数计算，并发信号量只限单轮并发，挡不住重连风暴这类轮数多的场景，
+    所以上限加在时间维度上。REST 客户端是同步实现、经 asyncio.to_thread 多线程调用，因此用 threading 原语。
     """
 
     def __init__(self, rate_per_second: float, burst: int | None = None) -> None:
@@ -107,8 +104,7 @@ class RateLimiter:
                 return
             wait = (1.0 - self._tokens) / self.rate_per_second
             self._tokens = 0.0
-            # 把等待时长预支进 _updated：后续线程读到的是"欠账"状态，于是依次排到更晚的时刻，
-            # 而不是全部睡同样长再一起醒来抢同一个令牌。
+            # 把等待预支进 _updated：后续线程看到欠账，依次排到更晚的时刻，而不是睡同样长再一起抢同一个令牌。
             self._updated = now + wait
         # sleep 必须在锁外，否则等待的线程会连带堵住其他线程取令牌。
         time.sleep(wait)
@@ -125,8 +121,7 @@ def _rate_limit_reset_seconds(headers: Any) -> float | None:
         return None
     if reset_at != reset_at:  # NaN 能通过解析，但比较运算全为假，会绕过下面的封顶
         return None
-    # 头里是绝对时间戳，必须与本地时钟相减。本地时钟快于交易所时差值偏小甚至为负，会过早重试；
-    # 但限速器对重试同样收令牌，最短也隔着 1/rate 秒，不会退化成无间隔重试。
+    # 头里是绝对时间戳，要与本地时钟相减。本地时钟偏快时会过早重试，但重试同样要取令牌，不会无间隔重试。
     return min(max(reset_at - datetime.now(UTC).timestamp(), 0.0), MAX_RETRY_AFTER_SECONDS)
 
 
@@ -144,8 +139,7 @@ def _retry_after_seconds(headers: Any) -> float | None:
             return None
         if parsed is None:
             return None
-        # -0000 表示时区未知，解析结果是 naive datetime，直接与 aware 的当前时间相减会抛
-        # TypeError 并中断整个请求。按规范这种情况等同 GMT，补上 UTC 即可。
+        # -0000 表示时区未知，解析为 naive datetime，与 aware 时间相减会抛 TypeError；按规范等同 GMT。
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
         seconds = (parsed - datetime.now(UTC)).total_seconds()
@@ -234,9 +228,8 @@ class GateRestClient:
     def fetch_trades(self, symbol: str, start: datetime, end: datetime, max_trades: int = 300_000) -> list[PriceTick]:
         """取 [start, end) 内的全部历史成交，按时间升序返回。
 
-        Gate 在时间范围内按从新到旧分页，每页最多 1000 笔。翻页靠把 to 收缩到本页最早那一秒：
-        to 是开区间，所以取“最早秒 + 1”，同一秒里更早的成交留到下一页，重复的按 id 去重。
-        整页都挤在同一秒时 to 收缩不动，只能在这一秒内用 offset 继续翻。
+        Gate 按从新到旧分页、每页最多 1000 笔。翻页把 to（开区间）收缩到本页最早秒 + 1，
+        同一秒更早的成交留到下一页，重复的按 id 去重；整页挤在同一秒时 to 收缩不动，只能用 offset 继续翻。
         """
         start_second = math.floor(start.timestamp())
         to = math.ceil(end.timestamp())
@@ -298,7 +291,7 @@ class GateRestClient:
         for attempt in range(self.retries):
             is_last_attempt = attempt == self.retries - 1
             if self.rate_limiter is not None:
-                # 重试同样要取令牌：否则被限频后的重试会绕过限速，正好在最该收敛的时刻加码请求。
+                # 重试也要取令牌，否则被限频后的重试会绕过限速。
                 self.rate_limiter.acquire()
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310
@@ -309,7 +302,7 @@ class GateRestClient:
                     raise
                 delay = self._retry_delay(attempt, exc)
             except (OSError, http.client.HTTPException, json.JSONDecodeError):
-                # 读响应体时的连接重置、截断和维护页等临时故障不会被包装成 URLError，需要单独纳入重试。
+                # 读响应体时的连接重置、截断、维护页等临时故障不会包装成 URLError，要单独重试。
                 if is_last_attempt:
                     raise
                 delay = RETRY_BACKOFF_SECONDS * (2**attempt)
@@ -319,13 +312,12 @@ class GateRestClient:
     def _retry_delay(self, attempt: int, exc: urllib.error.HTTPError) -> float:
         if exc.code != 429:
             return RETRY_BACKOFF_SECONDS * (2**attempt)
-        # 交易所明确告知还要等多久时以它为准，自行退避只会提前重试、继续踩在限频上。
-        # 先认 HTTP 标准头：Gate 目前只发下面的专有头，但标准头若出现则语义更权威。
+        # 交易所给出等待时长时以它为准。先认标准头：Gate 目前只发专有头，但标准头出现时更权威。
         for parse in (_retry_after_seconds, _rate_limit_reset_seconds):
             delay = parse(exc.headers)
             if delay is not None:
                 return delay
-        # 两个头都没有才盲目退避：等多久全靠猜，限频窗口未重置就会连续撞满重试次数。
+        # 两个头都没有才按经验退避。
         return RATE_LIMITED_BACKOFF_SECONDS * (2**attempt)
 
 
@@ -495,9 +487,8 @@ class GateTradeFeed:
         async with self._connect(
             self.url,
             ping_interval=20,
-            # pong 与成交推送共用一条 TCP 流，链路拥塞时会被积压数据队头阻塞，RTT 可从
-            # 200 毫秒涨到二十几秒。超时放宽到 30 秒，把断线判定让给 service 的 stream_loop 里按
-            # 成交时间戳做的滞后熔断（阈值更低、语义明确），keepalive 只兜底真正的死连接。
+            # pong 与成交推送共用一条 TCP 流，拥塞时被队头阻塞，RTT 可从 200 毫秒涨到二十几秒。
+            # 放宽到 30 秒，断线判定交给 stream_loop 按成交时间戳的滞后熔断，keepalive 只兜底死连接。
             ping_timeout=30,
             close_timeout=5,
             max_queue=20_000,

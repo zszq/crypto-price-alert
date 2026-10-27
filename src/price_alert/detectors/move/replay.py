@@ -82,12 +82,12 @@ def run_replay(move: MoveConfig, plan: ReplayPlan, data: ReplayData) -> ReplayRe
     def in_range(second: datetime) -> bool:
         return plan.start <= second <= plan.end
 
-    # 最后一笔成交所在的秒要等下一笔成交才会结算：它落在区间内，说明这一秒没有判定，
-    # 恰好完成确认的提醒会被漏掉，不能让结果看起来像“没有提醒”。
+    # 最后一笔成交所在的秒要等下一笔成交才会结算：它落在区间内说明这一秒没有判定，要标出来，
+    # 不能让结果看起来像“没有提醒”。
     unsettled = second_of(last_tick) if last_tick is not None else None
 
-    # 提醒与 ALERT 判定一一对应且顺序相同；按判定所属的秒筛选，而不是按结算它的那笔成交的时间，
-    # 否则区间末尾之后才结算的秒会被算进来，区间开头之前的秒也可能漏掉。
+    # 提醒与 ALERT 判定一一对应且顺序相同；按判定所属的秒筛选，而不是按结算它的成交时间，
+    # 否则区间两端会多算或漏算。
     fired = iter(item for item in evaluations if item.outcome is Outcome.ALERT)
     kept: list[PriceAlert | StreakAlert] = []
     keep = False
@@ -123,7 +123,7 @@ def _closeness(evaluation: WindowEvaluation, window: MoveWindow) -> float:
 def _is_notable(evaluation: WindowEvaluation, window: MoveWindow) -> bool:
     if evaluation.outcome in _NOTABLE_OUTCOMES:
         return True
-    # 笔数检查排在门槛之前，笔数不足的秒即使涨跌已经达标也不会走到确认，单独捞出来才看得到“差在笔数”。
+    # 笔数检查排在门槛之前，笔数不足但涨跌已达标的秒要单独捞出来，才看得到“差在笔数”。
     return evaluation.outcome is Outcome.FEW_TRADES and _closeness(evaluation, window) >= 1.0
 
 

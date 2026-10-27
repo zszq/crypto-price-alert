@@ -21,15 +21,11 @@ class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     gate: GateConfig = Field(default_factory=GateConfig)
-    # 秒级 ATR 异动提醒；模型定义在 move 包内。
+    # 五种提醒相互独立，模型定义在各自的检测器子包内；删除某种提醒时只需去掉对应一项。
     move: MoveConfig = Field(default_factory=MoveConfig)
-    # K 线形态趋势提醒，独立于秒级 ATR 异动检测；模型定义在 trend 包内，删除该功能时只需去掉这一项。
     trend: TrendConfig = Field(default_factory=TrendConfig)
-    # 放量启动提醒，与上面两者相互独立；模型定义在 launch 包内，删除该功能时只需去掉这一项。
     launch: LaunchConfig = Field(default_factory=LaunchConfig)
-    # 冷门启动提醒，与上面三者相互独立；模型定义在 dormant 包内，删除该功能时只需去掉这一项。
     dormant: DormantConfig = Field(default_factory=DormantConfig)
-    # 反弹回落提醒，与上面四者相互独立；模型定义在 reversal 包内，删除该功能时只需去掉这一项。
     reversal: ReversalConfig = Field(default_factory=ReversalConfig)
     alerts: AlertConfig = Field(default_factory=AlertConfig)
 
@@ -56,7 +52,7 @@ def load_config(path: str | Path) -> AppConfig:
 
 
 def _read_file(source: Path) -> dict:
-    # 传文件对象而不是字符串，YAML 语法错误的提示里才会带上文件名，目录配置下能直接定位到出错的文件。
+    # 传文件对象而不是字符串，YAML 语法错误的提示里才带文件名。
     with source.open(encoding="utf-8") as stream:
         raw = yaml.safe_load(stream)
     if raw is None:
@@ -67,8 +63,7 @@ def _read_file(source: Path) -> dict:
 
 
 def _read_directory(directory: Path) -> dict:
-    # 每种提醒一个文件，方便单独查看和维护；只做顶层合并而不深度合并，
-    # 同一段拆在两个文件里时一处的修改会被另一处悄悄覆盖，所以重复的顶层键直接报错。
+    # 只做顶层合并：同一段拆在两个文件里时一处会被另一处悄悄覆盖，所以重复的顶层键直接报错。
     files = sorted(directory.glob("*.yaml"))
     if not files:
         raise ValueError(f"配置目录 {directory} 下没有 .yaml 文件")

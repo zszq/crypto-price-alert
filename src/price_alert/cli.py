@@ -59,15 +59,14 @@ from price_alert.notify.sounds import SOUND_LABELS, SOUND_NAMES, SOUND_PRIORITY
 from price_alert.service import run_monitor
 
 LOGGER = logging.getLogger(__name__)
-# 只给开始时间时回放的时长：足够覆盖长窗口一个完整周期以及前后的行情。
+# 以下是只给开始时间时各回放的时长。秒级异动：覆盖长窗口一个完整周期及前后行情。
 DEFAULT_REPLAY_MINUTES = 15
-# 趋势回放只给开始时间时的时长：趋势以十几分钟到数小时计，区间要能容下一段完整的开始到结束。
+# 趋势以十几分钟到数小时计，要容下一段完整的开始到结束。
 DEFAULT_TREND_REPLAY_HOURS = 3
-# 放量回放只给开始时间时的时长：足够看完一段启动以及之后的几波拉升。
+# 放量、冷门启动：看完一段启动及之后的几波拉升。
 DEFAULT_LAUNCH_REPLAY_HOURS = 6
-# 冷门启动回放只给开始时间时的时长：与放量回放相同，足够看完一段启动。
 DEFAULT_DORMANT_REPLAY_HOURS = 6
-# 反弹回落回放只给开始时间时的时长：判定是秒级的，还要多取 1 小时成交作基准，区间不宜太长。
+# 反弹回落是秒级判定，还要多取 1 小时成交作基准，区间不宜太长。
 DEFAULT_REVERSAL_REPLAY_MINUTES = 30
 SOUND_PREVIEW_PAUSE_SECONDS = 0.8
 # REST 重试用尽后会原样抛出的错误：回放命令把它们转成一行提示退出。
@@ -239,7 +238,7 @@ def _plan_or_exit(
     """解析 --start/--end 并推算回放区间；时间写错、超出 Gate 保留范围等都转成一行错误退出。"""
     try:
         start = parse_time(args.start)
-        # 结束时间只写时分时取开始那天，否则回放昨天时 --end 会被当成今天，区间意外拉长到一整天。
+        # 结束时间只写时分时取开始那天，否则回放昨天时 --end 会被当成今天。
         end_day = start.astimezone(BEIJING_TIME).date()
         end = parse_time(args.end, today=end_day) if args.end else start + default_length
         return plan(normalize_symbol(args.symbol), start, end)
@@ -251,7 +250,6 @@ def _fetch_trades_or_exit(config: AppConfig, plan: ReplayPlan, candle_interval: 
     try:
         data = fetch_replay_data(build_rest_client(config), plan, candle_interval)
     except FETCH_ERRORS as exc:
-        # REST 重试用尽后原样抛出，这里转成一行可读的错误，而不是整段堆栈。
         raise SystemExit(f"获取 {plan.symbol} 历史数据失败：{exc}") from exc
     if not data.trades:
         raise SystemExit(f"{plan.symbol} 在该时间段没有取到成交：合约名可能有误，或 Gate 已不再提供这么早的成交")
@@ -272,7 +270,7 @@ def _fetch_minutes_or_exit(config: AppConfig, plan: MinuteReplayPlan) -> tuple[l
 def print_universe(config: AppConfig) -> None:
     rest = build_rest_client(config)
     tickers, contracts = rest.fetch_tickers(), rest.fetch_contracts()
-    # 与实时监控同一来源取各检测器的成交额范围，展示的就是 run 启动时各自的合约池。
+    # 与实时监控同一来源取成交额范围，展示的就是 run 启动时各自的合约池。
     for index, entry in enumerate(build_detectors(config)):
         volume = entry.volume
         selected = select_liquid_contracts(tickers, contracts, volume.minimum, volume.maximum)
@@ -284,9 +282,8 @@ def print_universe(config: AppConfig) -> None:
 
 
 def lock_path(config_path: str) -> Path:
-    """同一份配置只允许一个实例（重复订阅、重复提醒、抢写同一个 JSONL），不同配置可以同时运行，
-    例如日常监控与给交易单独开的放量实例。默认配置（config/default 目录，拆分前是 config/default.yaml）
-    沿用原来的锁文件名，升级时仍能挡住旧版本的实例。"""
+    """同一份配置只允许一个实例（否则重复提醒、抢写同一个 JSONL），不同配置可同时运行。
+    默认配置（config/default 目录，拆分前是 config/default.yaml）沿用原锁文件名，升级时仍能挡住旧版实例。"""
     stem = Path(config_path).stem
     return Path("data/price-alert.lock" if stem == "default" else f"data/price-alert-{stem}.lock")
 

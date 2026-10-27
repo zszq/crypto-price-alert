@@ -30,7 +30,7 @@ _DETECTOR_ERROR_LOG_SECONDS = 60.0
 # 同一检测器的同一合约，出错后触发 REST 回补修复的最小间隔：持续出错时不至于每笔成交都回补一次。
 _DETECTOR_REPAIR_SECONDS = 60.0
 
-# 预热几百个合约受限速约束要数十秒，期间没有输出看起来像假死；逐个打印又会刷屏，按时间节流报告进度。
+# 预热几百个合约受限速约束要数十秒：没有输出像假死，逐个打印又刷屏，所以按时间节流报告进度。
 _WARMUP_PROGRESS_SECONDS = 5.0
 
 
@@ -133,9 +133,8 @@ class _Monitor:
     def _tiers(self, needed: dict[str, list[MonitoredDetector]]) -> list[list[str]]:
         """按需要它的检测器中排序最靠前的那个把合约分批，靠前的批次先处理。
 
-        先后按成交额下限从高到低排，而不是检测器的列表顺序：下限越低合约池越大，放量启动只归它的合约
-        可能有上百个，一轮预热或回补受限速约束要等上一阵，排在最后，其他检测器的合约才不必在队列里陪着等。
-        下限相同时按 self.detectors 的顺序。
+        按成交额下限从高到低排：下限越低合约池越大（只归放量启动的合约可能上百个），受限速约束要等一阵，
+        排在最后，其他检测器的合约才不必陪着等。下限相同时按 self.detectors 的顺序。
         """
         ranked = sorted(self.detectors, key=lambda entry: -entry.volume.minimum)
         order = {entry.name: index for index, entry in enumerate(ranked)}
@@ -166,7 +165,7 @@ class _Monitor:
         warmups: list[_Warmup] = []
         for entry in entries:
             candles, fetched_at = fetched[entry.candle_interval]
-            # 截取到自己要求的根数，与单独请求时拿到的数据完全相同，合并请求不改变任何检测器的行为。
+            # 截取到自己要求的根数，与单独请求的结果相同，合并请求不改变检测器行为。
             own = candles[-entry.warmup_candles :]
             closed, live = _split_candles(own, INTERVAL_SECONDS[entry.candle_interval], fetched_at)
             warmups.append((closed, live, fetched_at))
@@ -268,7 +267,7 @@ class _Monitor:
         for index, tier in enumerate(tiers):
             await asyncio.gather(*(add_new_symbol(symbol) for symbol in tier))
             if index < len(tiers) - 1:
-                # 先订阅已预热好的合约：靠前的检测器马上开始接收成交，不必等后面几百个合约预热完。
+                # 先订阅已预热好的合约，靠前的检测器不必等后面几百个合约预热完。
                 await self._subscribe()
                 LOGGER.info("已订阅 %d 个合约，其余 %d 个新合约继续预热", len(self.symbols), len(new_symbols) - done)
         LOGGER.info(
@@ -290,7 +289,7 @@ class _Monitor:
                 raw_contracts,
                 entry.volume.minimum,
                 entry.volume.maximum,
-                # 退出缓冲只看本检测器自己是否已在监控：另一个检测器的合约刚进入本范围时按准入线判断。
+                # 退出缓冲只看本检测器是否已在监控：别的检测器的合约刚进入本范围时按准入线判断。
                 retained_symbols=entry.detector.symbols,
                 exit_volume_ratio=gate.universe_exit_volume_ratio,
             )
@@ -299,7 +298,7 @@ class _Monitor:
         # 单个检测器的范围可能本来就很窄，选不出合约属正常；全部为空才说明交易所数据异常。
         if not any(selections):
             raise RuntimeError("Gate.io 没有满足成交额条件的可用虚拟币合约")
-        # 各检测器的合约池互有重叠，按合约去重后才是实际要监控的数量；放在预热前，启动时能先看到规模。
+        # 各检测器的合约池互有重叠，去重后才是实际监控数；放在预热前，启动时先看到规模。
         eligible = len({ticker.symbol for selected in selections for ticker in selected})
         LOGGER.info("Gate.io 共 %d 个合约，符合条件 %d 个", len(raw_contracts), eligible)
         await self.sync_universe(selections)
@@ -316,7 +315,7 @@ class _Monitor:
 
     async def initial_universe(self) -> None:
         backoff = self._backoff()
-        # 只在首次初始化时提示：此前控制台还没有任何输出；定时刷新在后台进行、不阻塞监控，无需提示。
+        # 只在首次初始化时提示：此前控制台还没有输出；定时刷新在后台进行，无需提示。
         LOGGER.info("正在从 Gate.io 获取合约列表并筛选交易对池…")
         while True:
             try:
@@ -356,11 +355,10 @@ class _Monitor:
                 # aclosing 保证循环体抛错时也会立即关闭 WebSocket，而不是等垃圾回收。
                 async with contextlib.aclosing(self.feed.stream()) as ticks:
                     async for tick in ticks:
-                        # 链路拥塞时推送的是几十秒前的积压行情，秒级判定已无意义：滞后超限就主动重连
-                        # 清空积压，日志也直指真因，而不是等 keepalive 报出含义不明的 1011。
-                        # 逐笔校验（开销可忽略），抽查会留出放行积压成交的窗口。必须排在“连接成功”之前，
-                        # 否则每次重连的首笔滞后成交都会重置退避，退化成每秒一次的重连风暴。
-                        # 这里依赖本地时钟：本地快于交易所超过阈值也会一直重连，应先校准系统时间而不是调高阈值。
+                        # 链路拥塞时推送的是几十秒前的积压行情：滞后超限就主动重连清空积压，日志也直指原因，
+                        # 而不是等 keepalive 报含义不明的 1011。逐笔校验（开销可忽略），抽查会放过积压成交。
+                        # 必须排在“连接成功”之前，否则每次重连的首笔滞后成交都会重置退避，变成每秒一次的重连。
+                        # 依赖本地时钟：本地快于交易所超过阈值也会一直重连，应校准系统时间而不是调高阈值。
                         lag = (datetime.now(UTC) - tick.timestamp).total_seconds()
                         if lag > gate.max_data_lag_seconds:
                             raise ConnectionError(
@@ -373,7 +371,7 @@ class _Monitor:
                             backoff.reset()
                             LOGGER.info("Gate.io 实时行情连接成功，已收到 %s 成交", tick.symbol)
                             if had_stream_gap:
-                                # 断线退避期间合约池刷新新增的合约，其预热数据同样早于本次重连，需在此重新标记。
+                                # 断线退避期间合约池刷新新增的合约，预热数据也早于本次重连，要重新标记。
                                 for detector in detectors:
                                     detector.mark_stream_gap()
                                 # 必须在实时成交恢复之后再拉 K 线：请求之前的缺口由 REST 覆盖，之后的成交由实时流覆盖。
@@ -388,8 +386,8 @@ class _Monitor:
                             try:
                                 alerts = entry.detector.add_tick(tick)
                             except Exception:
-                                # 只跳过这笔成交，不能因一个检测器出错就断开全市场行情。出错可能在更新状态中途，
-                                # 该合约在这个检测器里的状态已不可信，按断线同样处理：标记失效，用 REST K 线回补重建。
+                                # 只跳过这笔成交，不因一个检测器出错断开全市场行情。出错可能在更新状态中途，
+                                # 该合约的状态已不可信，按断线处理：标记失效，用 REST K 线重建。
                                 if faults.record(entry.name, tick.symbol, current_time):
                                     entry.detector.mark_symbol_gap(tick.symbol)
                                     if resync_task is None or resync_task.done():
@@ -416,7 +414,7 @@ class _Monitor:
                 # 连接、握手、网络超时都会走到这里；合约池刷新已与连接解耦，任何异常都按故障退避重连。
                 LOGGER.warning("Gate.io 行情连接异常：%s；%.1f 秒后重连", exc, backoff.delay)
             finally:
-                # 断线后本轮回补出的 K 线又会与新的缺口不一致，停止回补，等下次连接恢复后重新开始。
+                # 断线后本轮回补的 K 线又与新缺口不一致，停止回补，等连接恢复后重来。
                 await _stop_task(resync_task)
             for detector in detectors:
                 detector.mark_stream_gap()
