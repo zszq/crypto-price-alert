@@ -254,7 +254,7 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 .\.venv\Scripts\python.exe -m price_alert.cli check-config
 ```
 
-使用合成数据验证 ATR、趋势与放量启动提醒，不联网、不写告警文件：
+使用合成数据验证短时异动、趋势、放量启动、冷门启动与反弹回落提醒，不联网、不写告警文件：
 
 ```powershell
 .\.venv\Scripts\python.exe -m price_alert.cli simulate
