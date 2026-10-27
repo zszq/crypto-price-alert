@@ -19,7 +19,7 @@ WINDOW_LABELS: dict[WindowName, str] = {"short": "短窗口", "long": "长窗口
 
 
 @dataclass(frozen=True, slots=True)
-class MoveWindow:
+class SpikeWindow:
     """一个观察窗口及其独立门槛；多个窗口共享秒级数据与 ATR，任意一个满足即可提醒。"""
 
     name: WindowName
@@ -50,7 +50,7 @@ class MoveWindow:
         )
 
 
-def describe_rule(window: MoveWindow) -> str:
+def describe_rule(window: SpikeWindow) -> str:
     return (
         f"{WINDOW_LABELS[window.name]}：{describe_window(window.lookback_seconds)}内涨跌 ≥ "
         f"{window.min_change_percent:g}% 且 ≥ {window.trigger_atr_multiple:g} ATR，"

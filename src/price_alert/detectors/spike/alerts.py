@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from price_alert.common.formatting import beijing_time, describe_window, format_price
-from price_alert.detectors.move.windows import WindowName
+from price_alert.detectors.spike.windows import WindowName
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +41,7 @@ class PriceAlert:
 
 
 def format_change(alert: PriceAlert) -> str:
-    # format_move_alert 与 notifier 着色共用同一格式，保证着色时能在文本中准确找到百分比。
+    # format_spike_alert 与 notifier 着色共用同一格式，保证着色时能在文本中准确找到百分比。
     return f"{abs(alert.change_percent):.2f}%"
 
 
@@ -50,7 +50,7 @@ def format_window(alert: PriceAlert) -> str:
     return describe_window(alert.lookback_seconds)
 
 
-def format_move_alert(alert: PriceAlert) -> str:
+def format_spike_alert(alert: PriceAlert) -> str:
     label = "急涨" if alert.direction == "surge" else "急跌"
     move_label = "上涨" if alert.direction == "surge" else "下跌"
     reference = format_price(alert.reference_price, alert.price_decimals)

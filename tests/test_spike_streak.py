@@ -2,8 +2,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from price_alert.detectors.move.alerts import PriceAlert
-from price_alert.detectors.move.streak import StreakAlert, StreakRule, StreakTracker, describe_duration
+from price_alert.detectors.spike.alerts import PriceAlert
+from price_alert.detectors.spike.streak import StreakAlert, StreakRule, StreakTracker, describe_duration
 from price_alert.notify.notifier import (
     DROP_COLOR,
     SURGE_COLOR,

@@ -10,7 +10,7 @@ from price_alert.detectors.launch.simulate import simulate_launch
 
 
 @pytest.mark.parametrize(
-    ("move_config", "expected_alerts"),
+    ("spike_config", "expected_alerts"),
     [
         ({}, 2),
         ({"short_window": {"lookback_seconds": 60}}, 2),
@@ -35,11 +35,11 @@ from price_alert.detectors.launch.simulate import simulate_launch
         ({"long_window": {"lookback_seconds": 300, "min_window_trades": 1000, "trigger_atr_multiple": 20}}, 2),
     ],
 )
-def test_simulate_produces_one_alert_per_enabled_window(move_config, expected_alerts, capsys):
+def test_simulate_produces_one_alert_per_enabled_window(spike_config, expected_alerts, capsys):
     # 关闭趋势与放量提醒，只验证观察窗口；趋势周期、放量启动由下面的用例单独覆盖。
     config = AppConfig.model_validate(
         {
-            "move": move_config,
+            "spike": spike_config,
             "trend": {"enabled": False},
             "launch": {"rise": {"enabled": False}},
                 "dormant": {"enabled": False},
@@ -104,9 +104,9 @@ def test_missing_config_file_exits_with_readable_message(tmp_path):
 
 def test_invalid_config_lists_field_path(tmp_path):
     path = tmp_path / "config.yaml"
-    path.write_text("move:\n  atr_period: 1\n", encoding="utf-8")
+    path.write_text("spike:\n  atr_period: 1\n", encoding="utf-8")
 
-    with pytest.raises(SystemExit, match=r"move\.atr_period"):
+    with pytest.raises(SystemExit, match=r"spike\.atr_period"):
         cli._load_config_or_exit(str(path))
 
 
@@ -176,10 +176,10 @@ def test_trend_replay_without_enabled_periods_exits_readably():
         cli.trend_replay(config, args)
 
 
-def test_simulate_skips_windows_when_move_is_disabled(capsys):
+def test_simulate_skips_windows_when_spike_is_disabled(capsys):
     config = AppConfig.model_validate(
         {
-            "move": {"enabled": False},
+            "spike": {"enabled": False},
             "trend": {"enabled": False},
             "dormant": {"enabled": False},
             "reversal": {"enabled": False},
@@ -267,7 +267,7 @@ def test_launch_replay_runs_against_fake_exchange(monkeypatch, capsys):
 
 def test_check_config_lists_streak_rule_with_gap_following_cooldown(tmp_path, monkeypatch, capsys):
     path = tmp_path / "config.yaml"
-    path.write_text("move:\n  short_window:\n    cooldown_seconds: 45\n", encoding="utf-8")
+    path.write_text("spike:\n  short_window:\n    cooldown_seconds: 45\n", encoding="utf-8")
     monkeypatch.setattr("sys.argv", ["price-alert", "check-config", "--config", str(path)])
 
     cli.main()
@@ -301,7 +301,7 @@ def test_preview_sounds_explains_unsupported_platform(monkeypatch):
 def test_simulate_includes_one_dormant_alert(capsys):
     config = AppConfig.model_validate(
         {
-            "move": {"enabled": False},
+            "spike": {"enabled": False},
             "trend": {"enabled": False},
             "launch": {"rise": {"enabled": False}},
             "reversal": {"enabled": False},
@@ -316,7 +316,7 @@ def test_simulate_includes_one_dormant_alert(capsys):
 def test_simulate_runs_each_enabled_dormant_group(capsys):
     config = AppConfig.model_validate(
         {
-            "move": {"enabled": False},
+            "spike": {"enabled": False},
             "trend": {"enabled": False},
             "launch": {"rise": {"enabled": False}},
             "reversal": {"enabled": False},

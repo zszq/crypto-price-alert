@@ -1,6 +1,6 @@
 """在 record.py 的逐秒记录上按任意（更严的）参数重算提醒，并计算提醒质量指标。
 
-确认、补齐秒、空档复核、冷却的处理与 src/price_alert/detectors/move/detector.py 一致，verify.py 用真实检测器对拍。
+确认、补齐秒、空档复核、冷却的处理与 src/price_alert/detectors/spike/detector.py 一致，verify.py 用真实检测器对拍。
 """
 
 from __future__ import annotations

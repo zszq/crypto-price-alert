@@ -10,8 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from price_alert.detectors.dormant.config import DormantConfig
 from price_alert.detectors.launch.config import LaunchConfig
-from price_alert.detectors.move.config import MoveConfig
 from price_alert.detectors.reversal.config import ReversalConfig
+from price_alert.detectors.spike.config import SpikeConfig
 from price_alert.detectors.trend.config import TrendConfig
 from price_alert.exchange.config import GateConfig
 from price_alert.notify.config import AlertConfig
@@ -22,7 +22,7 @@ class AppConfig(BaseModel):
 
     gate: GateConfig = Field(default_factory=GateConfig)
     # 五种提醒相互独立，模型定义在各自的检测器子包内；删除某种提醒时只需去掉对应一项。
-    move: MoveConfig = Field(default_factory=MoveConfig)
+    spike: SpikeConfig = Field(default_factory=SpikeConfig)
     trend: TrendConfig = Field(default_factory=TrendConfig)
     launch: LaunchConfig = Field(default_factory=LaunchConfig)
     dormant: DormantConfig = Field(default_factory=DormantConfig)
@@ -31,10 +31,10 @@ class AppConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_any_detector(self) -> AppConfig:
-        detectors = (self.move, self.trend, self.launch, self.dormant, self.reversal)
+        detectors = (self.spike, self.trend, self.launch, self.dormant, self.reversal)
         if not any(detector.enabled for detector in detectors):
             # 没有检测器时 run 会一直按合约池刷新失败重试，不如在加载配置时直接指出。
-            raise ValueError("move、trend、launch、dormant、reversal 至少要启用一个")
+            raise ValueError("spike、trend、launch、dormant、reversal 至少要启用一个")
         return self
 
 

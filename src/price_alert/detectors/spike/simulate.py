@@ -7,16 +7,16 @@ from datetime import UTC, datetime, timedelta
 
 from price_alert.assembly import build_detector, build_windows
 from price_alert.common.models import INTERVAL_SECONDS, Candle, PriceTick
-from price_alert.detectors.move.alerts import PriceAlert
-from price_alert.detectors.move.config import MoveConfig
-from price_alert.detectors.move.streak import StreakAlert
-from price_alert.detectors.move.windows import MoveWindow
+from price_alert.detectors.spike.alerts import PriceAlert
+from price_alert.detectors.spike.config import SpikeConfig
+from price_alert.detectors.spike.streak import StreakAlert
+from price_alert.detectors.spike.windows import SpikeWindow
 
 SYMBOL = "BTC_USDT"
 DEMO_ATR = 2.0
 
 
-def simulate_move(config: MoveConfig) -> list[PriceAlert | StreakAlert]:
+def simulate_spike(config: SpikeConfig) -> list[PriceAlert | StreakAlert]:
     alerts: list[PriceAlert | StreakAlert] = []
     for window in build_windows(config, cooldown_seconds=0):
         alerts.extend(_simulate_window(config, window))
@@ -38,7 +38,7 @@ def _build_demo_candles(end: datetime, count: int, interval_seconds: int) -> lis
     ]
 
 
-def _simulate_window(config: MoveConfig, window: MoveWindow) -> list[PriceAlert | StreakAlert]:
+def _simulate_window(config: SpikeConfig, window: SpikeWindow) -> list[PriceAlert | StreakAlert]:
     interval_seconds = INTERVAL_SECONDS[config.candle_interval]
     # 每个窗口用只含它自己的检测器：要验证的是这个窗口的门槛能否被满足，不能让另一个窗口先提醒掩盖问题。
     detector = build_detector(config, windows=[window], streak=False)

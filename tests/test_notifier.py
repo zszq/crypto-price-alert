@@ -11,7 +11,7 @@ from price_alert.detectors.dormant.alerts import DormantAlert
 from price_alert.detectors.dormant.rule import DormantMetrics
 from price_alert.detectors.launch.alerts import LaunchAlert
 from price_alert.detectors.launch.rule import LaunchMetrics
-from price_alert.detectors.move.alerts import PriceAlert
+from price_alert.detectors.spike.alerts import PriceAlert
 from price_alert.notify.notifier import (
     DORMANT_LABEL_COLOR,
     DROP_CHANGE_COLOR,

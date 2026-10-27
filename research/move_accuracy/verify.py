@@ -1,4 +1,4 @@
-"""对拍：同一段逐笔成交分别交给真实 AtrMoveDetector 与本研究的引擎，逐条比较提醒（秒、方向）。
+"""对拍：同一段逐笔成交分别交给真实 AtrSpikeDetector 与本研究的引擎，逐条比较提醒（秒、方向）。
 
 用法：verify.py 合约 月份 [天数]，对几组参数（含宽松的一组）逐条比较。
 """
@@ -13,9 +13,9 @@ from common import load_klines, month_start, previous_month
 from engine import load_trades, process
 from sim import Params, Rows, Simulator
 
-from price_alert.detectors.move.detector import AtrMoveDetector
+from price_alert.detectors.spike.detector import AtrSpikeDetector
 from price_alert.common.models import Candle, PriceTick
-from price_alert.detectors.move.windows import MoveWindow
+from price_alert.detectors.spike.windows import SpikeWindow
 
 CASES = [
     (30, Params(1.3, 1.5, 2, 15, 30)),
@@ -31,11 +31,11 @@ def real_alerts(symbol: str, month: str, days: float, window: int, p: Params) ->
     prev = load_klines(symbol, previous_month(month))
     prev = prev[prev[:, 0] >= start - 3600]
     candles = [Candle(datetime.fromtimestamp(r[0], UTC), r[5], r[3], r[4], r[2]) for r in prev]
-    detector = AtrMoveDetector(
+    detector = AtrSpikeDetector(
         atr_period=14,
         candle_interval_seconds=60,
         max_atr_age_seconds=180,
-        windows=[MoveWindow("short", window, p.b, p.a, p.c, p.trades, int(p.cooldown))],
+        windows=[SpikeWindow("short", window, p.b, p.a, p.c, p.trades, int(p.cooldown))],
     )
     detector.add_symbol(symbol, candles, 1e9)
     t, price, size = load_trades(symbol, month)
@@ -69,11 +69,11 @@ def dual_case(symbol: str, month: str, days: float) -> None:
     prev = prev[prev[:, 0] >= start - 3600]
     candles = [Candle(datetime.fromtimestamp(r[0], UTC), r[5], r[3], r[4], r[2]) for r in prev]
     short, long_ = Params(1.3, 1.5, 2, 15, 30), Params(1.6, 1.8, 3, 30, 180)
-    detector = AtrMoveDetector(
+    detector = AtrSpikeDetector(
         atr_period=14,
         candle_interval_seconds=60,
         max_atr_age_seconds=180,
-        windows=[MoveWindow("short", 30, 1.5, 1.3, 2, 15, 30), MoveWindow("long", 180, 1.8, 1.6, 3, 30, 180)],
+        windows=[SpikeWindow("short", 30, 1.5, 1.3, 2, 15, 30), SpikeWindow("long", 180, 1.8, 1.6, 3, 30, 180)],
     )
     detector.add_symbol(symbol, candles, 1e9)
     t, price, size = load_trades(symbol, month)

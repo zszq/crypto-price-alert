@@ -12,8 +12,8 @@ from price_alert.detectors.dormant.alerts import DormantAlert
 from price_alert.detectors.dormant.rule import DormantMetrics
 from price_alert.detectors.launch.alerts import LaunchAlert
 from price_alert.detectors.launch.rule import LaunchMetrics
-from price_alert.detectors.move.alerts import PriceAlert
-from price_alert.detectors.move.streak import StreakAlert
+from price_alert.detectors.spike.alerts import PriceAlert
+from price_alert.detectors.spike.streak import StreakAlert
 from price_alert.detectors.trend.alerts import TrendAlert
 from price_alert.detectors.trend.pattern import PatternMetrics
 from price_alert.notify import sounds

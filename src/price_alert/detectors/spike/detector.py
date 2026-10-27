@@ -11,9 +11,9 @@ from typing import Literal
 
 from price_alert.common.indicators import WilderAtr
 from price_alert.common.models import Candle, PriceTick
-from price_alert.detectors.move.alerts import PriceAlert
-from price_alert.detectors.move.streak import StreakAlert, StreakRule, StreakTracker
-from price_alert.detectors.move.windows import MoveWindow, Outcome, WindowEvaluation, WindowName
+from price_alert.detectors.spike.alerts import PriceAlert
+from price_alert.detectors.spike.streak import StreakAlert, StreakRule, StreakTracker
+from price_alert.detectors.spike.windows import Outcome, SpikeWindow, WindowEvaluation, WindowName
 
 # 基准桶允许比目标时刻早的秒数：成交稀疏时恰好落在目标秒上的桶未必存在，差一两秒不影响位移的含义。
 BASELINE_TOLERANCE_SECONDS = 2
@@ -125,14 +125,14 @@ class _SymbolState:
     atr_stale: bool = False
 
 
-class AtrMoveDetector:
+class AtrSpikeDetector:
     def __init__(
         self,
         *,
         atr_period: int,
         candle_interval_seconds: int,
         max_atr_age_seconds: int,
-        windows: Sequence[MoveWindow],
+        windows: Sequence[SpikeWindow],
         observer: Callable[[WindowEvaluation], None] | None = None,
         streak: StreakRule | None = None,
     ) -> None:
@@ -446,7 +446,7 @@ class AtrMoveDetector:
         self,
         symbol: str,
         state: _SymbolState,
-        window: MoveWindow,
+        window: SpikeWindow,
         candidate: _Candidate,
         current: _SecondBucket,
         latest_price: float | None,
@@ -516,7 +516,7 @@ class AtrMoveDetector:
     def _find_baseline(
         buckets: deque[_SecondBucket],
         current: _SecondBucket,
-        window: MoveWindow,
+        window: SpikeWindow,
     ) -> tuple[_SecondBucket, float] | None:
         """找窗口起点的基准桶与基准价；空档过长、基准价已无意义时返回 None。"""
         target = current.timestamp - timedelta(seconds=window.lookback_seconds)
@@ -539,7 +539,7 @@ class AtrMoveDetector:
 
     @staticmethod
     def _still_moving(
-        window: MoveWindow,
+        window: SpikeWindow,
         latest_price: float,
         baseline_price: float,
         atr: float,
@@ -555,7 +555,7 @@ class AtrMoveDetector:
         self,
         symbol: str,
         state: _SymbolState,
-        window: MoveWindow,
+        window: SpikeWindow,
         evaluation: WindowEvaluation,
         timestamp: datetime,
     ) -> PriceAlert:

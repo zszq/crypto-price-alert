@@ -29,8 +29,8 @@ from typing import Literal
 from price_alert.detectors.alerts import Alert
 from price_alert.detectors.dormant.alerts import DormantAlert
 from price_alert.detectors.launch.alerts import LaunchAlert
-from price_alert.detectors.move.streak import StreakAlert
 from price_alert.detectors.reversal.alerts import ReversalAlert
+from price_alert.detectors.spike.streak import StreakAlert
 from price_alert.detectors.trend.alerts import TrendAlert
 
 SoundName = Literal["short", "long", "streak", "trend", "trend_continuing", "reversal", "dormant", "launch"]

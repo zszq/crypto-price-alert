@@ -26,7 +26,7 @@ ATR 异动强度 = |当前完整秒 VWAP - N 秒前完整秒 VWAP| / Wilder ATR
 
 ### 长窗口：慢速单边行情
 
-短窗口只比较首尾两个点，每 30 秒都跌不到门槛的连续阴跌（例如 3 分钟跌 3%）会一直漏报。为此另设一个更长的观察窗口（默认 3 分钟，`move.long_window`），用同一份秒级数据和 ATR、但独立的一套门槛（默认涨跌 ≥ 2% 且 ≥ 2 ATR、窗口成交 ≥ 30 笔、连续 3 秒）。两个窗口互不影响，各自满足即各自提醒：
+短窗口只比较首尾两个点，每 30 秒都跌不到门槛的连续阴跌（例如 3 分钟跌 3%）会一直漏报。为此另设一个更长的观察窗口（默认 3 分钟，`spike.long_window`），用同一份秒级数据和 ATR、但独立的一套门槛（默认涨跌 ≥ 2% 且 ≥ 2 ATR、窗口成交 ≥ 30 笔、连续 3 秒）。两个窗口互不影响，各自满足即各自提醒：
 
 - 同一秒两个窗口都满足时各报一条，短窗口在前；所以一次幅度足够大的急涨急跌，通常会同时收到短、长窗口两条提醒；
 - 冷却按窗口各自记录「上次提醒时间」：短窗口 `short_window.cooldown_seconds`，长窗口 `long_window.cooldown_seconds`（默认等于窗口长度，且不能更短），只从本窗口自己的上一次提醒算起。短窗口在震荡行情里频繁提醒，不会把长窗口的冷却一直续上；长窗口的长冷却也不会拖住短窗口对下一波急涨急跌的提醒；一个窗口提醒后也不清空另一个窗口的连续确认进度；
@@ -37,7 +37,7 @@ ATR 异动强度 = |当前完整秒 VWAP - N 秒前完整秒 VWAP| / Wilder ATR
 
 ### 连续提醒：短窗口同向连发
 
-短窗口有 30 秒冷却，一段持续拉升在提醒里表现为同一合约一串同方向的短窗口提醒，间隔是冷却加上冷却后重新确认的几秒，单看其中一条分不出它与一次性插针。为此在短窗口同方向提醒连续 3 条（`move.streak.min_alerts`）、相邻两条间隔都不超过冷却 + 30 秒（`gap_tolerance_seconds`，默认即 60 秒）时，紧跟在第 3 条之后追加一条 `[急涨提醒·连续急涨]` / `[急跌提醒·连续急跌]`，累计涨跌幅从第 1 条提醒的窗口起点算到当前价：
+短窗口有 30 秒冷却，一段持续拉升在提醒里表现为同一合约一串同方向的短窗口提醒，间隔是冷却加上冷却后重新确认的几秒，单看其中一条分不出它与一次性插针。为此在短窗口同方向提醒连续 3 条（`spike.streak.min_alerts`）、相邻两条间隔都不超过冷却 + 30 秒（`gap_tolerance_seconds`，默认即 60 秒）时，紧跟在第 3 条之后追加一条 `[急涨提醒·连续急涨]` / `[急跌提醒·连续急跌]`，累计涨跌幅从第 1 条提醒的窗口起点算到当前价：
 
 - 只串联短窗口提醒；中间出现反向的短窗口提醒或间隔超过上限都从头计数，长窗口提醒不参与也不打断；被冷却拦下的秒不算提醒，不计数；
 - 每串只报一次，之后同一串里的短窗口提醒照常发出，不再追加；
@@ -225,7 +225,7 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 
 ### 交易用的放量实例
 
-`config/launch-trade.yaml` 是给交易单独准备的一份配置：只开放量启动（`move`、`trend`、`dormant` 都关闭），参数取 S5（窗口成交额 ≥ 30 万、不要求突破、不设涨幅上限、合约池不设下限、只做多，最长持 18 小时），提醒写到 `data/alerts/launch-trade.jsonl`。与日常监控同时运行，日常监控调参不影响交易信号：
+`config/launch-trade.yaml` 是给交易单独准备的一份配置：只开放量启动（`spike`、`trend`、`dormant` 都关闭），参数取 S5（窗口成交额 ≥ 30 万、不要求突破、不设涨幅上限、合约池不设下限、只做多，最长持 18 小时），提醒写到 `data/alerts/launch-trade.jsonl`。与日常监控同时运行，日常监控调参不影响交易信号：
 
 ```powershell
 .\.venv\Scripts\python.exe -m price_alert.cli run --config config/launch-trade.yaml
@@ -260,7 +260,7 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 .\.venv\Scripts\python.exe -m price_alert.cli simulate
 ```
 
-模拟会为每个启用的观察窗口（`move.enabled: false` 时没有）、趋势周期、放量方向（上涨、下跌）、冷门启动的每个启用参数组（现行一组、慢启动一组）与反弹回落各跑一遍，正常时各产生一条提醒；数量不符时命令以非零退出码结束并给出提示。配置文件缺失或校验失败时，会列出出错的配置键路径。
+模拟会为每个启用的观察窗口（`spike.enabled: false` 时没有）、趋势周期、放量方向（上涨、下跌）、冷门启动的每个启用参数组（现行一组、慢启动一组）与反弹回落各跑一遍，正常时各产生一条提醒；数量不符时命令以非零退出码结束并给出提示。配置文件缺失或校验失败时，会列出出错的配置键路径。
 
 依次试听各类提醒的提示音（见下文「提示音」，只支持 Windows 与 macOS）：
 
@@ -417,7 +417,7 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 
 本文中的参数取值、例子和回放结果都按代码默认值（`config.py` / `trend/config.py` / `launch/config.py` / `dormant/config.py` / `reversal/config.py`）给出，与 `config/default/` 中调过的取值可能不同，实际运行以 YAML 为准。
 
-日常监控的配置是 `config/default/` 目录，`--config` 不传时就用它：程序读取目录下全部 `.yaml` 文件，按顶层键合并成一份配置，同一个顶层键出现在两个文件里会直接报错。`common.yaml` 放交易所连接 `gate` 与提醒分发 `alerts`，每种提醒单独一个文件：`move.yaml`（短时异动）、`launch.yaml`（放量启动）、`trend.yaml`（趋势）、`dormant.yaml`（冷门启动）、`reversal.yaml`（反弹回落）。`--config` 也可以传单个 YAML 文件（如 `config/launch-trade.yaml`），各段写在同一个文件里。
+日常监控的配置是 `config/default/` 目录，`--config` 不传时就用它：程序读取目录下全部 `.yaml` 文件，按顶层键合并成一份配置，同一个顶层键出现在两个文件里会直接报错。`common.yaml` 放交易所连接 `gate` 与提醒分发 `alerts`，每种提醒单独一个文件：`spike.yaml`（短时异动）、`launch.yaml`（放量启动）、`trend.yaml`（趋势）、`dormant.yaml`（冷门启动）、`reversal.yaml`（反弹回落）。`--config` 也可以传单个 YAML 文件（如 `config/launch-trade.yaml`），各段写在同一个文件里。
 
 主要参数：
 
@@ -428,25 +428,25 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 - `gate.rest_rate_limit_per_second` / `gate.rest_rate_limit_burst`：所有 REST 请求共用的令牌桶速率与突发额度，默认 10 次/秒、突发 20 次。交易所限频按单位时间的请求数计算，而合约池大小只决定单轮请求数，因此上限必须加在时间维度上：合约池再大、断线重连再频繁，长期平均速率都收敛到该值，只会拉长一轮预热或回补的耗时。注意突发额度是瞬时放行的额度——桶攒满时可以一次发出 20 个请求，限制的是长期平均速率而非任意一秒内的绝对上限，所以突发额度不应超过交易所在一个限频窗口内的配额——Gate 公共接口的官方口径是每个端点每 10 秒 200 次（响应头 `X-Gate-RateLimit-Limit` 实测同为 200），折合平均 20 次/秒，而本项目的令牌桶是所有端点共用的，比按端点计算更保守。若日志出现 429，应下调速率而不是调高重试次数；
 - `gate.rest_retries`：单个请求的最大尝试次数。429 按交易所告知的恢复时刻等待（封顶 30 秒）：优先读 HTTP 标准头 `Retry-After`，Gate 实际不返回该头，恢复时刻放在专有头 `X-Gate-RateLimit-Reset-Timestamp`（Unix 秒级绝对时间戳）里；两者都没有时才按 2 秒起的指数退避，明显长于其他临时故障的 0.5 秒，避免在限频期间继续加码请求；
 - `gate.warmup_concurrency`：K 线预热与断线回补共用的并发上限，两者共用同一个信号量，峰值并发不会叠加；
-- `move.enabled`：是否启用短时异动提醒，默认开启；关闭后不创建该检测器，也不订阅、预热它的合约池。`move`、`trend`、`launch.rise` / `launch.fall`、`dormant`、`reversal` 至少要启用一个；
-- `move.min_volume_24h_quote`：短时异动的 24 小时 USDT 计价成交额门槛，默认 10M；趋势、放量启动的合约池另见 `trend.min_volume_24h_quote` / `launch.rise.min_volume_24h_quote` 等；
-- `move.candle_interval`：ATR K 线周期；
-- `move.atr_period`：Wilder ATR 周期；
-- `move.max_atr_age_seconds`：ATR 过期保护，按最近一根计入 ATR 的 K 线的收盘时间计算，不能小于两个 K 线周期；不填写时默认为三个 K 线周期；
-- `move.short_window` 与 `move.long_window` 是结构相同的两个观察窗口，各自包含下列参数（`long_window` 另有 `enabled`）：
+- `spike.enabled`：是否启用短时异动提醒，默认开启；关闭后不创建该检测器，也不订阅、预热它的合约池。`spike`、`trend`、`launch.rise` / `launch.fall`、`dormant`、`reversal` 至少要启用一个；
+- `spike.min_volume_24h_quote`：短时异动的 24 小时 USDT 计价成交额门槛，默认 10M；趋势、放量启动的合约池另见 `trend.min_volume_24h_quote` / `launch.rise.min_volume_24h_quote` 等；
+- `spike.candle_interval`：ATR K 线周期；
+- `spike.atr_period`：Wilder ATR 周期；
+- `spike.max_atr_age_seconds`：ATR 过期保护，按最近一根计入 ATR 的 K 线的收盘时间计算，不能小于两个 K 线周期；不填写时默认为三个 K 线周期；
+- `spike.short_window` 与 `spike.long_window` 是结构相同的两个观察窗口，各自包含下列参数（`long_window` 另有 `enabled`）：
   - `lookback_seconds`：观察窗口长度，当前秒与该秒数之前的完整秒比较；
   - `trigger_atr_multiple`：触发所需 ATR 倍数；
   - `min_change_percent`：触发所需的最低实际涨跌幅，与 ATR 倍数同时满足；
   - `confirmation_seconds`：超过门槛后需要连续确认的秒数，不能大于 `lookback_seconds`；
   - `min_window_trades`：窗口内最低成交笔数；
   - `cooldown_seconds`：该窗口提醒后的同一合约冷却时间，不分涨跌方向；
-- `move.short_window`：短窗口，默认 30 秒、1.5 ATR 且 1%、连续 3 秒、10 笔、冷却 30 秒，始终启用；
-- `move.long_window.enabled`：是否启用长窗口，默认开启；
-- `move.long_window.lookback_seconds`：长窗口长度，默认 180 秒（5 分钟填 300），必须大于 `short_window.lookback_seconds`；
-- `move.long_window.trigger_atr_multiple` / `min_change_percent`：长窗口的 ATR 倍数与最低涨跌幅，默认 2 与 2%，两者同时满足；
-- `move.long_window.confirmation_seconds` / `min_window_trades`：长窗口的连续确认秒数与窗口最低成交笔数，默认 3 秒、30 笔；
-- `move.long_window.cooldown_seconds`：不能小于长窗口长度，不填写时等于长窗口长度（短窗口冷却没有这条限制，默认 30 秒）；
-- `move.streak.enabled` / `min_alerts` / `gap_tolerance_seconds`：短窗口同向连发时的连续提醒，默认开启、连续 3 条、相邻间隔 ≤ 短窗口冷却 + 30 秒，见上文「连续提醒」；
+- `spike.short_window`：短窗口，默认 30 秒、1.5 ATR 且 1%、连续 3 秒、10 笔、冷却 30 秒，始终启用；
+- `spike.long_window.enabled`：是否启用长窗口，默认开启；
+- `spike.long_window.lookback_seconds`：长窗口长度，默认 180 秒（5 分钟填 300），必须大于 `short_window.lookback_seconds`；
+- `spike.long_window.trigger_atr_multiple` / `min_change_percent`：长窗口的 ATR 倍数与最低涨跌幅，默认 2 与 2%，两者同时满足；
+- `spike.long_window.confirmation_seconds` / `min_window_trades`：长窗口的连续确认秒数与窗口最低成交笔数，默认 3 秒、30 笔；
+- `spike.long_window.cooldown_seconds`：不能小于长窗口长度，不填写时等于长窗口长度（短窗口冷却没有这条限制，默认 30 秒）；
+- `spike.streak.enabled` / `min_alerts` / `gap_tolerance_seconds`：短窗口同向连发时的连续提醒，默认开启、连续 3 条、相邻间隔 ≤ 短窗口冷却 + 30 秒，见上文「连续提醒」；
 - `trend.enabled`：是否启用 K 线形态趋势提醒，默认开启；关闭后不创建趋势检测器，也不会多拉 K 线；
 - `trend.alert_continuing`：形态持续成立时是否每根周期 K 线收盘都报一条「延续」提醒，默认开启；关闭后同一段走势只报一次；
 - `trend.min_volume_24h_quote` / `trend.max_volume_24h_quote`：趋势提醒的合约池范围，与短时异动分开设置。成交额严格大于下限（默认 10M）且不超过上限才监控；上限默认不设，即下限以上全部纳入，设置时须大于下限。两个合约池各自增删，只在其中一个池里的合约只做对应的判定，行情订阅取两者并集；`universe` 命令分别列出两个合约池；
@@ -490,7 +490,7 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 ```text
 config/default/              日常监控配置（目录下全部 .yaml 合并）
 ├── common.yaml              Gate 连接与提醒分发
-├── move.yaml                短时异动（ATR）
+├── spike.yaml               短时异动（ATR）
 ├── launch.yaml              放量启动（上涨、下跌）
 ├── trend.yaml               K 线趋势
 ├── dormant.yaml             冷门启动
@@ -516,12 +516,12 @@ src/price_alert/              分层：common ← exchange ← detectors ← not
 ├── detectors/               各类提醒（每个子包只经 assembly 接入）
 │   ├── alerts.py            全部提醒类型的汇总
 │   ├── replay.py            各回放共用的时间解析、报价精度、区间推算与取数
-│   ├── move/                短时异动提醒
+│   ├── spike/               短时异动提醒
 │   │   ├── windows.py       观察窗口规则与逐秒判定记录
 │   │   ├── detector.py      ATR 标准化异动检测（多窗口）
 │   │   ├── streak.py        短窗口同向连发的连续提醒
 │   │   ├── alerts.py        异动提醒模型与文本
-│   │   ├── config.py        move 配置段
+│   │   ├── config.py        spike 配置段
 │   │   ├── replay.py        历史成交回放与逐秒判定解释
 │   │   └── simulate.py      合成行情验证
 │   ├── trend/               K 线形态趋势提醒

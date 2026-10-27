@@ -1,6 +1,6 @@
 """各检测器历史回放的公共部分：时间与合约名解析、报价精度，以及两类回放的区间与取数。
 
-- 成交逐秒回放（move、reversal）：ReplayPlan / ReplayData 与 fetch_replay_data（取成交与预热 K 线）；
+- 成交逐秒回放（spike、reversal）：ReplayPlan / ReplayData 与 fetch_replay_data（取成交与预热 K 线）；
 - 1 分钟 K 线回放（trend、launch、dormant）：MinuteReplayPlan 与 plan_minute_replay（对齐与 Gate 保留期检查），
   K 线由 exchange.gate.fetch_minute_candles 分段取。
 各自的驱动检测器与排版放在自己的包里。
@@ -103,7 +103,7 @@ def plan_minute_replay(
 
 
 def fetch_replay_data(rest: GateRestClient, plan: ReplayPlan, candle_interval: str) -> ReplayData:
-    """candle_interval 为预热 K 线周期：短时异动取 move.candle_interval，反弹回落固定用 1 分钟。"""
+    """candle_interval 为预热 K 线周期：短时异动取 spike.candle_interval，反弹回落固定用 1 分钟。"""
     decimals = fetch_price_decimals(rest, plan.symbol)
     interval = timedelta(seconds=INTERVAL_SECONDS[candle_interval])
     candles = rest.fetch_candles_between(

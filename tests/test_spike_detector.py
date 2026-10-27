@@ -3,10 +3,10 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from price_alert.common.models import Candle, PriceTick
-from price_alert.detectors.move.alerts import PriceAlert
-from price_alert.detectors.move.detector import AtrMoveDetector
-from price_alert.detectors.move.streak import StreakAlert, StreakRule
-from price_alert.detectors.move.windows import MoveWindow, Outcome
+from price_alert.detectors.spike.alerts import PriceAlert
+from price_alert.detectors.spike.detector import AtrSpikeDetector
+from price_alert.detectors.spike.streak import StreakAlert, StreakRule
+from price_alert.detectors.spike.windows import Outcome, SpikeWindow
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -24,7 +24,7 @@ def history(range_size: float, period: int = 3) -> list[Candle]:
     ]
 
 
-def short_window(**overrides) -> MoveWindow:
+def short_window(**overrides) -> SpikeWindow:
     values = {
         "name": "short",
         "lookback_seconds": 10,
@@ -34,11 +34,11 @@ def short_window(**overrides) -> MoveWindow:
         "min_window_trades": 2,
         "cooldown_seconds": 120,
     }
-    return MoveWindow(**(values | overrides))
+    return SpikeWindow(**(values | overrides))
 
 
-def detector(*extra_windows: MoveWindow, observer=None) -> AtrMoveDetector:
-    return AtrMoveDetector(
+def detector(*extra_windows: SpikeWindow, observer=None) -> AtrSpikeDetector:
+    return AtrSpikeDetector(
         atr_period=3,
         candle_interval_seconds=60,
         max_atr_age_seconds=180,
@@ -47,7 +47,7 @@ def detector(*extra_windows: MoveWindow, observer=None) -> AtrMoveDetector:
     )
 
 
-def feed_window(instance: AtrMoveDetector, symbol: str, final_price: float):
+def feed_window(instance: AtrSpikeDetector, symbol: str, final_price: float):
     start = BASE + timedelta(minutes=3)
     alerts = []
     for second in range(11):
@@ -132,7 +132,7 @@ def test_ignores_unknown_and_out_of_order_ticks():
     assert instance.add_tick(PriceTick("BTC_USDT", 80, 1, current - timedelta(seconds=1))) == []
 
 
-def feed_window_at(instance: AtrMoveDetector, symbol: str, final_price: float, start):
+def feed_window_at(instance: AtrSpikeDetector, symbol: str, final_price: float, start):
     alerts = []
     for second in range(11):
         instance.add_tick(PriceTick(symbol, 100.0, 1.0, start + timedelta(seconds=second)))
@@ -276,7 +276,7 @@ def test_cooldown_survives_symbol_leaving_and_rejoining_universe():
     assert feed_window_at(instance, "BTC_USDT", 99.0, BASE + timedelta(minutes=3, seconds=20)) == []
 
 
-def atr_of(instance: AtrMoveDetector, symbol: str):
+def atr_of(instance: AtrSpikeDetector, symbol: str):
     # ATR 没有公开读取接口；K 线口径问题直接检查内部 ATR 最清楚，也不必借助整条提醒链路间接推断。
     return instance._states[symbol].atr
 
@@ -465,7 +465,7 @@ def test_second_left_pending_across_a_late_resync_is_not_judged_with_the_rebuilt
     assert [evaluation.atr for evaluation in after] == [pytest.approx(1.0)]
 
 
-def long_window(**overrides) -> MoveWindow:
+def long_window(**overrides) -> SpikeWindow:
     values = {
         "name": "long",
         "lookback_seconds": 40,
@@ -475,10 +475,10 @@ def long_window(**overrides) -> MoveWindow:
         "min_window_trades": 5,
         "cooldown_seconds": 40,
     }
-    return MoveWindow(**(values | overrides))
+    return SpikeWindow(**(values | overrides))
 
 
-def feed_prices(instance: AtrMoveDetector, symbol: str, prices: dict[int, float]):
+def feed_prices(instance: AtrSpikeDetector, symbol: str, prices: dict[int, float]):
     start = BASE + timedelta(minutes=3)
     alerts = []
     for second, price in sorted(prices.items()):
@@ -516,7 +516,7 @@ def test_both_windows_alert_in_the_same_second_independently():
 
 
 def test_short_alerts_do_not_extend_long_cooldown():
-    instance = AtrMoveDetector(
+    instance = AtrSpikeDetector(
         atr_period=3,
         candle_interval_seconds=60,
         max_atr_age_seconds=180,
@@ -552,7 +552,7 @@ def test_long_cooldown_does_not_delay_a_new_short_move():
 
 def test_long_window_baseline_carries_price_through_gap_longer_than_fill_limit():
     evaluations = []
-    instance = AtrMoveDetector(
+    instance = AtrSpikeDetector(
         atr_period=3,
         candle_interval_seconds=60,
         max_atr_age_seconds=180,
@@ -579,7 +579,7 @@ def test_long_window_baseline_carries_price_through_gap_longer_than_fill_limit()
 
 def test_long_window_skips_when_gap_is_longer_than_the_window():
     evaluations = []
-    instance = AtrMoveDetector(
+    instance = AtrSpikeDetector(
         atr_period=3,
         candle_interval_seconds=60,
         max_atr_age_seconds=180,
@@ -623,9 +623,9 @@ def test_price_decimals_follow_the_latest_universe_refresh():
 
 def test_rejects_invalid_window_sets():
     with pytest.raises(ValueError, match="至少需要一个"):
-        AtrMoveDetector(atr_period=3, candle_interval_seconds=60, max_atr_age_seconds=180, windows=[])
+        AtrSpikeDetector(atr_period=3, candle_interval_seconds=60, max_atr_age_seconds=180, windows=[])
     with pytest.raises(ValueError, match="不能重复"):
-        AtrMoveDetector(
+        AtrSpikeDetector(
             atr_period=3,
             candle_interval_seconds=60,
             max_atr_age_seconds=180,
@@ -637,7 +637,7 @@ def test_rejects_invalid_window_sets():
 
 def test_window_with_too_few_trades_does_not_alert_even_when_price_moved():
     evaluations = []
-    instance = AtrMoveDetector(
+    instance = AtrSpikeDetector(
         atr_period=3,
         candle_interval_seconds=60,
         max_atr_age_seconds=180,
@@ -668,7 +668,7 @@ def test_short_window_does_not_fill_gaps_just_because_a_long_window_exists():
 
 
 def test_confirmation_restarts_after_each_alert():
-    instance = AtrMoveDetector(
+    instance = AtrSpikeDetector(
         atr_period=3,
         candle_interval_seconds=60,
         max_atr_age_seconds=180,
@@ -704,7 +704,7 @@ def test_mark_symbol_gap_only_invalidates_that_symbol():
 
 
 def test_consecutive_short_alerts_add_a_streak_alert_and_long_alerts_do_not_count():
-    instance = AtrMoveDetector(
+    instance = AtrSpikeDetector(
         atr_period=3,
         candle_interval_seconds=60,
         max_atr_age_seconds=180,
@@ -729,7 +729,7 @@ def test_consecutive_short_alerts_add_a_streak_alert_and_long_alerts_do_not_coun
 
 
 def test_detector_without_streak_rule_never_adds_streak_alerts():
-    instance = AtrMoveDetector(
+    instance = AtrSpikeDetector(
         atr_period=3,
         candle_interval_seconds=60,
         max_atr_age_seconds=180,

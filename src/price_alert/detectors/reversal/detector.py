@@ -1,6 +1,6 @@
 """反弹回落检测器：在短时异动的单窗口判定之上，再要求前置走势反向、成交笔数暴增。
 
-急动判定与 AtrMoveDetector 完全相同（研究也按这套判定选参），所以继承它，只另外做三件事：
+急动判定与 AtrSpikeDetector 完全相同（研究也按这套判定选参），所以继承它，只另外做三件事：
 - 结算真实秒时另记逐秒价格与累计成交笔数（基类的秒桶只按窗口保留，看不到前置走势与 1 小时成交）；
 - 配置了反向极值距离时，另记最近 24 小时已收盘的 1 分钟 K 线高低点（基类的 K 线只喂给 ATR，不保留）；
 - 可以提醒的那一秒再判这几个条件：不满足只拦这一秒、不清零确认，与基类对补齐秒、空档复核失败的处理一致。
@@ -17,8 +17,6 @@ from enum import StrEnum
 from typing import Literal
 
 from price_alert.common.models import Candle, PriceTick
-from price_alert.detectors.move.detector import AtrMoveDetector, _SecondBucket, _SymbolState
-from price_alert.detectors.move.windows import MoveWindow, Outcome, WindowEvaluation
 from price_alert.detectors.reversal.alerts import ReversalAlert
 from price_alert.detectors.reversal.rule import (
     ATR_PERIOD,
@@ -29,6 +27,8 @@ from price_alert.detectors.reversal.rule import (
     MAX_ATR_AGE_SECONDS,
     ReversalRule,
 )
+from price_alert.detectors.spike.detector import AtrSpikeDetector, _SecondBucket, _SymbolState
+from price_alert.detectors.spike.windows import Outcome, SpikeWindow, WindowEvaluation
 
 # 每个有成交的秒：时间、最后成交价、到这一秒为止的累计成交笔数。
 _Point = tuple[datetime, float, int]
@@ -79,9 +79,9 @@ class ReversalEvaluation:
 _MEASURED = frozenset({Outcome.CONFIRMING, Outcome.CARRIED, Outcome.MOVE_FADED, Outcome.ALERT})
 
 
-class ReversalDetector(AtrMoveDetector):
+class ReversalDetector(AtrSpikeDetector):
     def __init__(self, rule: ReversalRule, observer: Callable[[ReversalEvaluation], None] | None = None) -> None:
-        window = MoveWindow(
+        window = SpikeWindow(
             name="short",
             lookback_seconds=rule.lookback_seconds,
             trigger_atr_multiple=rule.trigger_atr_multiple,

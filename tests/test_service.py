@@ -53,8 +53,8 @@ def monitor(detector, rest=None, feed=None, app_config=None, sem=None) -> servic
     if isinstance(detector, list):
         detectors = tuple(detector)
     else:
-        move = app_config.move
-        entry = MonitoredDetector("短时异动", detector, move.candle_interval, move.warmup_candles, ANY_VOLUME)
+        spike = app_config.spike
+        entry = MonitoredDetector("短时异动", detector, spike.candle_interval, spike.warmup_candles, ANY_VOLUME)
         detectors = (entry,)
     return service._Monitor(
         detectors=detectors,
@@ -255,7 +255,7 @@ def contract(symbol: str) -> dict:
 def test_refresh_warms_new_symbols_keeps_hysteresis_and_updates_feed_without_reconnect():
     async def scenario():
         app_config = config()
-        detector = build_detector(app_config.move)
+        detector = build_detector(app_config.spike)
         feed = GateTradeFeed("wss://example.test")
         first = FakeRest(
             [ticker("BTC_USDT", 20e6), ticker("ETH_USDT", 20e6)],
@@ -299,7 +299,7 @@ def test_warmup_logs_progress_and_failures(monkeypatch, caplog):
         [contract(symbol) for symbol in symbols] + [{**contract("OLD_USDT"), "status": "delisted"}],
     )
     app_config = config()
-    detector = build_detector(app_config.move)
+    detector = build_detector(app_config.spike)
     asyncio.run(monitor(detector, rest, GateTradeFeed("wss://example.test"), app_config).initial_universe())
 
     assert "正在从 Gate.io 获取合约列表" in caplog.text
@@ -326,7 +326,7 @@ def test_split_candles_separates_unclosed_candle():
 def test_universe_loop_keeps_running_after_refresh_failure(monkeypatch):
     delays = record_sleeps(monkeypatch, limit=3)
     app_config = config()
-    detector = build_detector(app_config.move)
+    detector = build_detector(app_config.spike)
     rest = FakeRest([ticker("BTC_USDT", 20e6)], [contract("BTC_USDT")], fail_times=1)
     feed = GateTradeFeed("wss://example.test")
 
@@ -340,7 +340,7 @@ def test_universe_loop_keeps_running_after_refresh_failure(monkeypatch):
 def test_initial_universe_retries_with_backoff(monkeypatch):
     delays = record_sleeps(monkeypatch, limit=10)
     app_config = config()
-    detector = build_detector(app_config.move)
+    detector = build_detector(app_config.spike)
     rest = FakeRest([ticker("BTC_USDT", 20e6)], [contract("BTC_USDT")], fail_times=4)
     feed = GateTradeFeed("wss://example.test")
 
@@ -369,11 +369,11 @@ class CandleRest:
 def test_resync_rebuilds_stale_symbols_and_retries_failures(monkeypatch):
     delays = record_sleeps(monkeypatch, limit=10)
     app_config = config()
-    detector = build_detector(app_config.move)
+    detector = build_detector(app_config.spike)
     now = datetime.now(UTC)
     candles = [
         Candle(now - timedelta(minutes=offset), 100, 101, 99, 100)
-        for offset in range(app_config.move.warmup_candles, -1, -1)
+        for offset in range(app_config.spike.warmup_candles, -1, -1)
     ]
     for symbol in ("BTC_USDT", "ETH_USDT"):
         detector.add_symbol(symbol, [], 1e9)
@@ -391,7 +391,7 @@ def test_resync_rebuilds_stale_symbols_and_retries_failures(monkeypatch):
 def test_symbols_added_during_disconnect_are_resynced_after_reconnect(monkeypatch):
     record_sleeps(monkeypatch, limit=2)
     app_config = config()
-    detector = build_detector(app_config.move)
+    detector = build_detector(app_config.spike)
     detector.add_symbol("BTC_USDT", [], 1e9)
     resynced_batches: list[list[str]] = []
 
@@ -436,11 +436,11 @@ class TrackingSemaphore:
 def test_resync_limits_concurrency_with_the_shared_semaphore():
     """回补若自建信号量，与合约池刷新并行时峰值并发会翻倍，限速也就失去了唯一的收口。"""
     app_config = config()
-    detector = build_detector(app_config.move)
+    detector = build_detector(app_config.spike)
     now = datetime.now(UTC)
     candles = [
         Candle(now - timedelta(minutes=offset), 100, 101, 99, 100)
-        for offset in range(app_config.move.warmup_candles, -1, -1)
+        for offset in range(app_config.spike.warmup_candles, -1, -1)
     ]
     for symbol in ("BTC_USDT", "ETH_USDT", "SOL_USDT", "XRP_USDT"):
         detector.add_symbol(symbol, [], 1e9)
@@ -458,7 +458,7 @@ def test_resync_limits_concurrency_with_the_shared_semaphore():
 def test_sync_universe_uses_the_shared_semaphore():
     async def scenario():
         app_config = config()
-        detector = build_detector(app_config.move)
+        detector = build_detector(app_config.spike)
         feed = GateTradeFeed("wss://example.test")
         rest = FakeRest(
             [ticker(symbol, 20e6) for symbol in ("BTC_USDT", "ETH_USDT", "SOL_USDT")],

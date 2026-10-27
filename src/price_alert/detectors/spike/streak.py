@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from price_alert.common.formatting import beijing_time, describe_window, format_price
-from price_alert.detectors.move.alerts import PriceAlert
+from price_alert.detectors.spike.alerts import PriceAlert
 
 Direction = Literal["surge", "drop"]
 

@@ -221,7 +221,7 @@ def test_replay_command_fetches_one_minute_candles(monkeypatch, capsys):
     rest = FakeRest()
     monkeypatch.setattr(cli, "build_rest_client", lambda config: rest)
     # 短时异动改用 5 分钟 K 线时，反弹回落的回放仍按自己固定的 1 分钟预热。
-    cli.reversal_replay(AppConfig.model_validate({"move": {"candle_interval": "5m"}}), args)
+    cli.reversal_replay(AppConfig.model_validate({"spike": {"candle_interval": "5m"}}), args)
     assert rest.intervals == [REVERSAL_INTERVAL] == ["1m"]
 
 

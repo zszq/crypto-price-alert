@@ -31,10 +31,6 @@ from price_alert.detectors.launch.alerts import LABELS as LAUNCH_LABELS
 from price_alert.detectors.launch.alerts import describe_launch_rule
 from price_alert.detectors.launch.replay import plan_launch_replay, render_launch_replay, run_launch_replay
 from price_alert.detectors.launch.simulate import simulate_launch
-from price_alert.detectors.move.replay import plan_replay, render_replay, run_replay
-from price_alert.detectors.move.simulate import simulate_move
-from price_alert.detectors.move.streak import describe_streak_rule
-from price_alert.detectors.move.windows import describe_rule
 from price_alert.detectors.replay import (
     MinuteReplayPlan,
     ReplayData,
@@ -48,6 +44,10 @@ from price_alert.detectors.reversal.alerts import describe_reversal_rule
 from price_alert.detectors.reversal.replay import plan_reversal_replay, render_reversal_replay, run_reversal_replay
 from price_alert.detectors.reversal.rule import CANDLE_INTERVAL as REVERSAL_INTERVAL
 from price_alert.detectors.reversal.simulate import simulate_reversal
+from price_alert.detectors.spike.replay import plan_replay, render_replay, run_replay
+from price_alert.detectors.spike.simulate import simulate_spike
+from price_alert.detectors.spike.streak import describe_streak_rule
+from price_alert.detectors.spike.windows import describe_rule
 from price_alert.detectors.trend.alerts import describe_trend_rule
 from price_alert.detectors.trend.replay import plan_trend_replay, render_trend_replay, run_trend_replay
 from price_alert.detectors.trend.simulate import simulate_trend
@@ -128,7 +128,7 @@ def _add_replay_arguments(command: argparse.ArgumentParser, end_default: str, al
 
 
 def expected_simulated_alerts(config: AppConfig) -> int:
-    windows = len(build_windows(config.move)) if config.move.enabled else 0
+    windows = len(build_windows(config.spike)) if config.spike.enabled else 0
     trend_periods = len(config.trend.rules()) if config.trend.enabled else 0
     singles = len(config.dormant.rules()) + int(config.reversal.enabled)
     return windows + trend_periods + len(config.launch.sides()) + singles
@@ -139,8 +139,8 @@ async def simulate(config: AppConfig) -> int:
     正常时等于 expected_simulated_alerts。"""
     notifier = ConsoleNotifier(beep=False, colors=config.alerts.console_colors)
     alert_count = 0
-    if config.move.enabled:
-        for alert in simulate_move(config.move):
+    if config.spike.enabled:
+        for alert in simulate_spike(config.spike):
             alert_count += 1
             await notifier.send(alert)
     if config.trend.enabled:
@@ -177,10 +177,10 @@ def replay(config: AppConfig, args: argparse.Namespace) -> None:
     plan = _plan_or_exit(
         args,
         timedelta(minutes=DEFAULT_REPLAY_MINUTES),
-        lambda symbol, start, end: plan_replay(symbol, start, end, config.move),
+        lambda symbol, start, end: plan_replay(symbol, start, end, config.spike),
     )
-    data = _fetch_trades_or_exit(config, plan, config.move.candle_interval)
-    print("\n".join(render_replay(run_replay(config.move, plan, data), show_all=args.all)))
+    data = _fetch_trades_or_exit(config, plan, config.spike.candle_interval)
+    print("\n".join(render_replay(run_replay(config.spike, plan, data), show_all=args.all)))
 
 
 def reversal_replay(config: AppConfig, args: argparse.Namespace) -> None:
@@ -315,10 +315,10 @@ def main() -> None:
     if args.command == "check-config":
         ranges = "，".join(f"{entry.name} {entry.volume.describe()}" for entry in build_detectors(config))
         print(f"配置有效：Gate.io USDT 永续，24h 计价成交额范围：{ranges}")
-        if config.move.enabled:
-            for window in build_windows(config.move):
+        if config.spike.enabled:
+            for window in build_windows(config.spike):
                 print(f"  {describe_rule(window)}")
-            streak_rule = build_detector(config.move).streak_rule
+            streak_rule = build_detector(config.spike).streak_rule
             if streak_rule is not None:
                 print(f"  {describe_streak_rule(streak_rule)}")
         else:
@@ -365,7 +365,7 @@ def main() -> None:
         if produced != expected:
             raise SystemExit(
                 f"模拟应产生 {expected} 条提醒（每个窗口、每个趋势周期、每个放量方向、冷门启动、反弹回落各一条），"
-                f"实际 {produced} 条，请检查 move、trend、launch、dormant 与 reversal 配置"
+                f"实际 {produced} 条，请检查 spike、trend、launch、dormant 与 reversal 配置"
             )
         return
     if args.command == "replay":

@@ -20,11 +20,11 @@ from price_alert.detectors.dormant import alerts as dormant_alerts
 from price_alert.detectors.dormant.alerts import DormantAlert
 from price_alert.detectors.launch import alerts as launch_alerts
 from price_alert.detectors.launch.alerts import LaunchAlert
-from price_alert.detectors.move import alerts as move_alerts
-from price_alert.detectors.move import streak as streak_alerts
-from price_alert.detectors.move.streak import StreakAlert
 from price_alert.detectors.reversal import alerts as reversal_alerts
 from price_alert.detectors.reversal.alerts import ReversalAlert
+from price_alert.detectors.spike import alerts as spike_alerts
+from price_alert.detectors.spike import streak as streak_alerts
+from price_alert.detectors.spike.streak import StreakAlert
 from price_alert.detectors.trend import alerts as trend_alerts
 from price_alert.detectors.trend.alerts import TrendAlert
 from price_alert.exchange.gate import futures_trade_url
@@ -83,7 +83,7 @@ def format_alert(alert: Alert) -> str:
         return reversal_alerts.format_reversal_alert(alert)
     if isinstance(alert, StreakAlert):
         return streak_alerts.format_streak_alert(alert)
-    return move_alerts.format_move_alert(alert)
+    return spike_alerts.format_spike_alert(alert)
 
 
 def colorize_alert(alert: Alert, text: str, enabled: bool = True) -> str:
@@ -104,7 +104,7 @@ def colorize_alert(alert: Alert, text: str, enabled: bool = True) -> str:
     elif isinstance(alert, StreakAlert):
         change = streak_alerts.format_change(alert)
     else:
-        change = move_alerts.format_change(alert)
+        change = spike_alerts.format_change(alert)
     highlighted_change = f"{bright}{change}{Style.RESET_ALL}{color}"
     text = text.replace(alert.symbol, symbol, 1).replace(change, highlighted_change, 1)
     if isinstance(alert, TrendAlert | LaunchAlert | DormantAlert | ReversalAlert):
@@ -124,7 +124,7 @@ def colorize_alert(alert: Alert, text: str, enabled: bool = True) -> str:
         pass
     elif alert.window == "long":
         # 只高亮长窗口，短窗口保持正文色。窗口字样带“秒”或“分钟”，按首次出现替换不会误伤。
-        window = move_alerts.format_window(alert)
+        window = spike_alerts.format_window(alert)
         text = text.replace(window, f"{LONG_WINDOW_COLOR}{window}{Style.RESET_ALL}{color}", 1)
     return f"{color}{text}{Style.RESET_ALL}"
 

@@ -82,7 +82,7 @@ def test_disabled_trend_is_not_built_into_monitor():
 def test_trend_volume_range_is_configured_separately_from_atr():
     config = AppConfig.model_validate(
         {
-            "move": {"min_volume_24h_quote": 8_000_000},
+            "spike": {"min_volume_24h_quote": 8_000_000},
             "trend": {"min_volume_24h_quote": 3_000_000, "max_volume_24h_quote": 50_000_000},
             "launch": {"rise": {"enabled": False}},
             "dormant": {"enabled": False},
@@ -96,7 +96,7 @@ def test_trend_volume_range_is_configured_separately_from_atr():
     assert trend.volume == VolumeRange(3_000_000, 50_000_000)
     # 上限默认不设，下限默认与短时异动的代码默认值一致。
     assert TrendConfig().max_volume_24h_quote is None
-    assert TrendConfig().min_volume_24h_quote == AppConfig().move.min_volume_24h_quote
+    assert TrendConfig().min_volume_24h_quote == AppConfig().spike.min_volume_24h_quote
 
 
 @pytest.mark.parametrize("maximum", [3_000_000, 2_000_000])

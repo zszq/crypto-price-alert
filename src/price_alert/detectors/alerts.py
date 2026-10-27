@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from price_alert.detectors.dormant.alerts import DormantAlert
 from price_alert.detectors.launch.alerts import LaunchAlert
-from price_alert.detectors.move.alerts import PriceAlert
-from price_alert.detectors.move.streak import StreakAlert
 from price_alert.detectors.reversal.alerts import ReversalAlert
+from price_alert.detectors.spike.alerts import PriceAlert
+from price_alert.detectors.spike.streak import StreakAlert
 from price_alert.detectors.trend.alerts import TrendAlert
 
 Alert = PriceAlert | StreakAlert | TrendAlert | LaunchAlert | DormantAlert | ReversalAlert

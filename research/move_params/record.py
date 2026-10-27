@@ -22,9 +22,9 @@ from pathlib import Path
 import numpy as np
 import sim
 
-from price_alert.detectors.move.detector import AtrMoveDetector
+from price_alert.detectors.spike.detector import AtrSpikeDetector
 from price_alert.common.models import Candle, PriceTick
-from price_alert.detectors.move.windows import MoveWindow, Outcome
+from price_alert.detectors.spike.windows import SpikeWindow, Outcome
 
 # 行情、记录与结果只放本机（data/backtest/move/，不进版本库），代码在这里
 DATA = Path(__file__).resolve().parents[2] / "data" / "backtest" / "move"
@@ -34,7 +34,7 @@ PASSED = {Outcome.CONFIRMING, Outcome.CARRIED, Outcome.MOVE_FADED, Outcome.ALERT
 BASE = {"short": (0.8, 1.0), "long": (1.0, 1.2)}
 
 
-class RecordingDetector(AtrMoveDetector):
+class RecordingDetector(AtrSpikeDetector):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.records = {window.name: [] for window in self.windows}
@@ -120,8 +120,8 @@ def run(args: tuple[str, int, int, str]) -> str:
     started = time.time()
     trades = load_trades(symbol, source)
     windows = [
-        MoveWindow("short", short_lb, BASE["short"][1], BASE["short"][0], 1, 1, 0),
-        MoveWindow("long", long_lb, BASE["long"][1], BASE["long"][0], 1, 1, 0),
+        SpikeWindow("short", short_lb, BASE["short"][1], BASE["short"][0], 1, 1, 0),
+        SpikeWindow("long", long_lb, BASE["long"][1], BASE["long"][0], 1, 1, 0),
     ]
     detector = RecordingDetector(
         atr_period=14, candle_interval_seconds=60, max_atr_age_seconds=180, windows=windows, streak=None

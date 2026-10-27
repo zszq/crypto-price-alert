@@ -74,7 +74,7 @@ class StreakConfig(BaseModel):
     gap_tolerance_seconds: int = Field(default=30, ge=1, le=3600)
 
 
-class MoveConfig(BaseModel):
+class SpikeConfig(BaseModel):
     """短时异动：合约池门槛、共用的 K 线/ATR 参数与各观察窗口。"""
 
     model_config = ConfigDict(extra="forbid")
@@ -93,7 +93,7 @@ class MoveConfig(BaseModel):
     streak: StreakConfig = Field(default_factory=StreakConfig)
 
     @model_validator(mode="after")
-    def validate_warmup_and_freshness(self) -> MoveConfig:
+    def validate_warmup_and_freshness(self) -> SpikeConfig:
         if self.warmup_candles <= self.atr_period:
             raise ValueError("warmup_candles 必须大于 atr_period，以便排除尚未收盘的 K 线")
         interval_seconds = INTERVAL_SECONDS[self.candle_interval]

@@ -11,9 +11,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from price_alert.common.formatting import BEIJING_TIME, beijing_time, describe_window, format_price
-from price_alert.detectors.move.detector import BASELINE_TOLERANCE_SECONDS
-from price_alert.detectors.move.windows import OUTCOME_LABELS as WINDOW_OUTCOME_LABELS
-from price_alert.detectors.move.windows import Outcome
 from price_alert.detectors.replay import ReplayData, ReplayPlan
 from price_alert.detectors.reversal.alerts import ReversalAlert, describe_reversal_rule, format_reversal_alert
 from price_alert.detectors.reversal.detector import (
@@ -23,6 +20,9 @@ from price_alert.detectors.reversal.detector import (
     ReversalOutcome,
 )
 from price_alert.detectors.reversal.rule import CANDLE_INTERVAL_SECONDS, ReversalRule
+from price_alert.detectors.spike.detector import BASELINE_TOLERANCE_SECONDS
+from price_alert.detectors.spike.windows import OUTCOME_LABELS as WINDOW_OUTCOME_LABELS
+from price_alert.detectors.spike.windows import Outcome
 
 
 @dataclass(frozen=True, slots=True)

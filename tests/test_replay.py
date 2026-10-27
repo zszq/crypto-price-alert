@@ -4,9 +4,6 @@ import pytest
 
 from price_alert.common.formatting import BEIJING_TIME
 from price_alert.common.models import Candle, PriceTick
-from price_alert.detectors.move.alerts import PriceAlert
-from price_alert.detectors.move.config import MoveConfig
-from price_alert.detectors.move.replay import plan_replay, render_replay, run_replay
 from price_alert.detectors.replay import (
     SETTLE_MARGIN,
     SETTLE_SEARCH_LIMIT,
@@ -15,6 +12,9 @@ from price_alert.detectors.replay import (
     normalize_symbol,
     parse_time,
 )
+from price_alert.detectors.spike.alerts import PriceAlert
+from price_alert.detectors.spike.config import SpikeConfig
+from price_alert.detectors.spike.replay import plan_replay, render_replay, run_replay
 
 START = datetime(2026, 9, 29, 9, 27, tzinfo=BEIJING_TIME)
 END = datetime(2026, 9, 29, 9, 30, tzinfo=BEIJING_TIME)
@@ -36,13 +36,13 @@ def test_normalize_symbol_appends_usdt_suffix():
 
 
 def test_plan_reserves_longest_window_and_aligns_to_candle_boundary():
-    plan = plan_replay("QNT_USDT", START, END, MoveConfig())
+    plan = plan_replay("QNT_USDT", START, END, SpikeConfig())
 
     # 最长窗口 180 秒加 2 秒容差，从 09:23:58 向前对齐到 K 线边界。
     assert plan.feed_start == datetime(2026, 9, 29, 9, 23, tzinfo=BEIJING_TIME)
     assert plan.warmup_start == plan.feed_start - timedelta(minutes=50)
     with pytest.raises(ValueError, match="结束时间必须晚于开始时间"):
-        plan_replay("QNT_USDT", END, START, MoveConfig())
+        plan_replay("QNT_USDT", END, START, SpikeConfig())
 
 
 def flat_candles(plan, count: int = 50) -> list[Candle]:
@@ -64,7 +64,7 @@ def trades_per_second(first: datetime, last: datetime, price_at) -> list[PriceTi
 
 
 def jump_scenario() -> tuple:
-    plan = plan_replay("QNT_USDT", START, END, MoveConfig())
+    plan = plan_replay("QNT_USDT", START, END, SpikeConfig())
     jump = datetime(2026, 9, 29, 9, 28, tzinfo=BEIJING_TIME)
     trades = trades_per_second(plan.feed_start, END + SETTLE_MARGIN, lambda moment: 103.0 if moment >= jump else 100.0)
     # feed_start 之后开盘的 K 线不能进入预热：之后的行情必须全部由成交重建。
@@ -75,7 +75,7 @@ def jump_scenario() -> tuple:
 def test_run_replay_reproduces_alert_and_explains_each_second():
     plan, data = jump_scenario()
 
-    result = run_replay(MoveConfig(), plan, data)
+    result = run_replay(SpikeConfig(), plan, data)
 
     assert result.warmup_candles == 50
     # 两个窗口互不影响，同一秒都满足时各报一条。
@@ -87,7 +87,7 @@ def test_run_replay_reproduces_alert_and_explains_each_second():
 
 def test_render_lists_alerts_rules_and_threshold_rows():
     plan, data = jump_scenario()
-    text = "\n".join(render_replay(run_replay(MoveConfig(), plan, data)))
+    text = "\n".join(render_replay(run_replay(SpikeConfig(), plan, data)))
 
     assert "回放 QNT_USDT：2026-09-29 09:27:00 ～ 2026-09-29 09:30:00" in text
     assert "提醒 2 条" in text
@@ -99,10 +99,10 @@ def test_render_lists_alerts_rules_and_threshold_rows():
 
 
 def test_render_explains_quiet_market_without_alerts():
-    plan = plan_replay("QNT_USDT", START, END, MoveConfig())
+    plan = plan_replay("QNT_USDT", START, END, SpikeConfig())
     trades = trades_per_second(plan.feed_start, END + SETTLE_MARGIN, lambda _moment: 100.0)
 
-    result = run_replay(MoveConfig(), plan, ReplayData(flat_candles(plan), trades))
+    result = run_replay(SpikeConfig(), plan, ReplayData(flat_candles(plan), trades))
     lines = render_replay(result)
 
     assert result.alerts == []
@@ -119,9 +119,9 @@ def tail_jump_trades(plan) -> list[PriceTick]:
 
 
 def test_run_replay_flags_unsettled_last_second():
-    plan = plan_replay("QNT_USDT", START, END, MoveConfig())
+    plan = plan_replay("QNT_USDT", START, END, SpikeConfig())
 
-    result = run_replay(MoveConfig(), plan, ReplayData(flat_candles(plan), tail_jump_trades(plan)))
+    result = run_replay(SpikeConfig(), plan, ReplayData(flat_candles(plan), tail_jump_trades(plan)))
     lines = render_replay(result)
 
     assert result.alerts == []
@@ -133,10 +133,10 @@ def test_run_replay_flags_unsettled_last_second():
 
 
 def test_run_replay_settles_last_second_with_late_trade():
-    plan = plan_replay("QNT_USDT", START, END, MoveConfig())
+    plan = plan_replay("QNT_USDT", START, END, SpikeConfig())
     late = PriceTick("QNT_USDT", 103.0, 1.0, END + timedelta(seconds=12), "late")
 
-    result = run_replay(MoveConfig(), plan, ReplayData(flat_candles(plan), [*tail_jump_trades(plan), late]))
+    result = run_replay(SpikeConfig(), plan, ReplayData(flat_candles(plan), [*tail_jump_trades(plan), late]))
 
     assert [alert.window for alert in result.alerts] == ["short", "long"]
     assert result.unsettled_second is None
@@ -146,7 +146,7 @@ def test_run_replay_settles_last_second_with_late_trade():
 def test_last_second_outside_range_is_not_flagged():
     plan, data = jump_scenario()
     # 成交一直延续到区间之后，区间内的秒全部由后续成交结算，最后那一秒在区间外无关紧要。
-    assert run_replay(MoveConfig(), plan, data).unsettled_second is None
+    assert run_replay(SpikeConfig(), plan, data).unsettled_second is None
 
 
 class FakeReplayRest:
@@ -174,7 +174,7 @@ class FakeReplayRest:
 
 
 def test_fetch_replay_data_requests_warmup_candles_and_settling_margin():
-    plan = plan_replay("QNT_USDT", START, END, MoveConfig())
+    plan = plan_replay("QNT_USDT", START, END, SpikeConfig())
     rest = FakeReplayRest()
 
     data = fetch_replay_data(rest, plan, "1m")
@@ -187,7 +187,7 @@ def test_fetch_replay_data_requests_warmup_candles_and_settling_margin():
 
 
 def test_fetch_replay_data_searches_settling_trade_beyond_margin():
-    plan = plan_replay("QNT_USDT", START, END, MoveConfig())
+    plan = plan_replay("QNT_USDT", START, END, SpikeConfig())
     late = PriceTick("QNT_USDT", 103.0, 1.0, END + timedelta(seconds=45), "late")
     later = PriceTick("QNT_USDT", 90.0, 1.0, END + timedelta(seconds=46), "later")
     rest = FakeReplayRest(trades=[*tail_jump_trades(plan), late, later])
@@ -203,7 +203,7 @@ def test_fetch_replay_data_searches_settling_trade_beyond_margin():
         (first + timedelta(seconds=10), first + timedelta(seconds=30)),
         (first + timedelta(seconds=30), first + timedelta(seconds=70)),
     ]
-    assert run_replay(MoveConfig(), plan, data).unsettled_second is None
+    assert run_replay(SpikeConfig(), plan, data).unsettled_second is None
 
 
 def test_fetch_replay_data_skips_search_when_trades_continue_past_end():
@@ -216,7 +216,7 @@ def test_fetch_replay_data_skips_search_when_trades_continue_past_end():
 
 
 def test_fetch_replay_data_gives_up_after_search_limit():
-    plan = plan_replay("QNT_USDT", START, END, MoveConfig())
+    plan = plan_replay("QNT_USDT", START, END, SpikeConfig())
     trades = tail_jump_trades(plan)
     rest = FakeReplayRest(trades=trades)
 
@@ -229,11 +229,11 @@ def test_fetch_replay_data_gives_up_after_search_limit():
     assert all(prev[1] == nxt[0] for prev, nxt in zip(search, search[1:], strict=False))
     assert search[-1][1] == END + SETTLE_MARGIN + SETTLE_SEARCH_LIMIT
     assert len(search) < 10
-    assert run_replay(MoveConfig(), plan, data).unsettled_second == END
+    assert run_replay(SpikeConfig(), plan, data).unsettled_second == END
 
 
 def test_fetch_replay_data_tolerates_missing_contract_precision():
-    plan = plan_replay("QNT_USDT", START, END, MoveConfig())
+    plan = plan_replay("QNT_USDT", START, END, SpikeConfig())
 
     data = fetch_replay_data(FakeReplayRest(ConnectionError("down")), plan, "1m")
 
@@ -247,7 +247,7 @@ def test_parse_time_keeps_explicit_offsets():
 
 
 def test_replay_keeps_streak_alert_right_after_its_short_alert():
-    plan = plan_replay("QNT_USDT", START, END, MoveConfig())
+    plan = plan_replay("QNT_USDT", START, END, SpikeConfig())
     # 自 START 起每秒涨 0.1：短窗口冷却一过又达标，同向短窗口提醒一条接一条。
     trades = trades_per_second(
         plan.feed_start,
@@ -255,7 +255,7 @@ def test_replay_keeps_streak_alert_right_after_its_short_alert():
         lambda moment: 100.0 + max(0.0, (moment - START).total_seconds()) * 0.1,
     )
 
-    result = run_replay(MoveConfig(), plan, ReplayData(flat_candles(plan), trades, price_decimals=2))
+    result = run_replay(SpikeConfig(), plan, ReplayData(flat_candles(plan), trades, price_decimals=2))
 
     kinds = [alert.window if isinstance(alert, PriceAlert) else "streak" for alert in result.alerts]
     assert kinds.count("streak") == 1

@@ -9,9 +9,9 @@ from datetime import UTC, datetime
 import sim
 from record import load_trades, seed_candles
 
-from price_alert.detectors.move.detector import AtrMoveDetector
+from price_alert.detectors.spike.detector import AtrSpikeDetector
 from price_alert.common.models import PriceTick
-from price_alert.detectors.move.windows import MoveWindow
+from price_alert.detectors.spike.windows import SpikeWindow
 
 PARAM_SETS = [
     sim.CURRENT,
@@ -31,7 +31,7 @@ for symbol in ns.symbols:
     data = sim.load(symbol, sim.month_variant(ns.month))
     for params in PARAM_SETS:
         windows = [
-            MoveWindow(
+            SpikeWindow(
                 "short",
                 30,
                 params.short.atr,
@@ -40,7 +40,7 @@ for symbol in ns.symbols:
                 params.short.trades,
                 params.short.cooldown,
             ),
-            MoveWindow(
+            SpikeWindow(
                 "long",
                 180,
                 params.long.atr,
@@ -50,7 +50,7 @@ for symbol in ns.symbols:
                 params.long.cooldown,
             ),
         ]
-        det = AtrMoveDetector(
+        det = AtrSpikeDetector(
             atr_period=14, candle_interval_seconds=60, max_atr_age_seconds=180, windows=windows, streak=None
         )
         det.add_symbol(symbol, seed_candles(symbol, ns.month), 0.0)
