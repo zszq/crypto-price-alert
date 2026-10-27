@@ -1,4 +1,4 @@
-"""冷门启动提醒的配置模型（YAML 的 dormant 段与其中的 slow 段）。
+"""冷门启动提醒的配置模型（YAML 的 dormant 段：共用的开关与合约池、main 与 slow 两组参数）。
 
 现行一组的默认值见 research/launch_trade/dormant_calm.md 的开发期选参；慢启动一组见 dormant_slow.md 第三节第 2 小节。
 """
@@ -14,34 +14,33 @@ from price_alert.detectors.dormant.rule import DormantGroup, DormantRule
 
 
 class DormantRuleConfig(BaseModel):
-    """一组判定门槛与冷却：两组共有的键。慢启动一组另有效率、量比、回落三项（见 DormantSlowConfig）。"""
+    """一组判定门槛与冷却的公共字段与校验；现行、慢启动两组结构相同，只在默认值、取值范围上不同，慢启动另有几项。"""
 
     model_config = ConfigDict(extra="forbid")
-    group: ClassVar[DormantGroup] = DormantGroup.MAIN
+    group: ClassVar[DormantGroup]
 
-    window_minutes: int = Field(default=10, ge=1, le=60)
+    window_minutes: int
     # 冷门：窗口之前 24 小时的成交额上限。
-    max_prior_quote: float = Field(default=1_000_000, gt=0)
-    min_window_quote: float = Field(default=5_000, ge=0)
+    max_prior_quote: float
+    min_window_quote: float
     # 窗口内有成交的分钟数下限：冷门币一两笔单子就能拉出涨幅，要求多分钟有成交才算有人在持续买。
-    min_active_minutes: int = Field(default=5, ge=1, le=60)
-    min_change_percent: float = Field(default=8.0, gt=0, le=100)
+    min_active_minutes: int
+    min_change_percent: float
     # 窗口内单分钟收盘涨幅上限（百分比）：一两分钟跳上去的多是几笔单子拉的。
-    max_minute_change_percent: float = Field(default=5.0, gt=0, le=100)
+    max_minute_change_percent: float
     # 窗口总实体占比（实体和 ÷ 振幅和）下限：上影线多说明冲高被砸回，0 即不限。
-    min_body_ratio: float = Field(default=0.6, ge=0, le=1)
+    min_body_ratio: float
     # 窗口涨幅至少是涨前波动（窗口之前 240 分钟平均每分钟真实波幅）的多少倍：涨前越平稳，同样的涨幅倍数越高。
-    min_calm_multiple: float = Field(default=10.0, ge=0)
+    min_calm_multiple: float
     # 涨前波动（窗口之前 240 分钟平均每分钟真实波幅，百分比）上限：涨前来回乱跳的币不报；null 即不限。
-    max_pre_volatility_percent: float | None = Field(default=0.5, gt=0)
+    max_pre_volatility_percent: float | None
     # 窗口最后一分钟成交额下限（USDT）：拉到最后一分钟没人买了的多是几笔单子拉完就停；0 即不限。
-    min_last_minute_quote: float = Field(default=0, ge=0)
+    min_last_minute_quote: float
     # 后半窗口（最后 ⌈窗口/2⌉ 分钟）成交额占窗口成交额的比例下限：成交集中在前半段的容易回落；0 即不限。
-    # 必须小于 1：等于 1 要求前半窗口一笔成交都没有，那就不是「拉升中持续有人买」了。
-    min_late_quote_share: float = Field(default=0, ge=0, lt=1)
-    cooldown_minutes: int = Field(default=60, ge=1, le=1440)
+    min_late_quote_share: float
+    cooldown_minutes: int
     # 冷却期内价格比上次提醒价再涨这么多（百分比）就再报「第 N 波」；null 即冷却内不再报。
-    realert_step_percent: float | None = Field(default=3.0, gt=0, le=100)
+    realert_step_percent: float | None
 
     @model_validator(mode="after")
     def validate_rule(self) -> Self:
@@ -74,6 +73,27 @@ class DormantRuleConfig(BaseModel):
         )
 
 
+class DormantMainConfig(DormantRuleConfig):
+    """现行一组（YAML 的 dormant.main），始终启用；默认值见 dormant_calm.md 的开发期选参。"""
+
+    group: ClassVar[DormantGroup] = DormantGroup.MAIN
+
+    window_minutes: int = Field(default=10, ge=1, le=60)
+    max_prior_quote: float = Field(default=1_000_000, gt=0)
+    min_window_quote: float = Field(default=5_000, ge=0)
+    min_active_minutes: int = Field(default=5, ge=1, le=60)
+    min_change_percent: float = Field(default=8.0, gt=0, le=100)
+    max_minute_change_percent: float = Field(default=5.0, gt=0, le=100)
+    min_body_ratio: float = Field(default=0.6, ge=0, le=1)
+    min_calm_multiple: float = Field(default=10.0, ge=0)
+    max_pre_volatility_percent: float | None = Field(default=0.5, gt=0)
+    min_last_minute_quote: float = Field(default=0, ge=0)
+    # 必须小于 1：等于 1 要求前半窗口一笔成交都没有，那就不是「拉升中持续有人买」了。
+    min_late_quote_share: float = Field(default=0, ge=0, lt=1)
+    cooldown_minutes: int = Field(default=60, ge=1, le=1440)
+    realert_step_percent: float | None = Field(default=3.0, gt=0, le=100)
+
+
 class DormantSlowConfig(DormantRuleConfig):
     """慢启动一组（YAML 的 dormant.slow）：涨前近乎一条直线、60 分钟里量价缓慢拉升的冷门币。
 
@@ -90,6 +110,7 @@ class DormantSlowConfig(DormantRuleConfig):
     enabled: bool = False
     # 研究考察了 30~120 分钟的窗口，超出这个范围没有依据。
     window_minutes: int = Field(default=60, ge=1, le=120)
+    max_prior_quote: float = Field(default=1_000_000, gt=0)
     min_window_quote: float = Field(default=10_000, ge=0)
     min_active_minutes: int = Field(default=48, ge=1, le=120)
     min_change_percent: float = Field(default=6.0, gt=0, le=100)
@@ -97,6 +118,7 @@ class DormantSlowConfig(DormantRuleConfig):
     min_body_ratio: float = Field(default=0, ge=0, le=1)
     min_calm_multiple: float = Field(default=0, ge=0)
     max_pre_volatility_percent: float | None = Field(default=0.2, gt=0)
+    min_last_minute_quote: float = Field(default=0, ge=0)
     min_late_quote_share: float = Field(default=0.5, ge=0, lt=1)
     # 效率（净涨幅的价差 ÷ 逐分钟收盘价差绝对值之和）下限：来回拉扯的不报；0 即不限。
     min_efficiency: float = Field(default=0.3, ge=0, le=1)
@@ -123,8 +145,10 @@ class DormantSlowConfig(DormantRuleConfig):
         )
 
 
-class DormantConfig(DormantRuleConfig):
-    """顶层各项是现行一组的门槛；enabled 与合约池对两组都生效，slow.enabled 只开关慢启动一组。"""
+class DormantConfig(BaseModel):
+    """冷门启动：两组共用的开关与合约池，现行一组（main）与慢启动一组（slow）各自的门槛与冷却。"""
+
+    model_config = ConfigDict(extra="forbid")
 
     # 关掉整个冷门启动（两组都不报）。
     enabled: bool = True
@@ -133,6 +157,8 @@ class DormantConfig(DormantRuleConfig):
     # 上限贴着冷门门槛的话，刚启动的币可能在合约池刷新时被移出。
     min_volume_24h_quote: float = Field(default=0, ge=0)
     max_volume_24h_quote: float | None = Field(default=3_000_000, gt=0)
+    # 两组共用合约池与 K 线，门槛、冷却按组独立配置。
+    main: DormantMainConfig = Field(default_factory=DormantMainConfig)
     slow: DormantSlowConfig = Field(default_factory=DormantSlowConfig)
 
     @model_validator(mode="after")
@@ -145,5 +171,5 @@ class DormantConfig(DormantRuleConfig):
         """检测器要判定的各组；整个冷门启动关闭时为空。"""
         if not self.enabled:
             return ()
-        groups = [self, self.slow] if self.slow.enabled else [self]
+        groups = [self.main, self.slow] if self.slow.enabled else [self.main]
         return tuple(group.to_rule() for group in groups)

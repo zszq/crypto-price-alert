@@ -133,7 +133,7 @@ ATR 异动强度 = |当前完整秒 VWAP - N 秒前完整秒 VWAP| / Wilder ATR
 
 放量上涨的窗口成交额门槛（10 万）会挡掉启动前几乎没人交易的币：IRYS_USDT 2026-10-21 14:40 之前 24 小时只成交约 2.5 万 USDT，14:54 前后 5 分钟涨 5.6%、量比几十倍，但 5 分钟成交额只有一两万，放量上涨不会提醒。冷门启动提醒（`dormant`，与前三者相互独立）专门看这类币：
 
-- 由实时成交聚合带成交额的 1 分钟 K 线，每分钟收盘判定一次；最近 `window_minutes`（默认 10）分钟，以下条件全部满足即提醒：
+- 由实时成交聚合带成交额的 1 分钟 K 线，每分钟收盘判定一次；这一组参数在 `dormant.main` 下，最近 `window_minutes`（默认 10）分钟，以下条件全部满足即提醒：
   - **冷门**：窗口之前 24 小时的成交额 ≤ 100 万 USDT（`max_prior_quote`）；
   - **涨幅**：窗口开始前一根收盘到最后一根收盘 ≥ 8%；只提醒上涨；
   - **窗口成交额**：≥ 5000 USDT；
@@ -152,11 +152,11 @@ ATR 异动强度 = |当前完整秒 VWAP - N 秒前完整秒 VWAP| / Wilder ATR
 
 #### 冷门慢启动（第二组参数，代码默认关闭）
 
-上面这组看的是 10~15 分钟内涨 8% 的快启动，「平时基本没起伏、之后量价缓慢拉升」的冷门币它报不到：JCT_USDT 2026-10-20 10 点之前涨前波动每分钟只有约 0.07%，11:00~12:30 从约 0.00197 慢慢涨到 0.00221，15 分钟窗口里最多只涨 4.4%，整天不报。`dormant.slow` 是同一个检测器里的第二组参数，与上面一组共用合约池与 K 线、各自判定、各自冷却，提醒标签是「冷门慢启动」（JSONL 里 `group: "slow"`），同一分钟两组都满足会各报一条。`dormant.slow.enabled` 只开关这一组，`dormant.enabled` 关闭时两组都不报。代码默认值（最近 60 分钟，全部满足即提醒）：
+上面这组看的是 10~15 分钟内涨 8% 的快启动，「平时基本没起伏、之后量价缓慢拉升」的冷门币它报不到：JCT_USDT 2026-10-20 10 点之前涨前波动每分钟只有约 0.07%，11:00~12:30 从约 0.00197 慢慢涨到 0.00221，15 分钟窗口里最多只涨 4.4%，整天不报。`dormant.slow` 是同一个检测器里的第二组参数，与上面一组（`dormant.main`）共用合约池与 K 线、各自判定、各自冷却，提醒标签是「冷门慢启动」（JSONL 里 `group: "slow"`），同一分钟两组都满足会各报一条。`dormant.slow.enabled` 只开关这一组，`dormant.enabled` 关闭时两组都不报。代码默认值（最近 60 分钟，全部满足即提醒）：
 
 - 冷门（之前 24 小时成交额 ≤ 100 万）、涨幅 ≥ 6%、窗口成交额 ≥ 1 万、至少 48 分钟有成交、单分钟涨幅 ≤ 3%；
 - 涨前 240 分钟平均每分钟波动 ≤ 0.2%（不看倍数）、后 30 分钟成交额占窗口 ≥ 50%；
-- 另外三项只有这一组有（上面一组没有这几个键）：**效率**（窗口净涨幅的价差 ÷ 逐分钟收盘价差绝对值之和，越接近 1 越是一路往上）≥ 0.3（`min_efficiency`）、**量比**（窗口成交额 ÷ 之前 24 小时同长度均值，之前没有成交时视为满足）≥ 3 倍（`min_volume_ratio`）、**从窗口最高价回落**不超过窗口最大涨幅的 30%（`max_retrace`）；
+- 另外三项只有这一组有（`dormant.main` 没有这几个键）：**效率**（窗口净涨幅的价差 ÷ 逐分钟收盘价差绝对值之和，越接近 1 越是一路往上）≥ 0.3（`min_efficiency`）、**量比**（窗口成交额 ÷ 之前 24 小时同长度均值，之前没有成交时视为满足）≥ 3 倍（`min_volume_ratio`）、**从窗口最高价回落**不超过窗口最大涨幅的 30%（`max_retrace`）；
 - 不看实体占比与涨幅倍数；冷却 120 分钟，冷却内不报「第 N 波」。
 
 **这一组的判据未通过，准确率明显低于上面一组，是用户知情后的例外。** 用 2021-09 起的数据在 30~120 分钟窗口、51,840 组候选里按准确率选出的方案 PBO 0.87、不稳健，而且报不到 JCT（[research/launch_trade/dormant_slow.md](research/launch_trade/dormant_slow.md)）；现在这组是按 JCT 的形态挑的：2025-01 起的样本外准确率约 0.34（上面一组约 0.45），每天约 6.4 条，JCT 那天 12:17 报出（0.002148）。研究里涨前越平稳、拉升越顺滑、越没有跳涨的冷门币，提醒之后先涨 3%~5% 的比例反而越低，这类提醒看到了也不代表会继续涨。
@@ -460,16 +460,17 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 - `launch.<方向>.require_breakout`：是否要求收盘突破基准期高点（下跌为低点），默认开启；
 - `launch.<方向>.max_change_percent`：窗口涨跌幅上限，默认 15%，须大于 `min_change_percent`，null 表示不限；超过时不提醒，但按同样的冷却与再推进规则当作提醒记入；
 - `launch.<方向>.cooldown_minutes` / `realert_step_percent`：再次提醒的最小间隔（不能小于窗口）与价格须再推进的幅度，默认 15 分钟、5%；
-- `dormant.enabled`：是否启用冷门启动提醒，默认开启；关闭后不创建该检测器，也不会多订阅、多拉 K 线，慢启动一组（`dormant.slow`）也一起关闭；
-- `dormant.min_volume_24h_quote` / `max_volume_24h_quote`：冷门启动的合约池范围，默认 0~3M；上限要明显高于 `max_prior_quote`，设为 null 不设上限；
-- `dormant.window_minutes` / `max_prior_quote`：观察窗口（分钟）与冷门门槛（窗口之前 24 小时成交额上限，USDT），默认 10 与 1000000；
-- `dormant.min_window_quote` / `min_active_minutes`：窗口成交额（USDT）与有成交的分钟数门槛，默认 5000、5 分钟；有成交的分钟数不能大于窗口；
-- `dormant.min_change_percent` / `max_minute_change_percent`：窗口涨幅下限与单分钟收盘涨幅上限，默认 8%、5%；涨幅门槛不能大于窗口 × 单分钟上限；
-- `dormant.min_body_ratio`：窗口总实体占比（各根 K 线实体之和 ÷ 振幅之和）下限，0~1，默认 0.6，0 即不限；
-- `dormant.min_calm_multiple` / `max_pre_volatility_percent`：涨幅至少是涨前 240 分钟平均每分钟真实波幅的多少倍（0 即不限）与涨前波动本身的上限（百分比，null 即不限），默认 10 倍、0.5；
-- `dormant.min_last_minute_quote` / `min_late_quote_share`：窗口最后一分钟成交额下限（USDT）与后半窗口（最后 ⌈窗口/2⌉ 分钟）成交额占比下限（0 ≤ x < 1），默认都是 0 即不限；
-- `dormant.cooldown_minutes` / `realert_step_percent`：冷却默认 60 分钟（不能小于窗口），冷却期内价格比上次提醒再涨 ≥ 3% 才补报「第 N 波」，null 即冷却内不再报；
-- `dormant.slow`：冷门慢启动一组，`enabled` 默认关闭；其余键与上面 `dormant.*` 的判定门槛、冷却相同（合约池除外），另多三项：`min_efficiency`（效率下限，窗口净涨幅的价差 ÷ 逐分钟收盘价差绝对值之和，0~1）、`min_volume_ratio`（量比下限，窗口成交额 ÷ 之前 24 小时同长度均值）、`max_retrace`（从窗口最高价回落占窗口最大涨幅的比例上限，0~1，null 即不限），这三项写在 `dormant` 顶层会报错；没写的键取这一组自己的默认值（窗口 60 分钟、涨幅 6%、成交额 1 万、48 分钟有成交、单分钟 ≤ 3%、实体占比与倍数不限、涨前波动 ≤ 0.2%、后半占比 50%、效率 0.3、量比 3 倍、回落 ≤ 30%、冷却 120 分钟、不补报），不沿用上面一组的取值；窗口取值范围 1~120；
+- `dormant.enabled`：是否启用冷门启动提醒，默认开启；关闭后不创建该检测器，也不会多订阅、多拉 K 线，现行一组（`dormant.main`）与慢启动一组（`dormant.slow`）都不报；
+- `dormant.min_volume_24h_quote` / `max_volume_24h_quote`：冷门启动的合约池范围，默认 0~3M；两组共用，上限要明显高于各组的 `max_prior_quote`，设为 null 不设上限；
+- `dormant.main`：现行一组的判定门槛与冷却，始终启用，下面几项都在这一段里（旧版写在 `dormant` 顶层的这些键会报错）；
+- `dormant.main.window_minutes` / `max_prior_quote`：观察窗口（分钟）与冷门门槛（窗口之前 24 小时成交额上限，USDT），默认 10 与 1000000；
+- `dormant.main.min_window_quote` / `min_active_minutes`：窗口成交额（USDT）与有成交的分钟数门槛，默认 5000、5 分钟；有成交的分钟数不能大于窗口；
+- `dormant.main.min_change_percent` / `max_minute_change_percent`：窗口涨幅下限与单分钟收盘涨幅上限，默认 8%、5%；涨幅门槛不能大于窗口 × 单分钟上限；
+- `dormant.main.min_body_ratio`：窗口总实体占比（各根 K 线实体之和 ÷ 振幅之和）下限，0~1，默认 0.6，0 即不限；
+- `dormant.main.min_calm_multiple` / `max_pre_volatility_percent`：涨幅至少是涨前 240 分钟平均每分钟真实波幅的多少倍（0 即不限）与涨前波动本身的上限（百分比，null 即不限），默认 10 倍、0.5；
+- `dormant.main.min_last_minute_quote` / `min_late_quote_share`：窗口最后一分钟成交额下限（USDT）与后半窗口（最后 ⌈窗口/2⌉ 分钟）成交额占比下限（0 ≤ x < 1），默认都是 0 即不限；
+- `dormant.main.cooldown_minutes` / `realert_step_percent`：冷却默认 60 分钟（不能小于窗口），冷却期内价格比上次提醒再涨 ≥ 3% 才补报「第 N 波」，null 即冷却内不再报；
+- `dormant.slow`：冷门慢启动一组，`enabled` 默认关闭；其余键与 `dormant.main` 相同，另多三项：`min_efficiency`（效率下限，窗口净涨幅的价差 ÷ 逐分钟收盘价差绝对值之和，0~1）、`min_volume_ratio`（量比下限，窗口成交额 ÷ 之前 24 小时同长度均值）、`max_retrace`（从窗口最高价回落占窗口最大涨幅的比例上限，0~1，null 即不限），这三项写在 `dormant.main` 会报错；没写的键取这一组自己的默认值（窗口 60 分钟、涨幅 6%、成交额 1 万、48 分钟有成交、单分钟 ≤ 3%、实体占比与倍数不限、涨前波动 ≤ 0.2%、后半占比 50%、效率 0.3、量比 3 倍、回落 ≤ 30%、冷却 120 分钟、不补报），不沿用 `dormant.main` 的取值；窗口取值范围 1~120；
 - `dormant.slow.follow_step_percent` / `follow_minutes`：慢启动的跟踪补报（只有这一组有），提醒（含补报）后收盘价比上次提醒价再涨这么多（百分比）就补报下一波、不看其他条件，距上次提醒超过 `follow_minutes` 分钟（1~1440）没再涨够就停止跟踪；默认 null（不跟踪）、240；
 - `reversal.enabled`：是否启用反弹回落提醒，默认开启；关闭后不创建该检测器，也不会多订阅、多拉 K 线；
 - `reversal.min_volume_24h_quote` / `max_volume_24h_quote`：反弹回落的合约池范围，默认 > 8M、上限不设；

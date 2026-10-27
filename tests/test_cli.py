@@ -346,7 +346,7 @@ def test_simulated_slow_group_satisfies_extreme_thresholds(slow):
 
 
 @pytest.mark.parametrize(
-    "dormant",
+    "main",
     [
         {"window_minutes": 1, "min_active_minutes": 1, "cooldown_minutes": 1, "min_change_percent": 0.01},
         {"window_minutes": 60, "min_active_minutes": 60, "min_change_percent": 100, "max_prior_quote": 1},
@@ -362,8 +362,8 @@ def test_simulated_slow_group_satisfies_extreme_thresholds(slow):
         {"window_minutes": 15, "min_active_minutes": 15, "min_late_quote_share": 0.4, "min_last_minute_quote": 1000},
     ],
 )
-def test_simulated_dormant_satisfies_extreme_thresholds(dormant):
-    config = AppConfig.model_validate({"dormant": dormant})
+def test_simulated_dormant_satisfies_extreme_thresholds(main):
+    config = AppConfig.model_validate({"dormant": {"main": main}})
 
     assert len(simulate_dormant(config.dormant)) == 1
 

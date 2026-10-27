@@ -15,7 +15,7 @@ from price_alert.exchange.universe import VolumeRange
 
 def test_defaults_are_the_research_selection():
     # research/launch_trade/dormant_calm.md 开发期选出的一组。
-    assert DormantConfig().to_rule() == DormantRule(
+    assert DormantConfig().main.to_rule() == DormantRule(
         window_minutes=10,
         max_prior_quote=1_000_000,
         min_window_quote=5_000,
@@ -44,13 +44,29 @@ def test_defaults_are_the_research_selection():
         ({"min_last_minute_quote": -1}, "greater than or equal to 0"),
         ({"realert_step_percent": 0}, "greater than 0"),
         ({"max_pre_volatility_percent": 0}, "greater than 0"),
-        ({"min_volume_24h_quote": 5_000_000}, "max_volume_24h_quote 必须大于 min_volume_24h_quote"),
         ({"unknown": 1}, "Extra inputs"),
+        # 现行一组始终启用，合约池两组共用、只在顶层。
+        ({"enabled": False}, "Extra inputs"),
+        ({"max_volume_24h_quote": 5_000_000}, "Extra inputs"),
         # 效率、量比、回落只有慢启动一组有。
         ({"min_efficiency": 0.3}, "Extra inputs"),
         ({"min_volume_ratio": 3}, "Extra inputs"),
         ({"max_retrace": 0.3}, "Extra inputs"),
         ({"follow_step_percent": 5}, "Extra inputs"),
+    ],
+)
+def test_main_group_rejects_inconsistent_values(values, message):
+    with pytest.raises(ValidationError, match=message):
+        DormantConfig.model_validate({"main": values})
+
+
+@pytest.mark.parametrize(
+    ("values", "message"),
+    [
+        ({"min_volume_24h_quote": 5_000_000}, "max_volume_24h_quote 必须大于 min_volume_24h_quote"),
+        # 旧格式把现行一组的门槛写在顶层，改成 main 段后直接报错，不会悄悄退回代码默认值。
+        ({"window_minutes": 15}, "Extra inputs"),
+        ({"unknown": 1}, "Extra inputs"),
     ],
 )
 def test_rejects_inconsistent_values(values, message):
@@ -101,7 +117,7 @@ def test_alert_text_for_coin_that_was_flat_before():
 
 
 def test_rule_description_lists_every_threshold():
-    text = describe_dormant_rule(DormantConfig().to_rule())
+    text = describe_dormant_rule(DormantConfig().main.to_rule())
 
     assert text == (
         "冷门启动：之前 24 小时成交额 ≤ 100万 USDT 的币，最近 10 分钟涨幅 ≥ 8%、成交额 ≥ 5000 USDT、"
@@ -114,12 +130,12 @@ def test_rule_description_lists_every_threshold():
 def test_slow_group_is_off_by_default_and_uses_the_research_shape():
     config = DormantConfig()
     assert not config.slow.enabled
-    assert config.rules() == (config.to_rule(),)
+    assert config.rules() == (config.main.to_rule(),)
 
     slow = DormantConfig.model_validate({"slow": {"enabled": True}})
     # research/launch_trade/dormant_slow.md 第三节第 2 小节按 JCT 形态挑的第一组。
     assert slow.rules() == (
-        config.to_rule(),
+        config.main.to_rule(),
         DormantRule(
             window_minutes=60,
             max_prior_quote=1_000_000,

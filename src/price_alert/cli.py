@@ -221,7 +221,7 @@ def launch_replay(config: AppConfig, args: argparse.Namespace) -> None:
 
 def dormant_replay(config: AppConfig, args: argparse.Namespace) -> None:
     # 冷门启动整个关闭时仍按现行一组回放：回放常用来判断要不要打开它。
-    rules = config.dormant.rules() or (config.dormant.to_rule(),)
+    rules = config.dormant.rules() or (config.dormant.main.to_rule(),)
     plan = _plan_or_exit(
         args,
         timedelta(hours=DEFAULT_DORMANT_REPLAY_HOURS),
