@@ -23,7 +23,6 @@ from price_alert.detectors.move.windows import MoveWindow, WindowEvaluation, Win
 from price_alert.detectors.reversal.alerts import NAME as REVERSAL_NAME
 from price_alert.detectors.reversal.detector import ReversalDetector
 from price_alert.detectors.reversal.rule import CANDLE_INTERVAL as REVERSAL_INTERVAL
-from price_alert.detectors.reversal.rule import WARMUP_CANDLES as REVERSAL_WARMUP
 from price_alert.detectors.reversal.rule import ReversalRule
 from price_alert.detectors.trend.config import TrendConfig
 from price_alert.detectors.trend.detector import TrendDetector, TrendEvaluation
@@ -148,9 +147,10 @@ def build_detectors(config: AppConfig) -> list[MonitoredDetector]:
     reversal = config.reversal
     if reversal.enabled:
         volume = VolumeRange(reversal.min_volume_24h_quote, reversal.max_volume_24h_quote)
+        rule = reversal.to_rule()
         detectors.append(
             MonitoredDetector(
-                REVERSAL_NAME, build_reversal_detector(reversal.to_rule()), REVERSAL_INTERVAL, REVERSAL_WARMUP, volume
+                REVERSAL_NAME, build_reversal_detector(rule), REVERSAL_INTERVAL, rule.warmup_candles, volume
             )
         )
     return detectors

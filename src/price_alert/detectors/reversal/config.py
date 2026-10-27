@@ -23,12 +23,20 @@ class ReversalConfig(BaseModel):
     prior_seconds: int = Field(default=900, ge=60, le=86400)
     min_prior_move_percent: float = Field(default=6.0, gt=0, le=100)
     min_trade_burst_ratio: float = Field(default=16.0, gt=0, lt=MAX_BURST_RATIO)
+    # 第三轮研究（move_accuracy.md 第十二节）新增，代码默认不限，保持第二轮的行为。
+    max_extreme_distance_percent: float | None = Field(default=None, gt=0, le=100)
 
     @model_validator(mode="after")
     def validate_ranges(self) -> ReversalConfig:
         if self.confirmation_seconds > self.lookback_seconds:
             # 确认期长于窗口时，基准价会追上已经完成的急动，永远确认不了。
             raise ValueError("confirmation_seconds 不能大于 lookback_seconds")
+        extreme = self.max_extreme_distance_percent
+        if extreme is not None and extreme <= self.min_change_percent:
+            # 急动的基准价落在已收盘 K 线里时，24 小时极值不会比它更近，距离大致不小于急动幅度
+            # （距离按触发价、幅度按那一秒均价算）。上限不高于急动门槛就只剩急跌、急拉都挤在同一分钟里的个例，
+            # 研究里这样的组合没有选中。
+            raise ValueError("max_extreme_distance_percent 必须大于 min_change_percent")
         if self.max_volume_24h_quote is not None and self.max_volume_24h_quote <= self.min_volume_24h_quote:
             raise ValueError("max_volume_24h_quote 必须大于 min_volume_24h_quote")
         return self
@@ -44,4 +52,5 @@ class ReversalConfig(BaseModel):
             prior_seconds=self.prior_seconds,
             min_prior_move_percent=self.min_prior_move_percent,
             min_trade_burst_ratio=self.min_trade_burst_ratio,
+            max_extreme_distance_percent=self.max_extreme_distance_percent,
         )

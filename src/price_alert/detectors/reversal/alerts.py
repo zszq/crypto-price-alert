@@ -35,6 +35,8 @@ class ReversalAlert:
     trade_burst_ratio: float
     volume_24h_quote: float
     price_decimals: int | None = None
+    # 触发价离此前 24 小时最低价（急拉）/ 最高价（急砸）的涨跌幅，顺急动方向为正；没配置这一条件时为 None。
+    extreme_distance_percent: float | None = None
 
     @property
     def color(self) -> Literal["green", "red"]:
@@ -60,6 +62,7 @@ class ReversalAlert:
             "prior_change_percent": self.prior_change_percent,
             "prior_seconds": self.prior_seconds,
             "trade_burst_ratio": self.trade_burst_ratio,
+            "extreme_distance_percent": self.extreme_distance_percent,
             "volume_24h_quote": self.volume_24h_quote,
             "price_decimals": self.price_decimals,
             "color": self.color,
@@ -67,12 +70,15 @@ class ReversalAlert:
 
 
 def describe_reversal_rule(rule: ReversalRule) -> str:
+    extreme = rule.max_extreme_distance_percent
     return (
         f"{NAME}：此前 {describe_window(rule.prior_seconds)}已反向走了 ≥ {rule.min_prior_move_percent:g}%，"
         f"{describe_window(rule.lookback_seconds)}内急动 ≥ {rule.min_change_percent:g}% 且 ≥ "
         f"{rule.trigger_atr_multiple:g} ATR，窗口成交 ≥ {rule.min_window_trades} 笔、"
         f"连续 {rule.confirmation_seconds} 秒，"
-        f"最近 1 分钟成交笔数 ≥ 1 小时均值 × {rule.min_trade_burst_ratio:g}；冷却 {rule.cooldown_seconds} 秒"
+        f"最近 1 分钟成交笔数 ≥ 1 小时均值 × {rule.min_trade_burst_ratio:g}"
+        + ("" if extreme is None else f"，离 24 小时反向极值 ≤ {extreme:g}%")
+        + f"；冷却 {rule.cooldown_seconds} 秒"
     )
 
 
@@ -91,5 +97,16 @@ def format_reversal_alert(alert: ReversalAlert) -> str:
         f"[{alert.label}] {beijing_time(alert.timestamp)} | {alert.symbol} | "
         f"{describe_window(alert.lookback_seconds)}内{move} {format_change(alert)}"
         f"（此前{describe_window(alert.prior_seconds)}{prior_move} {abs(alert.prior_change_percent):.2f}%） | "
-        f"成交笔数为1小时均值的 {alert.trade_burst_ratio:.0f} 倍 | {reference} → {price}"
+        f"成交笔数为1小时均值的 {alert.trade_burst_ratio:.0f} 倍 | {_describe_extreme(alert)}{reference} → {price}"
     )
+
+
+def _describe_extreme(alert: ReversalAlert) -> str:
+    distance = alert.extreme_distance_percent
+    if distance is None:
+        return ""
+    side = "低点" if alert.direction == "surge" else "高点"
+    # 顺急动方向为负说明触发价还没回到 24 小时极值以内（急拉后仍低于此前最低价），分开说更直观。
+    if distance < 0:
+        return f"仍{'低于' if alert.direction == 'surge' else '高于'}24小时{side} {abs(distance):.2f}% | "
+    return f"距24小时{side} {distance:.2f}% | "

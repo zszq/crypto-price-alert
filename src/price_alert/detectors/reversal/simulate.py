@@ -1,4 +1,7 @@
-"""合成行情验证反弹回落配置：平稳 1 小时 → 一段下跌 → 最后一段成交涌入 → 急拉，正常时恰好产生一条「下跌反弹」。"""
+"""合成行情验证反弹回落配置：平稳 1 小时 → 一段下跌 → 最后一段成交涌入 → 急拉，正常时恰好产生一条「下跌反弹」。
+
+配置了反向极值距离时，预热 K 线铺满 24 小时（都在起始价附近），急拉后的价格离下跌段的最低价不超过上限。
+"""
 
 from __future__ import annotations
 
@@ -43,9 +46,10 @@ def simulate_reversal(config: ReversalConfig) -> list[ReversalAlert]:
     # 平稳段保证 1 小时的成交笔数基准。
     flat_start = decline_start - timedelta(seconds=BURST_BASE_SECONDS + 120)
     history_end = datetime.fromtimestamp(int(flat_start.timestamp()) // 60 * 60, tz=UTC)
+    count = max(ATR_PERIOD + 1, rule.warmup_candles)
     candles = [
-        Candle(history_end - timedelta(minutes=ATR_PERIOD + 1 - index), _PRICE, _PRICE + 0.05, _PRICE - 0.05, _PRICE)
-        for index in range(ATR_PERIOD + 1)
+        Candle(history_end - timedelta(minutes=count - index), _PRICE, _PRICE + 0.05, _PRICE - 0.05, _PRICE)
+        for index in range(count)
     ]
     detector.add_symbol(SYMBOL, candles, 1_000_000_000)
 
@@ -60,7 +64,13 @@ def simulate_reversal(config: ReversalConfig) -> list[ReversalAlert]:
     # 下跌段每分钟跌幅就是这段时间 ATR 的上限；急拉幅度取涨幅门槛与 ATR 门槛中较大者的 1.5 倍。
     decline_seconds = (low_start - decline_start).total_seconds()
     minute_range = (_PRICE - low) / decline_seconds * 60
-    jump = max(low * rule.min_change_percent / 100, minute_range * rule.trigger_atr_multiple) * 1.5
+    need = max(low * rule.min_change_percent / 100, minute_range * rule.trigger_atr_multiple)
+    jump = need * 1.5
+    if rule.max_extreme_distance_percent is not None:
+        # 低位段落在已收盘的 K 线里，急拉后的价格离 24 小时最低价正好是急拉幅度，不能超过上限。
+        # ATR 门槛要求的幅度已超过上限时（如 5 ATR 配 2%）这里造不出提醒、模拟会报数量不符；
+        # 实盘里急跌、急拉都落在同一分钟仍可能报，只是合成行情不构造这种形态。
+        jump = min(jump, (need + low * rule.max_extreme_distance_percent / 100) / 2)
 
     def feed(second: datetime, price: float, count: int) -> list[ReversalAlert]:
         out: list[ReversalAlert] = []

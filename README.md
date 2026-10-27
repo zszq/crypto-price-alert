@@ -175,6 +175,8 @@ ATR 异动强度 = |当前完整秒 VWAP - N 秒前完整秒 VWAP| / Wilder ATR
 
 依据见 [research/move_accuracy/move_accuracy.md](research/move_accuracy/move_accuracy.md)：参数只用 2026-04~09 选出，在没参与选参的 2025-10~2026-03（182 天）上每天约 3 条，提醒后 1、3、5、10 分钟价格在提醒方向一侧的约 67%、71%、70%、70%，1~5 分钟每个整分钟点都没回到入场价另一侧的 51%（随机 22%），5 分钟收益中位 +1.24%；急拉、急砸两个方向差不多。两个条件缺一不可：只要成交暴增时只有 22%（顺着此前走势的放量急动回吐最狠），只要前置走势时 30%。它只说明几分钟内方向大多保持，不代表此前的趋势已经反转；仍有约三成提醒 5 分钟时已回到入场价另一侧，回测也没算点差与滑点。
 
+可选的第三个条件 **离 24 小时反向极值不远**（`max_extreme_distance_percent`，代码默认不限）：触发价离此前 24 小时已收盘 1 分钟 K 线的最低价（急拉）/ 最高价（急砸）不超过这么多，只报刚从 24 小时低点 / 高点附近拉起 / 砸下的急动。第三轮研究（同一份报告第十二节）用前两轮的 12 个月选参、在从没用过的 2025-04~09 上验证一次：确认 2 秒加这一条件 ≤ 10% 时每天约 1.5 条，hold5 54.2%，同期代码默认值每天约 3 条、47.6%（差 +6.6 个百分点，95% 区间 [+1.5, +11.4]）；去掉的几乎都是代码默认值会报、本身只有 41% 的提醒。在更早的 2024-10~2025-03 上补充检验，hold5 51.7% 对 45.8%，方向相同但 178 条提醒的区间 [−0.5, +12.6] 跨 0，没有通过写定判据。两项要一起改（单改确认 2 秒 47.1%、单加这一条件 50.6%）。`config/default/reversal.yaml` 采用这一组；开启后每个合约要多预热约 1440 根 1 分钟 K 线，新上线不满 24 小时的合约不报，提醒文本多一段「距24小时低点 x%」（急砸为高点）。
+
 ## 数据流程
 
 ```text
@@ -373,7 +375,7 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 [冲高回落] 2026-05-07 07:24:47 | LAB_USDT | 10秒内下跌 1.54%（此前15分钟上涨 8.33%） | 成交笔数为1小时均值的 17 倍 | 4.66120 → 4.58932
 ```
 
-JSONL/Webhook 中趋势提醒带 `kind: "trend"`，并有 `period`、`candles`、`continuing`（是否为延续提醒）、`started_at`、`start_price`、`price`、`change_percent`、`counter_candles`、`rebound_ratio`、`body_ratio`、`single_candle_ratio` 等字段；连续提醒带 `kind: "streak"`，并有 `alert_count`（这一串的短窗口提醒条数）、`started_at`、`start_price`、`price`、`change_percent`、`lookback_seconds` 等字段；放量启动提醒带 `kind: "launch"`，并有 `wave`（第几波）、`window_minutes`、`baseline_minutes`、`started_at`、`start_price`、`price`、`change_percent`、`window_quote_volume`、`baseline_quote_volume`、`volume_ratio`（基准期无成交时为 null）、`breakout_price` 等字段；冷门启动提醒带 `kind: "dormant"`，并有 `wave`（第几波）、`window_minutes`、`started_at`、`start_price`、`price`、`change_percent`、`window_quote_volume`、`active_minutes`（窗口内有成交的分钟数）、`prior_quote_volume`（窗口之前 24 小时成交额）、`pre_volatility_percent`（涨前波动）、`max_minute_change_percent`（窗口内单分钟最大涨幅）、`body_ratio`（窗口总实体占比）、`last_minute_quote_volume`（最后一分钟成交额）、`late_quote_share`（后半窗口成交额占比）、`efficiency`（效率）、`volume_ratio`（量比，之前 24 小时无成交时为 null）、`retrace`（从窗口最高价回落的比例）、`group`（参数组：`main` 现行一组、`slow` 慢启动一组）等字段；反弹回落提醒带 `kind: "reversal"`，并有 `direction`（急动方向）、`price`、`reference_price`（窗口基准价）、`change_percent`、`lookback_seconds`、`move_atr`、`trade_count`、`prior_change_percent`（窗口之前那段的实际涨跌幅，与急动方向相反）、`prior_seconds`、`trade_burst_ratio`（成交笔数暴增倍数）等字段；秒级异动提醒没有 `kind` 字段。
+JSONL/Webhook 中趋势提醒带 `kind: "trend"`，并有 `period`、`candles`、`continuing`（是否为延续提醒）、`started_at`、`start_price`、`price`、`change_percent`、`counter_candles`、`rebound_ratio`、`body_ratio`、`single_candle_ratio` 等字段；连续提醒带 `kind: "streak"`，并有 `alert_count`（这一串的短窗口提醒条数）、`started_at`、`start_price`、`price`、`change_percent`、`lookback_seconds` 等字段；放量启动提醒带 `kind: "launch"`，并有 `wave`（第几波）、`window_minutes`、`baseline_minutes`、`started_at`、`start_price`、`price`、`change_percent`、`window_quote_volume`、`baseline_quote_volume`、`volume_ratio`（基准期无成交时为 null）、`breakout_price` 等字段；冷门启动提醒带 `kind: "dormant"`，并有 `wave`（第几波）、`window_minutes`、`started_at`、`start_price`、`price`、`change_percent`、`window_quote_volume`、`active_minutes`（窗口内有成交的分钟数）、`prior_quote_volume`（窗口之前 24 小时成交额）、`pre_volatility_percent`（涨前波动）、`max_minute_change_percent`（窗口内单分钟最大涨幅）、`body_ratio`（窗口总实体占比）、`last_minute_quote_volume`（最后一分钟成交额）、`late_quote_share`（后半窗口成交额占比）、`efficiency`（效率）、`volume_ratio`（量比，之前 24 小时无成交时为 null）、`retrace`（从窗口最高价回落的比例）、`group`（参数组：`main` 现行一组、`slow` 慢启动一组）等字段；反弹回落提醒带 `kind: "reversal"`，并有 `direction`（急动方向）、`price`、`reference_price`（窗口基准价）、`change_percent`、`lookback_seconds`、`move_atr`、`trade_count`、`prior_change_percent`（窗口之前那段的实际涨跌幅，与急动方向相反）、`prior_seconds`、`trade_burst_ratio`（成交笔数暴增倍数）、`extreme_distance_percent`（触发价离 24 小时反向极值的距离，没开这一条件时为 null）等字段；秒级异动提醒没有 `kind` 字段。
 
 价格按合约的报价精度（Gate 合约的 `order_price_round`）显示，高价币不会再被截掉小数；取不到精度时按 8 位有效数字显示。
 
@@ -477,6 +479,7 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 - `reversal.lookback_seconds` / `min_change_percent` / `trigger_atr_multiple` / `confirmation_seconds` / `min_window_trades` / `cooldown_seconds`：急动窗口，含义同秒级异动的窗口参数，默认 10 秒、1.5%、1 ATR、连续 1 秒、5 笔、冷却 30 秒（确认秒数不能大于窗口）；
 - `reversal.prior_seconds` / `min_prior_move_percent`：前置走势，从窗口开始前 `prior_seconds` 秒（默认 900）到窗口起点逆着急动方向至少走了多少（默认 6%）；
 - `reversal.min_trade_burst_ratio`：最近 1 分钟成交笔数 ÷ 最近 1 小时每分钟平均笔数的下限，默认 16，必须小于 60（全部成交都在最近 1 分钟时才到 60）；
+- `reversal.max_extreme_distance_percent`：反向极值距离上限（百分比），触发价离此前 24 小时已收盘 1 分钟 K 线的最低价（急拉）/ 最高价（急砸）不超过这么多才报，即只报「刚从 24 小时低点 / 高点附近拉起 / 砸下」的急动；默认 null 不限，必须大于 `min_change_percent`；开启后启动、新入池与断线回补要多拉约 1440 根 1 分钟 K 线，K 线不满 24 小时的合约（新上线）不报；
 - `alerts.queue_size`：每个通知通道允许积压的提醒数量；
 - `alerts.console_colors`：是否启用控制台颜色，默认开启；
 - `alerts.beep`：是否在控制台提醒时播放提示音；Windows 与 macOS 按提醒类型播放内置合成音效（见「提示音」），不依赖终端响铃设置，其他平台使用终端响铃；

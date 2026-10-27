@@ -22,7 +22,7 @@ from price_alert.detectors.reversal.detector import (
     ReversalEvaluation,
     ReversalOutcome,
 )
-from price_alert.detectors.reversal.rule import CANDLE_INTERVAL_SECONDS, WARMUP_CANDLES, ReversalRule
+from price_alert.detectors.reversal.rule import CANDLE_INTERVAL_SECONDS, ReversalRule
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +45,7 @@ def plan_reversal_replay(symbol: str, start: datetime, end: datetime, rule: Reve
     earliest = int(start.timestamp()) - rule.history_seconds - BASELINE_TOLERANCE_SECONDS
     interval = CANDLE_INTERVAL_SECONDS
     feed_start = datetime.fromtimestamp(earliest // interval * interval, tz=BEIJING_TIME)
-    warmup_start = feed_start - timedelta(seconds=interval * WARMUP_CANDLES)
+    warmup_start = feed_start - timedelta(seconds=interval * rule.warmup_candles)
     return ReplayPlan(symbol, start, end, feed_start, warmup_start)
 
 
@@ -126,6 +126,11 @@ def _format_row(item: ReversalEvaluation, rule: ReversalRule, decimals: int | No
         parts.append(f"成交 ×{item.trade_burst_ratio:.1f}")
     elif item.outcome is ReversalOutcome.NO_TRADE_BURST:
         parts.append("不足 1 小时成交")
+    if item.extreme_distance_percent is not None:
+        side = "低点" if (window.change_percent or 0) > 0 else "高点"
+        parts.append(f"距24小时{side} {item.extreme_distance_percent:+.2f}%")
+    elif item.outcome is ReversalOutcome.EXTREME:
+        parts.append("K 线不足 24 小时")
     if item.outcome is ReversalOutcome.MOVE:
         parts.append(WINDOW_OUTCOME_LABELS[window.outcome])
     else:

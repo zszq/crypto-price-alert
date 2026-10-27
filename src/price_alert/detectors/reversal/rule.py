@@ -16,6 +16,8 @@ CANDLE_INTERVAL = "1m"
 CANDLE_INTERVAL_SECONDS = 60
 WARMUP_CANDLES = 50
 MAX_ATR_AGE_SECONDS = 180
+# 反向极值距离回看此前多少分钟的已收盘 1 分钟 K 线：研究第三轮 720 / 1440 / 2880 分钟里选中 24 小时，不开放配置。
+EXTREME_MINUTES = 1440
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +34,15 @@ class ReversalRule:
     min_prior_move_percent: float
     # 最近 1 分钟成交笔数 ÷ 最近 1 小时每分钟平均笔数的下限。
     min_trade_burst_ratio: float
+    # 入场价离此前 24 小时反向极值（急拉看最低价、急砸看最高价）的距离上限，顺急动方向为正；None 不限。
+    max_extreme_distance_percent: float | None = None
+
+    @property
+    def warmup_candles(self) -> int:
+        """预热要的 1 分钟 K 线根数：判反向极值时要整 24 小时已收盘 K 线，另留当前 K 线与一根余量。"""
+        if self.max_extreme_distance_percent is None:
+            return WARMUP_CANDLES
+        return max(WARMUP_CANDLES, EXTREME_MINUTES + 2)
 
     @property
     def history_seconds(self) -> int:

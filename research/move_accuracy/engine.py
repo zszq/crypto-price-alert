@@ -47,8 +47,10 @@ def load_trades(symbol: str, month: str) -> tuple[np.ndarray, np.ndarray, np.nda
     t, p, s = t[keep], df["p"].to_numpy(np.float64)[keep], df["s"].to_numpy(np.float32)[keep]
     ok = (p > 0) & np.isfinite(p)
     t, p, s = t[ok], p[ok], s[ok]
-    NPY.mkdir(parents=True, exist_ok=True)
-    np.savez(cache, t=t, p=p, s=s)
+    # 缓存约是压缩成交的两倍大，磁盘不够时（第三轮）设 NO_NPY=1 每次重新解析
+    if not os.environ.get("NO_NPY"):
+        NPY.mkdir(parents=True, exist_ok=True)
+        np.savez(cache, t=t, p=p, s=s)
     return t, p, s
 
 

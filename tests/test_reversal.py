@@ -254,3 +254,110 @@ def test_stream_gap_clears_history_so_an_hour_is_needed_again():
         instance.add_tick(tick)
     instance.mark_symbol_gap(SYMBOL.lower())
     assert SYMBOL not in instance._history
+
+
+def day_candles(low: float = 99.95) -> list[Candle]:
+    """BASE 之前整 24 小时（另加 2 根）的平稳 1 分钟 K 线，10 小时前那根的最低价为 low。"""
+    candles = [Candle(BASE - timedelta(minutes=1442 - index), 100.0, 100.05, 99.95, 100.0) for index in range(1442)]
+    candles[-600] = Candle(candles[-600].timestamp, 100.0, 100.05, low, 100.0)
+    return candles
+
+
+def extreme_detector(limit: float = 10.0) -> ReversalDetector:
+    return ReversalDetector(ReversalConfig(max_extreme_distance_percent=limit).to_rule())
+
+
+def feed_day(instance: ReversalDetector, candles: list[Candle], **kwargs):
+    instance.add_symbol(SYMBOL, candles, 50_000_000, price_decimals=2)
+    alerts = []
+    for tick in trades(**kwargs):
+        alerts.extend(instance.add_tick(tick))
+    return alerts
+
+
+def test_extreme_distance_measured_from_the_low_of_closed_candles():
+    # 低位 91 落在急拉之前已收盘的 K 线里：急拉到 93.46 离 24 小时最低价 2.7%，在 10% 以内。
+    (alert,) = feed_day(extreme_detector(), day_candles())
+
+    assert alert.extreme_distance_percent == pytest.approx(93.457 / 91 * 100 - 100, abs=1e-3)
+    assert "距24小时低点 2.70%" in format_alert(alert)
+    assert alert.to_dict()["extreme_distance_percent"] == alert.extreme_distance_percent
+
+
+def test_rebound_far_above_the_day_low_is_not_reported():
+    # 10 小时前探到过 80：急拉后的价格离 24 小时最低价 16.8%，反弹已不是「刚从低点拉起」。
+    assert feed_day(extreme_detector(), day_candles(low=80.0)) == []
+    assert feed_day(extreme_detector(limit=2.0), day_candles()) == []
+
+
+def test_pullback_measured_from_the_day_high():
+    (alert,) = feed_day(extreme_detector(), day_candles(), prior_move=9.0)
+
+    assert alert.extreme_distance_percent == pytest.approx(2.7, abs=1e-3)
+    assert "距24小时高点 2.70%" in format_alert(alert)
+
+
+def test_needs_a_full_day_of_candles_when_extreme_distance_is_set():
+    # 只有 15 根预热 K 线：不满 24 小时不知道当天极值在哪，宁可不报。
+    assert feed_day(extreme_detector(), warmup_candles()) == []
+    # 不配置这一条件时不记 K 线，行为与之前相同。
+    instance = detector()
+    assert len(feed_day(instance, warmup_candles())) == 1
+    assert instance._bars == {}
+
+
+def test_closed_candles_are_bounded_and_rebuilt_after_a_gap():
+    instance = extreme_detector()
+    feed_day(instance, day_candles(), busy=1)
+    bars = instance._bars[SYMBOL]
+    # 只留最近 24 小时再加一根；跨入新分钟时追加刚收盘的那根。
+    assert len(bars) == 1441
+    assert bars[-1][0] == BASE + timedelta(minutes=MOVE // 60 - 1)
+
+    instance.mark_stream_gap()
+    assert SYMBOL not in instance._bars
+    live = Candle(BASE + timedelta(minutes=MOVE // 60), 91.0, 91.0, 91.0, 91.0)
+    assert instance.resync_symbol(SYMBOL, day_candles(), live, BASE + timedelta(seconds=MOVE))
+    assert len(instance._bars[SYMBOL]) == 1441
+    instance.mark_symbol_gap(SYMBOL)
+    assert SYMBOL not in instance._bars
+
+
+def test_extreme_distance_needs_a_day_of_warmup_and_must_exceed_the_move():
+    config = AppConfig.model_validate({"reversal": {"max_extreme_distance_percent": 10}})
+    entry = next(entry for entry in build_detectors(config) if entry.name == "反弹回落")
+
+    assert entry.warmup_candles == 1442
+    # 距离不超过急动门槛时，基准价落在已收盘 K 线里的急动都报不出来。
+    with pytest.raises(ValidationError, match="max_extreme_distance_percent 必须大于 min_change_percent"):
+        AppConfig.model_validate({"reversal": {"max_extreme_distance_percent": 1.5}})
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"max_extreme_distance_percent": 10, "confirmation_seconds": 2},
+        {"max_extreme_distance_percent": 1.6},
+        {"max_extreme_distance_percent": 30, "lookback_seconds": 60, "prior_seconds": 60},
+    ],
+)
+def test_simulate_with_extreme_distance_produces_exactly_one_alert(values):
+    alerts = simulate_reversal(ReversalConfig(**values))
+
+    assert len(alerts) == 1 and alerts[0].extreme_distance_percent <= values["max_extreme_distance_percent"]
+
+
+def test_replay_shows_extreme_distance_and_warms_up_a_day():
+    rule = ReversalConfig(max_extreme_distance_percent=2.0).to_rule()
+    start, end = BASE + timedelta(seconds=4640), BASE + timedelta(seconds=4660)
+    plan = plan_reversal_replay(SYMBOL, start, end, rule)
+    assert plan.warmup_start == plan.feed_start - timedelta(minutes=1442)
+
+    feed_start = plan.feed_start.astimezone(UTC)
+    data = ReplayData([c for c in day_candles() if c.timestamp < feed_start], trades(), price_decimals=2)
+    result = run_reversal_replay(rule, plan, data)
+    text = "\n".join(render_reversal_replay(result))
+
+    assert result.alerts == []
+    assert "离 24 小时反向极值太远（或 K 线不足 24 小时） 1 秒" in text
+    assert "距24小时低点 +2.70%" in text and "离 24 小时反向极值 ≤ 2%" in text
