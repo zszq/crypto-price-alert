@@ -313,6 +313,38 @@ def test_simulate_includes_one_dormant_alert(capsys):
     assert capsys.readouterr().out.count("[冷门启动]") == 1
 
 
+def test_simulate_runs_each_enabled_dormant_group(capsys):
+    config = AppConfig.model_validate(
+        {
+            "move": {"enabled": False},
+            "trend": {"enabled": False},
+            "launch": {"rise": {"enabled": False}},
+            "reversal": {"enabled": False},
+            "dormant": {"slow": {"enabled": True}},
+            "alerts": {"console_colors": False},
+        }
+    )
+
+    assert asyncio.run(cli.simulate(config)) == 2 == cli.expected_simulated_alerts(config)
+    out = capsys.readouterr().out
+    assert out.count("[冷门启动]") == 1 and out.count("[冷门慢启动]") == 1
+
+
+@pytest.mark.parametrize(
+    "slow",
+    [
+        # 量比门槛远高于合成横盘的成交额：窗口成交额要跟着量比放大。
+        {"min_volume_ratio": 50.0, "min_window_quote": 0},
+        {"window_minutes": 120, "min_active_minutes": 120, "min_change_percent": 30, "max_retrace": 0.0},
+        {"min_efficiency": 1.0, "min_late_quote_share": 0.9, "min_last_minute_quote": 100_000},
+    ],
+)
+def test_simulated_slow_group_satisfies_extreme_thresholds(slow):
+    config = AppConfig.model_validate({"dormant": {"slow": {"enabled": True, **slow}}})
+
+    assert [alert.label for alert in simulate_dormant(config.dormant)] == ["冷门启动", "冷门慢启动"]
+
+
 @pytest.mark.parametrize(
     "dormant",
     [

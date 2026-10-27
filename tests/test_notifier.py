@@ -664,7 +664,9 @@ def test_only_long_window_length_is_highlighted_in_one_color_for_both_directions
 
 def make_dormant() -> DormantAlert:
     now = datetime(2026, 10, 21, 9, 0, tzinfo=UTC)
-    metrics = DormantMetrics(0.01542, 0.01685, 9.27, 51_156.0, 8, 423_566.0, 0.3, 30.9, 3.9, 0.82, 6_120.0, 0.55, ())
+    metrics = DormantMetrics(
+        0.01542, 0.01685, 9.27, 51_156.0, 8, 423_566.0, 0.3, 30.9, 3.9, 0.82, 6_120.0, 0.55, 0.6, 12.0, 0.1, ()
+    )
     return DormantAlert("IRYS_USDT", now, now - timedelta(minutes=10), 10, metrics, 2_000_000)
 
 

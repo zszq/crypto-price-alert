@@ -8,6 +8,9 @@
 见 dormant_calm.md 第四节。涨前波动上限（涨前近乎一条直线）也是用户要的形态：在现行规则上加 0.5% 准确率不变、
 提醒少约两成，见 dormant_calm.md 第六节。最后一分钟成交额与后半窗口成交额占比两项来自 dormant_early.md 第三轮
 （假启动更少优先），判据未通过（PBO 0.58），是用户知情后的例外；代码默认值为不限，只由 YAML 开启。
+
+效率、量比、回吐三项只给「慢启动」这组参数用（research/launch_trade/dormant_slow.md：60 分钟窗口、涨前近乎一条直线、
+拉升顺滑的冷门币），这组判据未通过、比现行一组明显不准，是用户知情后的例外；代码默认值都是不限，现行一组不受影响。
 """
 
 from __future__ import annotations
@@ -27,6 +30,13 @@ PRIOR_MINUTES = 1440
 CALM_MINUTES = 240
 
 
+class DormantGroup(StrEnum):
+    """冷门启动的参数组：同一个检测器、同一份 K 线，各组独立判定、独立冷却。"""
+
+    MAIN = "main"
+    SLOW = "slow"
+
+
 class Condition(StrEnum):
     PRIOR = "prior"
     VOLUME = "volume"
@@ -38,6 +48,9 @@ class Condition(StrEnum):
     BODY = "body"
     LAST = "last"
     LATE = "late"
+    EFFICIENCY = "efficiency"
+    RATIO = "ratio"
+    RETRACE = "retrace"
 
 
 CONDITION_LABELS: dict[Condition, str] = {
@@ -51,6 +64,9 @@ CONDITION_LABELS: dict[Condition, str] = {
     Condition.BODY: "总实体占比不足（影线过多）",
     Condition.LAST: "最后一分钟成交额不足",
     Condition.LATE: "后半窗口成交额占比不足（买盘没跟上）",
+    Condition.EFFICIENCY: "拉升不够顺滑（来回拉扯）",
+    Condition.RATIO: "量比不足",
+    Condition.RETRACE: "从窗口最高价回落过多",
 }
 
 
@@ -82,11 +98,30 @@ class DormantRule:
     # 冷却期内价格比上次提醒价再涨这么多（%）就再报「第 N 波」，第一次没注意到也不至于整段错过；None 即冷却内不再报。
     # 回测中这些补报的准确率不低于第一次提醒（dormant_calm.md 第五节，判据全部通过）。
     realert_step_percent: float | None = 3.0
+    # 效率（窗口净涨幅的价差 ÷ 逐分钟收盘价差绝对值之和）下限，0 即不限：慢启动要的是一路往上，不是来回拉扯。
+    min_efficiency: float = 0.0
+    # 量比（窗口成交额 ÷ 之前 24 小时同长度的平均成交额）下限，0 即不限：慢启动的涨幅小，要求成交确实放大了。
+    min_volume_ratio: float = 0.0
+    # 从窗口最高价回落的比例上限（回落 ÷ 窗口起点到最高价的涨幅），None 不限：提醒时还要在高位附近。
+    max_retrace: float | None = None
+    # 跟踪补报：提醒（含补报）后只看价格，收盘价比上次提醒价再涨这么多（%）就补报下一波，不再检查其他条件；
+    # None 即不跟踪。
+    # 与 realert_step_percent 不同：慢启动的条件是「刚从平静中启动」，启动后涨前波动、效率很快就不满足了，
+    # 要求条件仍满足的第 N 波几乎报不出来（dormant_waves.md 第一节）。
+    follow_step_percent: float | None = None
+    # 距上次提醒（含补报）超过这么久（分钟）还没再涨够，就停止跟踪：一路涨就一路跟，停涨了就结束。
+    follow_minutes: int = 240
+    group: DormantGroup = DormantGroup.MAIN
 
     def __post_init__(self) -> None:
         if self.realert_step_percent is not None and self.realert_step_percent <= 0:
             # 0 会让冷却期内每分钟都补报，等于没有冷却。
             raise ValueError("realert_step_percent 必须大于 0")
+        if self.follow_step_percent is not None and self.follow_step_percent <= 0:
+            # 0 会让跟踪期内每分钟都补报。
+            raise ValueError("follow_step_percent 必须大于 0")
+        if self.follow_minutes < 1:
+            raise ValueError("follow_minutes 必须至少为 1")
         if self.window_minutes < 1:
             raise ValueError("window_minutes 必须至少为 1")
         if not 1 <= self.min_active_minutes <= self.window_minutes:
@@ -121,6 +156,12 @@ class DormantMetrics:
     last_minute_quote: float
     # 最后 late_minutes 根的成交额 ÷ 窗口成交额；窗口没有成交时为 0。
     late_quote_share: float
+    # 窗口净涨幅的价差 ÷ 逐分钟收盘价差绝对值之和（含窗口前一根到第一根），收盘价一直不动时为 0。
+    efficiency: float
+    # 窗口成交额 ÷（之前 24 小时成交额 ÷ 1440 × 窗口分钟数）；之前 24 小时没有成交时为无穷大。
+    volume_ratio: float
+    # （窗口最高价 − 最后收盘）÷（窗口最高价 − 起点）；最高价不高于起点时为 0。
+    retrace: float
     failures: tuple[Condition, ...]
 
     @property
@@ -168,6 +209,12 @@ def evaluate_dormant(
     last_minute_quote = window[-1].quote_volume
     late_quote = sum(candle.quote_volume for candle in window[-late_minutes(rule.window_minutes) :])
     late_quote_share = late_quote / window_quote if window_quote > 0 else 0.0
+    path = sum(abs(current - previous) for previous, current in pairwise(closes))
+    efficiency = abs(end_price - start_price) / path if path > 0 else 0.0
+    average = prior_quote / PRIOR_MINUTES * rule.window_minutes
+    volume_ratio = window_quote / average if average > 0 else math.inf
+    high = max(candle.high for candle in window)
+    retrace = (high - end_price) / (high - start_price) if high > start_price else 0.0
 
     failures: list[Condition] = []
     if prior_quote > rule.max_prior_quote:
@@ -190,6 +237,12 @@ def evaluate_dormant(
         failures.append(Condition.LAST)
     if late_quote_share < rule.min_late_quote_share:
         failures.append(Condition.LATE)
+    if efficiency < rule.min_efficiency:
+        failures.append(Condition.EFFICIENCY)
+    if volume_ratio < rule.min_volume_ratio:
+        failures.append(Condition.RATIO)
+    if rule.max_retrace is not None and retrace > rule.max_retrace:
+        failures.append(Condition.RETRACE)
     return DormantMetrics(
         start_price=start_price,
         end_price=end_price,
@@ -203,5 +256,8 @@ def evaluate_dormant(
         body_ratio=body_ratio,
         last_minute_quote=last_minute_quote,
         late_quote_share=late_quote_share,
+        efficiency=efficiency,
+        volume_ratio=volume_ratio,
+        retrace=retrace,
         failures=tuple(failures),
     )

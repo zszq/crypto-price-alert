@@ -101,11 +101,12 @@ def build_launch_detector(
 
 
 def build_dormant_detector(
-    rule: DormantRule,
+    rules: Sequence[DormantRule],
     *,
     observer: Callable[[DormantEvaluation], None] | None = None,
 ) -> DormantDetector:
-    return DormantDetector(rule, observer)
+    # 现行一组与慢启动一组共用一个检测器（同一份 K 线），规则由 DormantConfig.rules 生成。
+    return DormantDetector(rules, observer)
 
 
 def build_reversal_detector(rule: ReversalRule) -> ReversalDetector:
@@ -139,7 +140,7 @@ def build_detectors(config: AppConfig) -> list[MonitoredDetector]:
         volume = VolumeRange(config.trend.min_volume_24h_quote, config.trend.max_volume_24h_quote)
         detectors.append(MonitoredDetector("K 线趋势", trend, trend.warmup_interval, trend.warmup_candles, volume))
     if config.dormant.enabled:
-        dormant = build_dormant_detector(config.dormant.to_rule())
+        dormant = build_dormant_detector(config.dormant.rules())
         volume = VolumeRange(config.dormant.min_volume_24h_quote, config.dormant.max_volume_24h_quote)
         detectors.append(
             MonitoredDetector("冷门启动", dormant, dormant.warmup_interval, dormant.warmup_candles, volume)

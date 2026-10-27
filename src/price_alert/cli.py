@@ -131,12 +131,12 @@ def _add_replay_arguments(command: argparse.ArgumentParser, end_default: str, al
 def expected_simulated_alerts(config: AppConfig) -> int:
     windows = len(build_windows(config.move)) if config.move.enabled else 0
     trend_periods = len(config.trend.rules()) if config.trend.enabled else 0
-    singles = int(config.dormant.enabled) + int(config.reversal.enabled)
+    singles = len(config.dormant.rules()) + int(config.reversal.enabled)
     return windows + trend_periods + len(config.launch.sides()) + singles
 
 
 async def simulate(config: AppConfig) -> int:
-    """为每个启用的观察窗口、趋势周期、放量方向、冷门启动和反弹回落各跑一遍合成行情，返回提醒总数；
+    """为每个启用的观察窗口、趋势周期、放量方向、冷门启动参数组和反弹回落各跑一遍合成行情，返回提醒总数；
     正常时等于 expected_simulated_alerts。"""
     notifier = ConsoleNotifier(beep=False, colors=config.alerts.console_colors)
     alert_count = 0
@@ -220,14 +220,15 @@ def launch_replay(config: AppConfig, args: argparse.Namespace) -> None:
 
 
 def dormant_replay(config: AppConfig, args: argparse.Namespace) -> None:
-    rule = config.dormant.to_rule()
+    # 冷门启动整个关闭时仍按现行一组回放：回放常用来判断要不要打开它。
+    rules = config.dormant.rules() or (config.dormant.to_rule(),)
     plan = _plan_or_exit(
         args,
         timedelta(hours=DEFAULT_DORMANT_REPLAY_HOURS),
-        lambda symbol, start, end: plan_dormant_replay(symbol, start, end, rule),
+        lambda symbol, start, end: plan_dormant_replay(symbol, start, end, rules),
     )
     candles, decimals = _fetch_minutes_or_exit(config, plan)
-    print("\n".join(render_dormant_replay(run_dormant_replay(rule, plan, candles, decimals), show_all=args.all)))
+    print("\n".join(render_dormant_replay(run_dormant_replay(rules, plan, candles, decimals), show_all=args.all)))
 
 
 def _plan_or_exit(
@@ -343,9 +344,12 @@ def main() -> None:
             volume = f"24 小时成交额 > {format_amount(dormant.min_volume_24h_quote)}"
             if dormant.max_volume_24h_quote is not None:
                 volume += f" 且 ≤ {format_amount(dormant.max_volume_24h_quote)}"
-            print(f"  {describe_dormant_rule(dormant.to_rule())}；合约池：{volume} USDT")
+            for rule in dormant.rules():
+                print(f"  {describe_dormant_rule(rule)}；合约池：{volume} USDT")
+            if not dormant.slow.enabled:
+                print("  冷门慢启动提醒：已关闭")
         else:
-            print("  冷门启动提醒：已关闭")
+            print("  冷门启动提醒：已关闭（含冷门慢启动）")
         reversal = config.reversal
         if reversal.enabled:
             volume = f"24 小时成交额 > {format_amount(reversal.min_volume_24h_quote)}"

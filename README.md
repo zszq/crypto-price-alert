@@ -150,6 +150,19 @@ ATR 异动强度 = |当前完整秒 VWAP - N 秒前完整秒 VWAP| / Wilder ATR
 
 以 IRYS_USDT 为例，2026-10-21 14:00~18:00 不报：最接近的 17:00 那段 10 分钟上涨 9.27%、成交额 5.12 万、10 分钟都有成交，但涨前每分钟平均波动 0.65%（超过 0.5%），其中一分钟还涨了 6.11%（超过单分钟上限）；14:54 那段 10 分钟涨幅不到 8%。可以用 `dormant-replay` 复现，见下文。
 
+#### 冷门慢启动（第二组参数，代码默认关闭）
+
+上面这组看的是 10~15 分钟内涨 8% 的快启动，「平时基本没起伏、之后量价缓慢拉升」的冷门币它报不到：JCT_USDT 2026-10-20 10 点之前涨前波动每分钟只有约 0.07%，11:00~12:30 从约 0.00197 慢慢涨到 0.00221，15 分钟窗口里最多只涨 4.4%，整天不报。`dormant.slow` 是同一个检测器里的第二组参数，与上面一组共用合约池与 K 线、各自判定、各自冷却，提醒标签是「冷门慢启动」（JSONL 里 `group: "slow"`），同一分钟两组都满足会各报一条。`dormant.slow.enabled` 只开关这一组，`dormant.enabled` 关闭时两组都不报。代码默认值（最近 60 分钟，全部满足即提醒）：
+
+- 冷门（之前 24 小时成交额 ≤ 100 万）、涨幅 ≥ 6%、窗口成交额 ≥ 1 万、至少 48 分钟有成交、单分钟涨幅 ≤ 3%；
+- 涨前 240 分钟平均每分钟波动 ≤ 0.2%（不看倍数）、后 30 分钟成交额占窗口 ≥ 50%；
+- 另外三项只有这一组有（上面一组没有这几个键）：**效率**（窗口净涨幅的价差 ÷ 逐分钟收盘价差绝对值之和，越接近 1 越是一路往上）≥ 0.3（`min_efficiency`）、**量比**（窗口成交额 ÷ 之前 24 小时同长度均值，之前没有成交时视为满足）≥ 3 倍（`min_volume_ratio`）、**从窗口最高价回落**不超过窗口最大涨幅的 30%（`max_retrace`）；
+- 不看实体占比与涨幅倍数；冷却 120 分钟，冷却内不报「第 N 波」。
+
+**这一组的判据未通过，准确率明显低于上面一组，是用户知情后的例外。** 用 2021-09 起的数据在 30~120 分钟窗口、51,840 组候选里按准确率选出的方案 PBO 0.87、不稳健，而且报不到 JCT（[research/launch_trade/dormant_slow.md](research/launch_trade/dormant_slow.md)）；现在这组是按 JCT 的形态挑的：2025-01 起的样本外准确率约 0.34（上面一组约 0.45），每天约 6.4 条，JCT 那天 12:17 报出（0.002148）。研究里涨前越平稳、拉升越顺滑、越没有跳涨的冷门币，提醒之后先涨 3%~5% 的比例反而越低，这类提醒看到了也不代表会继续涨。
+
+**跟踪补报（`follow_step_percent` / `follow_minutes`，代码默认不跟踪）**：冷却内的「第 N 波」要求条件仍满足，可慢启动的条件是「刚从平静中启动」，启动后涨前波动、效率很快就不满足了，JCT 那天 12:17 之后一路涨到 0.004 也没有第二条。打开跟踪补报后，提醒（含补报）之后只看价格：收盘价比上次提醒价再涨够步长就补报「冷门慢启动·第N波」，不再检查其他条件；距上次提醒超过跟踪时长还没再涨够就停止跟踪。条件满足且已过冷却时仍算新的一段，从第 1 波开始。回测（[research/launch_trade/dormant_waves.md](research/launch_trade/dormant_waves.md)）里所有步长、跟踪时长的补报都比第一次提醒准（样本外 0.42~0.49 对 0.34），但按规则选出的步长 3%、跟踪 240 分钟补报每天 8 条、比第一次提醒还多，判据未通过；步长 5%、跟踪 240 分钟样本外补报准确率约 0.44、每天多约 4.4 条，JCT 那天 12:17 之后在 13:36、14:44、15:02、15:37、16:09、16:49、17:16 等时刻共补报 12 次。补报提醒的文本仍是最近 60 分钟的统计，涨幅可能低于 6%。
+
 ### 反弹回落：急跌后的反弹、急涨后的回落
 
 秒级异动的提醒之后，价格更常见的是回吐：按逐笔成交回测，提醒后 1~5 分钟每个整分钟点都还在提醒方向一侧的比例与随机时刻、随机方向相同（约 23%）。窗口长度、涨跌幅、ATR、确认秒数怎么调都差不多，只有一类急动之后几分钟更可能沿急动方向继续走：**此前已经反向走了一大段、急动时成交突然涌入**。反弹回落提醒（`reversal`）只报这一类，与秒级异动相互独立：
@@ -181,7 +194,7 @@ Gate WebSocket futures.trades 实时成交
 控制台声音 + JSONL + 可选 Webhook
 ```
 
-反弹回落与秒级异动共用完整秒 VWAP + ATR 这一路，另记最近 1 小时的逐秒价格与累计成交笔数，判定前置走势与成交暴增。冷门启动与放量启动共用带成交额的 1 分钟 K 线这一路：之前 24 小时成交额 + 涨幅 + 窗口成交额 + 有成交的分钟数 + 涨前平稳 + 单分钟涨幅上限 + 实体占比，冷却期内再涨够步长才报下一波。
+反弹回落与秒级异动共用完整秒 VWAP + ATR 这一路，另记最近 1 小时的逐秒价格与累计成交笔数，判定前置走势与成交暴增。冷门启动与放量启动共用带成交额的 1 分钟 K 线这一路：之前 24 小时成交额 + 涨幅 + 窗口成交额 + 有成交的分钟数 + 涨前平稳 + 单分钟涨幅上限 + 实体占比，冷却期内再涨够步长才报下一波；可选的慢启动一组在同一份 K 线上按 60 分钟窗口另外判定、另外冷却。
 
 项目通过 Gate 合约元数据的 `contract_type` 排除股票、指数、外汇、贵金属和商品等非币类合约，并且只监控 `status=trading` 且不在下架流程（`in_delisting`）中的品种。Gate 官方将 `volume_24h_usd` 标记为弃用，因此项目使用 `volume_24h_quote`。`is_internal=true` 的内部成交可能偏离正常盘口且不会进入 K 线，检测时会主动忽略。
 
@@ -245,7 +258,7 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 .\.venv\Scripts\python.exe -m price_alert.cli simulate
 ```
 
-模拟会为每个启用的观察窗口（`move.enabled: false` 时没有）、趋势周期、放量方向（上涨、下跌）、冷门启动与反弹回落各跑一遍，正常时各产生一条提醒；数量不符时命令以非零退出码结束并给出提示。配置文件缺失或校验失败时，会列出出错的配置键路径。
+模拟会为每个启用的观察窗口（`move.enabled: false` 时没有）、趋势周期、放量方向（上涨、下跌）、冷门启动的每个启用参数组（现行一组、慢启动一组）与反弹回落各跑一遍，正常时各产生一条提醒；数量不符时命令以非零退出码结束并给出提示。配置文件缺失或校验失败时，会列出出错的配置键路径。
 
 依次试听各类提醒的提示音（见下文「提示音」，只支持 Windows 与 macOS）：
 
@@ -295,7 +308,7 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 ```
 
 - `--end` 默认为开始后 6 小时，时间、合约名与保留范围同 `trend-replay`；
-- 输出依次是规则摘要、回放得到的提醒、判定统计（含每个条件未满足的次数和「最接近触发」的一分钟，不冷门的分钟不参与比较），以及所有满足条件的分钟（含冷却中、空档后价格已回落而没有提醒的）；加 `--all` 输出每一分钟的判定；
+- 输出依次是规则摘要、回放得到的提醒、判定统计（含每个条件未满足的次数和「最接近触发」的一分钟，不冷门的分钟不参与比较），以及所有满足条件的分钟（含冷却中、空档后价格已回落而没有提醒的）；加 `--all` 输出每一分钟的判定；开启了慢启动一组（`dormant.slow.enabled`）时两组一起回放，预热按窗口较长的慢启动一组，提醒合在一起列出，判定统计与逐分钟判定按组分段；
 - 回放从空白提醒记录开始，也不按合约池筛选。
 
 反弹回落提醒用历史成交逐秒回放（与 `replay` 一样从 Gate REST 取成交，只保留最近几周；成交从开始时间往前 1 小时取起，作为成交暴增的基准与前置走势的起点，活跃合约取数要一到几分钟）：
@@ -347,6 +360,12 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 [冷门启动] 2026-10-22 02:37:00 | BULLA_USDT | 10分钟上涨 8.09%，成交额 4.76万 USDT（9 分钟有成交），之前24小时成交额 48.79万 USDT，涨前240分钟平均每分钟波动 0.15%（涨幅为其 54 倍） | 0.081135 → 0.087698
 ```
 
+冷门慢启动一组用同样的格式和颜色，只是标签不同：
+
+```text
+[冷门慢启动] 2026-10-20 12:17:00 | JCT_USDT | 60分钟上涨 6.44%，成交额 1.49万 USDT（52 分钟有成交），之前24小时成交额 7.27万 USDT，涨前240分钟平均每分钟波动 0.10%（涨幅为其 66 倍） | 0.002018 → 0.002148
+```
+
 反弹回落提醒以亮白色的标签开头，急动涨跌幅在前、此前那段走势在括号里（价格是急动窗口的基准价 → 急动那一秒的均价）：
 
 ```text
@@ -354,7 +373,7 @@ Windows 可以双击 `start-monitor.bat`，或者运行：
 [冲高回落] 2026-05-07 07:24:47 | LAB_USDT | 10秒内下跌 1.54%（此前15分钟上涨 8.33%） | 成交笔数为1小时均值的 17 倍 | 4.66120 → 4.58932
 ```
 
-JSONL/Webhook 中趋势提醒带 `kind: "trend"`，并有 `period`、`candles`、`continuing`（是否为延续提醒）、`started_at`、`start_price`、`price`、`change_percent`、`counter_candles`、`rebound_ratio`、`body_ratio`、`single_candle_ratio` 等字段；连续提醒带 `kind: "streak"`，并有 `alert_count`（这一串的短窗口提醒条数）、`started_at`、`start_price`、`price`、`change_percent`、`lookback_seconds` 等字段；放量启动提醒带 `kind: "launch"`，并有 `wave`（第几波）、`window_minutes`、`baseline_minutes`、`started_at`、`start_price`、`price`、`change_percent`、`window_quote_volume`、`baseline_quote_volume`、`volume_ratio`（基准期无成交时为 null）、`breakout_price` 等字段；冷门启动提醒带 `kind: "dormant"`，并有 `wave`（第几波）、`window_minutes`、`started_at`、`start_price`、`price`、`change_percent`、`window_quote_volume`、`active_minutes`（窗口内有成交的分钟数）、`prior_quote_volume`（窗口之前 24 小时成交额）、`pre_volatility_percent`（涨前波动）、`max_minute_change_percent`（窗口内单分钟最大涨幅）、`body_ratio`（窗口总实体占比）、`last_minute_quote_volume`（最后一分钟成交额）、`late_quote_share`（后半窗口成交额占比）等字段；反弹回落提醒带 `kind: "reversal"`，并有 `direction`（急动方向）、`price`、`reference_price`（窗口基准价）、`change_percent`、`lookback_seconds`、`move_atr`、`trade_count`、`prior_change_percent`（窗口之前那段的实际涨跌幅，与急动方向相反）、`prior_seconds`、`trade_burst_ratio`（成交笔数暴增倍数）等字段；秒级异动提醒没有 `kind` 字段。
+JSONL/Webhook 中趋势提醒带 `kind: "trend"`，并有 `period`、`candles`、`continuing`（是否为延续提醒）、`started_at`、`start_price`、`price`、`change_percent`、`counter_candles`、`rebound_ratio`、`body_ratio`、`single_candle_ratio` 等字段；连续提醒带 `kind: "streak"`，并有 `alert_count`（这一串的短窗口提醒条数）、`started_at`、`start_price`、`price`、`change_percent`、`lookback_seconds` 等字段；放量启动提醒带 `kind: "launch"`，并有 `wave`（第几波）、`window_minutes`、`baseline_minutes`、`started_at`、`start_price`、`price`、`change_percent`、`window_quote_volume`、`baseline_quote_volume`、`volume_ratio`（基准期无成交时为 null）、`breakout_price` 等字段；冷门启动提醒带 `kind: "dormant"`，并有 `wave`（第几波）、`window_minutes`、`started_at`、`start_price`、`price`、`change_percent`、`window_quote_volume`、`active_minutes`（窗口内有成交的分钟数）、`prior_quote_volume`（窗口之前 24 小时成交额）、`pre_volatility_percent`（涨前波动）、`max_minute_change_percent`（窗口内单分钟最大涨幅）、`body_ratio`（窗口总实体占比）、`last_minute_quote_volume`（最后一分钟成交额）、`late_quote_share`（后半窗口成交额占比）、`efficiency`（效率）、`volume_ratio`（量比，之前 24 小时无成交时为 null）、`retrace`（从窗口最高价回落的比例）、`group`（参数组：`main` 现行一组、`slow` 慢启动一组）等字段；反弹回落提醒带 `kind: "reversal"`，并有 `direction`（急动方向）、`price`、`reference_price`（窗口基准价）、`change_percent`、`lookback_seconds`、`move_atr`、`trade_count`、`prior_change_percent`（窗口之前那段的实际涨跌幅，与急动方向相反）、`prior_seconds`、`trade_burst_ratio`（成交笔数暴增倍数）等字段；秒级异动提醒没有 `kind` 字段。
 
 价格按合约的报价精度（Gate 合约的 `order_price_round`）显示，高价币不会再被截掉小数；取不到精度时按 8 位有效数字显示。
 
@@ -441,7 +460,7 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 - `launch.<方向>.require_breakout`：是否要求收盘突破基准期高点（下跌为低点），默认开启；
 - `launch.<方向>.max_change_percent`：窗口涨跌幅上限，默认 15%，须大于 `min_change_percent`，null 表示不限；超过时不提醒，但按同样的冷却与再推进规则当作提醒记入；
 - `launch.<方向>.cooldown_minutes` / `realert_step_percent`：再次提醒的最小间隔（不能小于窗口）与价格须再推进的幅度，默认 15 分钟、5%；
-- `dormant.enabled`：是否启用冷门启动提醒，默认开启；关闭后不创建该检测器，也不会多订阅、多拉 K 线；
+- `dormant.enabled`：是否启用冷门启动提醒，默认开启；关闭后不创建该检测器，也不会多订阅、多拉 K 线，慢启动一组（`dormant.slow`）也一起关闭；
 - `dormant.min_volume_24h_quote` / `max_volume_24h_quote`：冷门启动的合约池范围，默认 0~3M；上限要明显高于 `max_prior_quote`，设为 null 不设上限；
 - `dormant.window_minutes` / `max_prior_quote`：观察窗口（分钟）与冷门门槛（窗口之前 24 小时成交额上限，USDT），默认 10 与 1000000；
 - `dormant.min_window_quote` / `min_active_minutes`：窗口成交额（USDT）与有成交的分钟数门槛，默认 5000、5 分钟；有成交的分钟数不能大于窗口；
@@ -450,6 +469,8 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 - `dormant.min_calm_multiple` / `max_pre_volatility_percent`：涨幅至少是涨前 240 分钟平均每分钟真实波幅的多少倍（0 即不限）与涨前波动本身的上限（百分比，null 即不限），默认 10 倍、0.5；
 - `dormant.min_last_minute_quote` / `min_late_quote_share`：窗口最后一分钟成交额下限（USDT）与后半窗口（最后 ⌈窗口/2⌉ 分钟）成交额占比下限（0 ≤ x < 1），默认都是 0 即不限；
 - `dormant.cooldown_minutes` / `realert_step_percent`：冷却默认 60 分钟（不能小于窗口），冷却期内价格比上次提醒再涨 ≥ 3% 才补报「第 N 波」，null 即冷却内不再报；
+- `dormant.slow`：冷门慢启动一组，`enabled` 默认关闭；其余键与上面 `dormant.*` 的判定门槛、冷却相同（合约池除外），另多三项：`min_efficiency`（效率下限，窗口净涨幅的价差 ÷ 逐分钟收盘价差绝对值之和，0~1）、`min_volume_ratio`（量比下限，窗口成交额 ÷ 之前 24 小时同长度均值）、`max_retrace`（从窗口最高价回落占窗口最大涨幅的比例上限，0~1，null 即不限），这三项写在 `dormant` 顶层会报错；没写的键取这一组自己的默认值（窗口 60 分钟、涨幅 6%、成交额 1 万、48 分钟有成交、单分钟 ≤ 3%、实体占比与倍数不限、涨前波动 ≤ 0.2%、后半占比 50%、效率 0.3、量比 3 倍、回落 ≤ 30%、冷却 120 分钟、不补报），不沿用上面一组的取值；窗口取值范围 1~120；
+- `dormant.slow.follow_step_percent` / `follow_minutes`：慢启动的跟踪补报（只有这一组有），提醒（含补报）后收盘价比上次提醒价再涨这么多（百分比）就补报下一波、不看其他条件，距上次提醒超过 `follow_minutes` 分钟（1~1440）没再涨够就停止跟踪；默认 null（不跟踪）、240；
 - `reversal.enabled`：是否启用反弹回落提醒，默认开启；关闭后不创建该检测器，也不会多订阅、多拉 K 线；
 - `reversal.min_volume_24h_quote` / `max_volume_24h_quote`：反弹回落的合约池范围，默认 > 8M、上限不设；
 - `reversal.lookback_seconds` / `min_change_percent` / `trigger_atr_multiple` / `confirmation_seconds` / `min_window_trades` / `cooldown_seconds`：急动窗口，含义同秒级异动的窗口参数，默认 10 秒、1.5%、1 ATR、连续 1 秒、5 笔、冷却 30 秒（确认秒数不能大于窗口）；
@@ -514,7 +535,7 @@ src/price_alert/              分层：common ← exchange ← detectors ← not
 │   │   ├── replay.py        历史 1 分钟 K 线回放
 │   │   └── simulate.py      合成行情验证
 │   ├── dormant/             冷门启动提醒
-│   │   ├── rule.py          冷门、涨幅、成交额、有成交分钟数、涨前波动倍数与单分钟涨幅判定（纯函数）
+│   │   ├── rule.py          冷门、涨幅、成交额、有成交分钟数、涨前波动倍数、单分钟涨幅与慢启动的效率/量比/回落判定（纯函数）
 │   │   ├── detector.py      每分钟判定、滚动统计与冷却
 │   │   ├── alerts.py        冷门启动提醒模型与文本
 │   │   ├── config.py        dormant 配置段

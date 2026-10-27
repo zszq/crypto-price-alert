@@ -1,4 +1,4 @@
-"""合成行情验证冷门启动配置：之前 24 小时少量成交、一字横盘，之后一段拉升，正常时恰好产生一条提醒。"""
+"""合成行情验证冷门启动配置：之前 24 小时少量成交、一字横盘，之后一段拉升，每个启用的参数组恰好产生一条提醒。"""
 
 from __future__ import annotations
 
@@ -8,16 +8,20 @@ from price_alert.assembly import build_dormant_detector
 from price_alert.common.models import Candle
 from price_alert.detectors.dormant.alerts import DormantAlert
 from price_alert.detectors.dormant.config import DormantConfig
-from price_alert.detectors.dormant.rule import PRIOR_MINUTES, late_minutes
+from price_alert.detectors.dormant.rule import PRIOR_MINUTES, DormantRule, late_minutes
 
 SYMBOL = "BTC_USDT"
 _PRICE = 100.0
 
 
 def simulate_dormant(config: DormantConfig) -> list[DormantAlert]:
+    # 每组单独用一个只含该组的检测器跑：同一段合成行情可能同时满足两组，合在一起就不是每组恰好一条了。
+    return [alert for rule in config.rules() for alert in _simulate_rule(rule)]
+
+
+def _simulate_rule(rule: DormantRule) -> list[DormantAlert]:
     # 拉升过程中条件可能在最后一分钟之前就满足，之后继续上涨还可能报第 N 波；模拟只验证会报出第一条，报出即停。
-    rule = config.to_rule()
-    detector = build_dormant_detector(rule)
+    detector = build_dormant_detector([rule])
     now = int(datetime.now(UTC).timestamp())
     launch_start = datetime.fromtimestamp(now - now % 60, tz=UTC) - timedelta(minutes=rule.window_minutes)
     # 横盘段要覆盖判定所需的全部历史，拉升的第一分钟就能判定。
@@ -32,8 +36,9 @@ def simulate_dormant(config: DormantConfig) -> list[DormantAlert]:
 
     # 窗口每一分钟都有成交（满足任何活跃分钟数门槛），成交额与涨幅都取门槛的 1.5 倍，逐分钟单边上涨且无影线；
     # 横盘段一字不动，倍数无穷大。每分钟等额上涨，第一分钟涨幅最大，为总涨幅 ÷ 窗口，不超过单分钟上限
-    # （配置已保证窗口 × 单分钟上限不小于涨幅门槛）。
-    window_quote = max(rule.min_window_quote, 1.0) * 1.5
+    # （配置已保证窗口 × 单分钟上限不小于涨幅门槛）。单边上涨、收在最高价，效率为 1、回落为 0；
+    # 窗口成交额同时取量比门槛的 1.5 倍。
+    window_quote = max(rule.min_window_quote, rule.min_volume_ratio * prior_quote * rule.window_minutes, 1.0) * 1.5
     change = min(
         rule.min_change_percent * 1.5,
         (rule.min_change_percent + 100) / 2,

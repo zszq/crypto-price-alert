@@ -58,7 +58,7 @@ DORMANT_ALERT = DormantAlert(
     NOW,
     NOW - timedelta(minutes=10),
     10,
-    DormantMetrics(1.0, 1.09, 9.0, 30_000.0, 8, 50_000.0, 0.0, math.inf, 3.0, 1.0, 3_000.0, 0.5, ()),
+    DormantMetrics(1.0, 1.09, 9.0, 30_000.0, 8, 50_000.0, 0.0, math.inf, 3.0, 1.0, 3_000.0, 0.5, 1.0, 30.0, 0.0, ()),
     2e5,
 )
 

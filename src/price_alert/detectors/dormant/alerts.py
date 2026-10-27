@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
 from price_alert.common.formatting import beijing_time, format_amount, format_price
-from price_alert.detectors.dormant.rule import CALM_MINUTES, DormantMetrics, DormantRule, late_minutes
+from price_alert.detectors.dormant.rule import CALM_MINUTES, DormantGroup, DormantMetrics, DormantRule, late_minutes
 
-LABEL = "冷门启动"
+LABELS: dict[DormantGroup, str] = {DormantGroup.MAIN: "冷门启动", DormantGroup.SLOW: "冷门慢启动"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +26,8 @@ class DormantAlert:
     price_decimals: int | None = None
     # 冷却期内价格继续上涨的补报从 2 起算。
     wave: int = 1
+    # 哪一组参数报的：慢启动一组准确率明显低于现行一组，标签分开，看到提醒就知道该信几分。
+    group: DormantGroup = DormantGroup.MAIN
 
     # 只检测拉升；方向与颜色给按方向着色的通知代码用，与其他提醒一致。
     @property
@@ -37,7 +40,8 @@ class DormantAlert:
 
     @property
     def label(self) -> str:
-        return f"{LABEL}·第{self.wave}波" if self.wave > 1 else LABEL
+        label = LABELS[self.group]
+        return f"{label}·第{self.wave}波" if self.wave > 1 else label
 
     def to_dict(self) -> dict[str, object]:
         metrics = self.metrics
@@ -62,6 +66,11 @@ class DormantAlert:
             "body_ratio": metrics.body_ratio,
             "last_minute_quote_volume": metrics.last_minute_quote,
             "late_quote_share": metrics.late_quote_share,
+            "efficiency": metrics.efficiency,
+            # 之前 24 小时没有成交时量比为无穷大，JSON 表示不了，与放量启动一样写 null。
+            "volume_ratio": metrics.volume_ratio if math.isfinite(metrics.volume_ratio) else None,
+            "retrace": metrics.retrace,
+            "group": self.group.value,
             "volume_24h_quote": self.volume_24h_quote,
             "price_decimals": self.price_decimals,
             "color": self.color,
@@ -70,39 +79,55 @@ class DormantAlert:
 
 def describe_dormant_rule(rule: DormantRule) -> str:
     return (
-        f"{LABEL}：之前 24 小时成交额 ≤ {format_amount(rule.max_prior_quote)} USDT 的币，"
+        f"{LABELS[rule.group]}：之前 24 小时成交额 ≤ {format_amount(rule.max_prior_quote)} USDT 的币，"
         f"最近 {rule.window_minutes} 分钟涨幅 ≥ {rule.min_change_percent:g}%、"
         f"成交额 ≥ {format_amount(rule.min_window_quote)} USDT、至少 {rule.min_active_minutes} 分钟有成交，"
-        f"{describe_calm(rule)}、"
-        f"单分钟涨幅 ≤ {rule.max_minute_change_percent:g}%、总实体占比 ≥ {rule.min_body_ratio:.0%}"
-        f"{describe_volume_shape(rule)}；"
+        f"{'、'.join(describe_shape(rule))}；"
         f"{describe_repeat(rule)}"
     )
 
 
-def describe_volume_shape(rule: DormantRule) -> str:
-    # 两项代码默认不限，未开启时不写，规则说明与开启前一致。
-    parts = []
+def describe_shape(rule: DormantRule) -> list[str]:
+    # 设为不限的项不写：两组参数开启的条件不同，各自只列真正在判定的门槛。
+    parts = describe_calm(rule)
+    parts.append(f"单分钟涨幅 ≤ {rule.max_minute_change_percent:g}%")
+    if rule.min_body_ratio > 0:
+        parts.append(f"总实体占比 ≥ {rule.min_body_ratio:.0%}")
     if rule.min_last_minute_quote > 0:
         parts.append(f"最后一分钟成交额 ≥ {format_amount(rule.min_last_minute_quote)} USDT")
     if rule.min_late_quote_share > 0:
         parts.append(f"后 {late_minutes(rule.window_minutes)} 分钟成交额占比 ≥ {rule.min_late_quote_share:.0%}")
-    return "".join(f"、{part}" for part in parts)
+    if rule.min_efficiency > 0:
+        parts.append(f"效率（净涨幅 ÷ 逐分钟涨跌路程）≥ {rule.min_efficiency:g}")
+    if rule.min_volume_ratio > 0:
+        parts.append(f"量比（相对之前 24 小时同长度均值）≥ {rule.min_volume_ratio:g} 倍")
+    if rule.max_retrace is not None:
+        parts.append(f"从窗口最高价回落 ≤ 窗口最大涨幅的 {rule.max_retrace:.0%}")
+    return parts
 
 
-def describe_calm(rule: DormantRule) -> str:
-    multiple = f"涨幅 ≥ 涨前 {CALM_MINUTES} 分钟平均每分钟波动的 {rule.min_calm_multiple:g} 倍"
-    if rule.max_pre_volatility_percent is None:
-        return multiple
-    return f"涨前 {CALM_MINUTES} 分钟平均每分钟波动 ≤ {rule.max_pre_volatility_percent:g}%、{multiple}"
+def describe_calm(rule: DormantRule) -> list[str]:
+    parts = []
+    if rule.max_pre_volatility_percent is not None:
+        parts.append(f"涨前 {CALM_MINUTES} 分钟平均每分钟波动 ≤ {rule.max_pre_volatility_percent:g}%")
+    if rule.min_calm_multiple > 0:
+        parts.append(f"涨幅 ≥ 涨前 {CALM_MINUTES} 分钟平均每分钟波动的 {rule.min_calm_multiple:g} 倍")
+    return parts
 
 
 def describe_repeat(rule: DormantRule) -> str:
     if rule.realert_step_percent is None:
-        return f"同一合约 {rule.cooldown_minutes} 分钟内只提醒一次"
+        text = f"同一合约 {rule.cooldown_minutes} 分钟内只提醒一次"
+    else:
+        text = (
+            f"同一合约距上次提醒不足 {rule.cooldown_minutes} 分钟时，"
+            f"价格比上次提醒再涨 ≥ {rule.realert_step_percent:g}% 才再报「第 N 波」"
+        )
+    if rule.follow_step_percent is None:
+        return text
     return (
-        f"同一合约距上次提醒不足 {rule.cooldown_minutes} 分钟时，"
-        f"价格比上次提醒再涨 ≥ {rule.realert_step_percent:g}% 才再报「第 N 波」"
+        f"{text}；提醒后跟踪价格，比上次提醒（含补报）再涨 ≥ {rule.follow_step_percent:g}% 就补报「第 N 波」"
+        f"（不再检查其他条件），距上次提醒超过 {rule.follow_minutes} 分钟没再涨够就停止跟踪"
     )
 
 

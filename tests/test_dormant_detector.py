@@ -4,7 +4,14 @@ import pytest
 
 from price_alert.common.models import Candle, PriceTick
 from price_alert.detectors.dormant.detector import DormantDetector, DormantOutcome
-from price_alert.detectors.dormant.rule import CALM_MINUTES, PRIOR_MINUTES, Condition, DormantRule, minute_range_percent
+from price_alert.detectors.dormant.rule import (
+    CALM_MINUTES,
+    PRIOR_MINUTES,
+    Condition,
+    DormantGroup,
+    DormantRule,
+    minute_range_percent,
+)
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
 SYMBOL = "IRYS_USDT"
@@ -34,7 +41,7 @@ def flat(count: int, start: int = 0, price: float = 1.0, quote: float = 5.0) -> 
 
 
 def make(observer=None, seed: int = SEED, prior_quote: float = 5.0, **overrides) -> DormantDetector:
-    detector = DormantDetector(rule(**overrides), observer)
+    detector = DormantDetector([rule(**overrides)], observer)
     detector.add_symbol(SYMBOL, flat(seed, quote=prior_quote), 2e5, price_decimals=4, quanto_multiplier=1.0)
     return detector
 
@@ -120,7 +127,7 @@ def test_rally_that_keeps_going_is_reported_again_as_next_wave():
 
 def test_wave_after_a_gap_is_rechecked_against_the_last_alert_price():
     evaluations = []
-    detector = DormantDetector(rule(min_body_ratio=0.0), evaluations.append)
+    detector = DormantDetector([rule(min_body_ratio=0.0)], evaluations.append)
     detector.add_symbol(SYMBOL, flat(SEED), 2e5, quanto_multiplier=1.0)
     for index, price in enumerate([1.03, 1.06, 1.09, 1.13]):
         detector.add_tick(PriceTick(SYMBOL, price, 500 / price, minute(SEED + index), f"t{index}"))
@@ -133,7 +140,7 @@ def test_wave_after_a_gap_is_rechecked_against_the_last_alert_price():
 
 def test_ticks_build_quote_volume_with_multiplier_and_settle_on_next_minute():
     # 每分钟的成交都是同一个价格，K 线没有实体；本用例只验证成交额聚合，实体条件关掉。
-    detector = DormantDetector(rule(min_body_ratio=0.0))
+    detector = DormantDetector([rule(min_body_ratio=0.0)])
     detector.add_symbol(SYMBOL, flat(SEED - 1), 2e5, live_candle=flat(1, start=SEED - 1)[0], quanto_multiplier=10.0)
     alerts = []
     for index, price in enumerate([1.03, 1.06, 1.09]):
@@ -152,7 +159,7 @@ def test_ticks_build_quote_volume_with_multiplier_and_settle_on_next_minute():
 def test_minute_settled_after_a_gap_is_rechecked_with_the_newer_price(later_price, expected):
     evaluations = []
     # 每分钟只有一笔成交，K 线没有实体；本用例只验证复核，实体条件关掉。
-    detector = DormantDetector(rule(min_body_ratio=0.0), evaluations.append)
+    detector = DormantDetector([rule(min_body_ratio=0.0)], evaluations.append)
     detector.add_symbol(SYMBOL, flat(SEED), 2e5, quanto_multiplier=1.0)
     for index, price in enumerate([1.03, 1.06, 1.09]):
         detector.add_tick(PriceTick(SYMBOL, price, 500 / price, minute(SEED + index), f"t{index}"))
@@ -164,7 +171,7 @@ def test_minute_settled_after_a_gap_is_rechecked_with_the_newer_price(later_pric
 
 
 def test_symbol_without_multiplier_is_never_judged():
-    detector = DormantDetector(rule())
+    detector = DormantDetector([rule()])
     detector.add_symbol(SYMBOL, flat(SEED), 2e5, quanto_multiplier=None)
 
     for index, price in enumerate([1.03, 1.06, 1.09, 1.1]):
@@ -172,7 +179,7 @@ def test_symbol_without_multiplier_is_never_judged():
 
 
 def test_stream_gap_pauses_until_resync():
-    detector = DormantDetector(rule())
+    detector = DormantDetector([rule()])
     detector.add_symbol(SYMBOL, flat(SEED), 2e5, quanto_multiplier=1.0)
     detector.mark_stream_gap()
     assert detector.stale_symbols == [SYMBOL]
@@ -204,12 +211,12 @@ def test_removed_symbol_keeps_alert_memory():
 
 
 def test_warmup_covers_prior_day_window_and_live_minute():
-    assert DormantDetector(rule(window_minutes=10, min_active_minutes=5)).warmup_candles == PRIOR_MINUTES + 10 + 1
+    assert DormantDetector([rule(window_minutes=10, min_active_minutes=5)]).warmup_candles == PRIOR_MINUTES + 10 + 1
 
 
 def test_prior_quote_and_pre_volatility_stay_exact_after_old_minutes_drop_out_and_resync():
     evaluations = []
-    detector = DormantDetector(rule(), evaluations.append)
+    detector = DormantDetector([rule()], evaluations.append)
     # 每分钟成交额与价格都不同，挤出最早的分钟时减错一根就会看出来。
     candles = [
         Candle(minute(i), price, price, price, price, float(i % 7))
@@ -248,7 +255,7 @@ def test_choppy_coin_and_single_minute_jump_do_not_alert():
         Candle(minute(i), price, price, price, price, 5.0)
         for i, price in ((i, 1.03 if (SEED - i) % 2 == 0 else 1.0) for i in range(SEED))
     ]
-    detector = DormantDetector(rule(), evaluations.append)
+    detector = DormantDetector([rule()], evaluations.append)
     detector.add_symbol(SYMBOL, choppy, 2e5, quanto_multiplier=1.0)
     assert rally(detector, SEED, [1.03, 1.06, 1.09]) == [[], [], []]
     assert evaluations[-1].metrics.failures == (Condition.CALM, Condition.VOLATILE)
@@ -257,3 +264,96 @@ def test_choppy_coin_and_single_minute_jump_do_not_alert():
     detector = make(evaluations.append)
     assert rally(detector, SEED, [1.01, 1.02, 1.09]) == [[], [], []]
     assert evaluations[-1].metrics.failures == (Condition.JUMP,)
+
+
+def test_slow_group_judges_alongside_main_with_its_own_window_and_cooldown():
+    evaluations = []
+    slow = rule(
+        window_minutes=6, min_active_minutes=3, min_change_percent=12.0, realert_step_percent=None,
+        group=DormantGroup.SLOW,
+    )
+    detector = DormantDetector([rule(), slow], evaluations.append)
+    seed = PRIOR_MINUTES + 6
+    detector.add_symbol(SYMBOL, flat(seed), 2e5, quanto_multiplier=1.0)
+
+    alerts = rally(detector, seed, [1.03, 1.06, 1.09, 1.12, 1.15, 1.18])
+
+    # 现行一组（3 分钟涨 9%）第 3 分钟报、1.15 比 1.09 再涨 5.5% 报第 2 波；慢启动一组（6 分钟涨 12%）第 4 分钟报，
+    # 之后冷却内不补报。两组的冷却互不影响。
+    labels = [[alert.label for alert in minute_alerts] for minute_alerts in alerts]
+    assert labels == [[], [], ["冷门启动"], ["冷门慢启动"], ["冷门启动·第2波"], []]
+    assert alerts[3][0].to_dict()["group"] == "slow"
+    assert [item.outcome for item in evaluations if item.group is DormantGroup.SLOW][-2:] == [
+        DormantOutcome.COOLDOWN,
+        DormantOutcome.COOLDOWN,
+    ]
+    # 保留的 K 线按慢启动一组的窗口多留了 3 根，现行一组的之前 24 小时仍然只算窗口之前的 1440 根。
+    first = next(item for item in evaluations if item.group is DormantGroup.MAIN)
+    assert first.metrics.prior_quote == pytest.approx(5.0 * PRIOR_MINUTES)
+
+
+def test_group_with_shorter_window_is_judged_before_the_longer_one_has_enough_history():
+    evaluations = []
+    slow = rule(window_minutes=6, min_active_minutes=3, group=DormantGroup.SLOW)
+    detector = DormantDetector([rule(), slow], evaluations.append)
+    detector.add_symbol(SYMBOL, flat(SEED), 2e5, quanto_multiplier=1.0)
+    assert detector.warmup_candles == PRIOR_MINUTES + 6 + 1
+
+    rally(detector, SEED, [1.03])
+
+    outcomes = {item.group: item.outcome for item in evaluations}
+    assert outcomes == {DormantGroup.MAIN: DormantOutcome.FAILED, DormantGroup.SLOW: DormantOutcome.INSUFFICIENT_DATA}
+
+
+def test_rejects_missing_or_duplicate_groups():
+    with pytest.raises(ValueError, match="至少要有一组"):
+        DormantDetector([])
+    with pytest.raises(ValueError, match="不能重复"):
+        DormantDetector([rule(), rule(window_minutes=5)])
+
+
+def test_follow_reports_each_further_rise_without_rechecking_conditions():
+    evaluations = []
+    detector = make(evaluations.append, realert_step_percent=None, follow_step_percent=5.0, follow_minutes=10)
+    assert rally(detector, SEED, [1.03, 1.06, 1.09])[-1][0].wave == 1
+
+    # 3 分钟只涨 5%~7%，条件不满足；1.145 比上次提醒价 1.09 再涨 5%，跟踪补报第 2 波。
+    alerts = rally(detector, SEED + 3, [1.10, 1.12, 1.145], price=1.09)
+    assert [len(item) for item in alerts] == [0, 0, 1]
+    second = alerts[-1][0]
+    assert (second.wave, second.label, second.metrics.end_price) == (2, "冷门启动·第2波", 1.145)
+    assert evaluations[-1].outcome is DormantOutcome.FOLLOW
+    assert Condition.CHANGE in evaluations[-1].metrics.failures
+
+    # 之后 10 分钟没再涨够 5%（1.145 × 1.05 ≈ 1.202），跟踪结束：再涨上去也不补报。
+    for candle in flat(11, start=SEED + 6, price=1.19):
+        detector.add_candle(SYMBOL, candle)
+    assert rally(detector, SEED + 17, [1.21], price=1.19) == [[]]
+
+
+def test_follow_window_outlasts_cooldown_and_keeps_counting_waves():
+    detector = make(realert_step_percent=None, follow_step_percent=5.0, follow_minutes=60)
+    rally(detector, SEED, [1.03, 1.06, 1.09])
+    # 冷却 30 分钟已过、跟踪 60 分钟还没到：慢慢涨够 5% 仍按跟踪补报第 2 波，不是新的第 1 波。
+    for candle in flat(40, start=SEED + 3, price=1.09):
+        detector.add_candle(SYMBOL, candle)
+
+    alerts = rally(detector, SEED + 43, [1.11, 1.13, 1.145], price=1.09)
+
+    assert [alert.wave for item in alerts for alert in item] == [2]
+
+
+@pytest.mark.parametrize(("later_price", "expected"), [(1.15, DormantOutcome.FOLLOW), (1.13, DormantOutcome.FAILED)])
+def test_follow_after_a_gap_is_rechecked_with_the_newer_price(later_price, expected):
+    evaluations = []
+    detector = DormantDetector(
+        [rule(min_body_ratio=0.0, realert_step_percent=None, follow_step_percent=5.0)], evaluations.append
+    )
+    detector.add_symbol(SYMBOL, flat(SEED), 2e5, quanto_multiplier=1.0)
+    for index, price in enumerate([1.03, 1.06, 1.09, 1.10, 1.12, 1.145]):
+        detector.add_tick(PriceTick(SYMBOL, price, 500 / price, minute(SEED + index), f"t{index}"))
+    # 1.145 那一分钟隔了空档才结算：这笔成交价也要比上次提醒价 1.09 高 5%（1.1445）才补报。
+    detector.add_tick(PriceTick(SYMBOL, later_price, 1.0, minute(SEED + 8), "late"))
+
+    judged = [item for item in evaluations if item.timestamp == minute(SEED + 6)]
+    assert judged[0].outcome is expected

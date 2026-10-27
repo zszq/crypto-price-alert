@@ -170,3 +170,30 @@ def test_still_rising_uses_the_same_change_threshold():
     metrics = evaluate(history(), RULE)
     assert still_rising(metrics, 1.08, RULE)
     assert not still_rising(metrics, 1.079, RULE)
+
+
+def test_efficiency_volume_ratio_and_retrace_for_the_slow_group():
+    # 第二分钟回落再拉起：路程 0.03 + 0.02 + 0.05 + 0.04 = 0.14，净涨 0.10。
+    zigzag = [(1.03, 400), (1.01, 400), (1.06, 400), (1.10, 400)]
+    metrics = evaluate(history(window=zigzag), RULE)
+
+    assert metrics.efficiency == pytest.approx(0.10 / 0.14)
+    # 之前 24 小时每分钟 5 USDT，4 分钟均值 20，窗口 1600 即 80 倍；收在最高价，没有回落。
+    assert (metrics.volume_ratio, metrics.retrace) == (pytest.approx(80.0), 0.0)
+    # 代码默认三项都不限。
+    assert metrics.passed
+    strict = DormantRule(**{**RULE_VALUES, "min_efficiency": 0.8, "min_volume_ratio": 100.0, "max_retrace": 0.3})
+    assert evaluate(history(window=zigzag), strict).failures == (Condition.EFFICIENCY, Condition.RATIO)
+
+    # 最后一分钟冲到 1.15 再回到 1.10：回落 0.05 占窗口最大涨幅 0.15 的三分之一。
+    candles = history(window=zigzag)
+    candles[-1] = replace(candles[-1], high=1.15)
+    assert evaluate(candles, RULE).retrace == pytest.approx(1 / 3)
+    assert evaluate(candles, strict).failures == (Condition.EFFICIENCY, Condition.RATIO, Condition.RETRACE)
+
+
+def test_volume_ratio_is_infinite_without_prior_trading():
+    metrics = evaluate(history(prior_quote=0.0), DormantRule(**{**RULE_VALUES, "min_volume_ratio": 1e9}))
+
+    assert metrics.volume_ratio == math.inf
+    assert metrics.passed
