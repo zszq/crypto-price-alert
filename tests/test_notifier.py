@@ -594,12 +594,12 @@ def test_jsonl_notifier_rotates_whole_files(tmp_path):
     assert not (tmp_path / "alerts.jsonl.3").exists()
 
 
-def test_console_trade_url_keeps_chinese_symbol_readable(monkeypatch, capsys):
+def test_console_trade_url_encodes_chinese_symbol_so_terminal_link_is_complete(monkeypatch, capsys):
     monkeypatch.setattr("price_alert.notify.notifier.sys.platform", "linux")
 
     asyncio.run(ConsoleNotifier(beep=False, colors=False).send(make_alert(symbol="龙虾_USDT")))
 
-    assert "交易地址：https://www.gate.com/zh/futures/USDT/龙虾_USDT\n" in capsys.readouterr().out
+    assert "交易地址：https://www.gate.com/zh/futures/USDT/%E9%BE%99%E8%99%BE_USDT\n" in capsys.readouterr().out
 
 
 def test_console_trade_url_is_gray_when_colors_enabled(monkeypatch, capsys):
@@ -624,7 +624,7 @@ def test_console_trade_url_escapes_non_ascii_whitespace_and_invisible_characters
 
     asyncio.run(ConsoleNotifier(beep=False, colors=False).send(make_alert(symbol="龙\u3000虾\u200b_USDT")))
 
-    assert "/futures/USDT/龙%E3%80%80虾%E2%80%8B_USDT\n" in capsys.readouterr().out
+    assert "/futures/USDT/%E9%BE%99%E3%80%80%E8%99%BE%E2%80%8B_USDT\n" in capsys.readouterr().out
 
 
 def test_high_price_is_not_truncated_and_uses_exchange_precision():

@@ -69,13 +69,9 @@ def quanto_multiplier(value: Any) -> float | None:
 
 def futures_trade_url(symbol: str) -> str:
     """合约在 Gate 网页上的交易地址。"""
-    # 中文等非 ASCII 字符原样保留，否则显示成一串 %XX；浏览器打开时会自行编码。
-    # ASCII 保留字符（/、?、# 等）会破坏路径，非 ASCII 的空白和不可见字符会截断终端的链接识别，仍要编码。
-    segment = "".join(
-        char if not char.isascii() and char.isprintable() and not char.isspace() else urllib.parse.quote(char, safe="")
-        for char in symbol
-    )
-    return f"{TRADE_PAGE_URL}{segment}"
+    # 整段编码，中文也不例外：终端识别网址时遇到非 ASCII 字符就截断，原样保留中文时点击打开的地址会丢掉合约名；
+    # 编码后的地址浏览器会还原成中文，合约名在提醒正文里已经有了，这里不必为了好看保留原文。
+    return f"{TRADE_PAGE_URL}{urllib.parse.quote(symbol, safe='')}"
 
 
 class RateLimiter:

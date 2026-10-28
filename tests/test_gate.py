@@ -5,6 +5,7 @@ import http.client
 import io
 import json
 import urllib.error
+import urllib.parse
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -645,11 +646,14 @@ def test_quanto_multiplier_accepts_only_positive_finite_values(raw, expected):
     ("symbol", "expected"),
     [
         ("BTC_USDT", "https://www.gate.com/zh/futures/USDT/BTC_USDT"),
-        # 中文原样保留便于辨认；ASCII 保留字符与非 ASCII 空白、不可见字符仍需编码。
-        ("龙虾_USDT", "https://www.gate.com/zh/futures/USDT/龙虾_USDT"),
+        # 中文也要编码：终端识别网址遇到非 ASCII 字符就截断，原样保留时点开的地址会丢掉合约名。
+        ("龙虾_USDT", "https://www.gate.com/zh/futures/USDT/%E9%BE%99%E8%99%BE_USDT"),
         ("A/B?_USDT", "https://www.gate.com/zh/futures/USDT/A%2FB%3F_USDT"),
-        ("龙\u3000虾\u200b_USDT", "https://www.gate.com/zh/futures/USDT/龙%E3%80%80虾%E2%80%8B_USDT"),
+        ("龙\u3000虾\u200b_USDT", "https://www.gate.com/zh/futures/USDT/%E9%BE%99%E3%80%80%E8%99%BE%E2%80%8B_USDT"),
     ],
 )
-def test_futures_trade_url_keeps_symbol_readable_but_path_safe(symbol, expected):
-    assert futures_trade_url(symbol) == expected
+def test_futures_trade_url_is_ascii_and_path_safe(symbol, expected):
+    url = futures_trade_url(symbol)
+    assert url == expected
+    assert url.isascii()
+    assert urllib.parse.unquote(url.removeprefix(gate.TRADE_PAGE_URL)) == symbol
