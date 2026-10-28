@@ -17,6 +17,13 @@ WindowName = Literal["short", "long"]
 
 WINDOW_LABELS: dict[WindowName, str] = {"short": "短窗口", "long": "长窗口"}
 
+# 成交笔数暴增：最近 BURST_SECONDS 秒的成交笔数与最近 BURST_BASE_SECONDS 秒的每分钟平均相比。
+# 两个长度固定：研究只验证过 1 分钟对 1 小时（research/move_accuracy/move_accuracy.md），不开放成配置。
+BURST_SECONDS = 60
+BURST_BASE_SECONDS = 3600
+# 全部成交都落在最近 1 分钟时倍数最大，等于两个长度之比；门槛不小于它就永远不会提醒。
+MAX_BURST_RATIO = BURST_BASE_SECONDS / BURST_SECONDS
+
 
 @dataclass(frozen=True, slots=True)
 class SpikeWindow:
@@ -29,6 +36,12 @@ class SpikeWindow:
     confirmation_seconds: int
     min_window_trades: int
     cooldown_seconds: int
+    # 前置走势：窗口开始前 prior_seconds 秒到窗口基准价，逆着急动方向至少走了 min_prior_move_percent；None 不判。
+    # 研究第四轮：急动之后多半回吐，只有逆势的急动（急跌一段后的急拉）更常沿提醒方向继续走。
+    prior_seconds: int = 300
+    min_prior_move_percent: float | None = None
+    # 最近 1 分钟成交笔数 ÷ 最近 1 小时每分钟平均笔数的下限；None 不判。
+    min_trade_burst_ratio: float | None = None
 
     def __post_init__(self) -> None:
         # 检测器直接信任这些值做时间运算，非法组合在构造时拦下，比运行中静默不提醒更容易发现。
@@ -40,6 +53,20 @@ class SpikeWindow:
             raise ValueError("触发门槛必须大于 0")
         if self.min_window_trades < 1 or self.cooldown_seconds < 0:
             raise ValueError("min_window_trades 至少为 1，cooldown_seconds 不能为负")
+        if self.prior_seconds <= 0 or (self.min_prior_move_percent is not None and self.min_prior_move_percent < 0):
+            raise ValueError("prior_seconds 必须大于 0，min_prior_move_percent 不能为负")
+        if self.min_trade_burst_ratio is not None and not 0 < self.min_trade_burst_ratio < MAX_BURST_RATIO:
+            raise ValueError(f"min_trade_burst_ratio 必须在 0 到 {MAX_BURST_RATIO:g} 之间")
+
+    @property
+    def history_seconds(self) -> int:
+        """两个附加条件要回看的成交历史（秒）；都不判时为 0，检测器不必另记逐秒历史。"""
+        needed = 0
+        if self.min_prior_move_percent is not None:
+            needed = self.lookback_seconds + self.prior_seconds
+        if self.min_trade_burst_ratio is not None:
+            needed = max(needed, BURST_BASE_SECONDS)
+        return needed
 
     def exceeds_thresholds(self, price_move: float, baseline_price: float, atr: float) -> bool:
         # 两道门槛必须同时满足：百分比保证肉眼可感知，ATR 倍数适配不同市场波动率。
@@ -51,10 +78,15 @@ class SpikeWindow:
 
 
 def describe_rule(window: SpikeWindow) -> str:
+    extra = ""
+    if window.min_prior_move_percent is not None:
+        extra += f"，此前 {describe_window(window.prior_seconds)}逆向 ≥ {window.min_prior_move_percent:g}%"
+    if window.min_trade_burst_ratio is not None:
+        extra += f"，最近 1 分钟成交笔数 ≥ 1 小时均值 × {window.min_trade_burst_ratio:g}"
     return (
         f"{WINDOW_LABELS[window.name]}：{describe_window(window.lookback_seconds)}内涨跌 ≥ "
         f"{window.min_change_percent:g}% 且 ≥ {window.trigger_atr_multiple:g} ATR，"
-        f"窗口成交 ≥ {window.min_window_trades} 笔，连续 {window.confirmation_seconds} 秒，"
+        f"窗口成交 ≥ {window.min_window_trades} 笔，连续 {window.confirmation_seconds} 秒{extra}，"
         f"冷却 {window.cooldown_seconds} 秒"
     )
 
@@ -70,6 +102,8 @@ class Outcome(StrEnum):
     CONFIRMING = "confirming"
     CARRIED = "carried"
     MOVE_FADED = "move_faded"
+    PRIOR_TREND = "prior_trend"
+    NO_TRADE_BURST = "no_trade_burst"
     COOLDOWN = "cooldown"
     ALERT = "alert"
 
@@ -83,6 +117,8 @@ OUTCOME_LABELS: dict[Outcome, str] = {
     Outcome.CONFIRMING: "达标，连续确认中",
     Outcome.CARRIED: "确认已满但为无成交补齐秒",
     Outcome.MOVE_FADED: "空档后复核：异动已消退",
+    Outcome.PRIOR_TREND: "此前逆向走势不够（或历史不足）",
+    Outcome.NO_TRADE_BURST: "成交笔数未暴增（或不足 1 小时历史）",
     Outcome.COOLDOWN: "冷却中",
     Outcome.ALERT: "提醒",
 }
@@ -104,3 +140,6 @@ class WindowEvaluation:
     move_atr: float | None = None
     trade_count: int | None = None
     confirmed_seconds: int = 0
+    # 两个附加条件的取值，只在判到这一步时计算：前置走势为带符号的实际涨跌幅（急涨之前是负的）。
+    prior_change_percent: float | None = None
+    trade_burst_ratio: float | None = None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from array import array
 from bisect import bisect_right
 from collections import deque
 from collections.abc import Callable, Sequence
@@ -11,12 +12,57 @@ from typing import Literal
 
 from price_alert.common.indicators import WilderAtr
 from price_alert.common.models import Candle, PriceTick
-from price_alert.detectors.spike.alerts import PriceAlert
+from price_alert.detectors.spike.alerts import PriceAlert, SpikeKind
 from price_alert.detectors.spike.streak import StreakAlert, StreakRule, StreakTracker
-from price_alert.detectors.spike.windows import Outcome, SpikeWindow, WindowEvaluation, WindowName
+from price_alert.detectors.spike.windows import (
+    BURST_BASE_SECONDS,
+    BURST_SECONDS,
+    Outcome,
+    SpikeWindow,
+    WindowEvaluation,
+    WindowName,
+)
 
 # 基准桶允许比目标时刻早的秒数：成交稀疏时恰好落在目标秒上的桶未必存在，差一两秒不影响位移的含义。
 BASELINE_TOLERANCE_SECONDS = 2
+
+class _SecondHistory:
+    """每个有成交的秒：时间（Unix 秒）、最后成交价、到这一秒为止的累计成交笔数，按时间递增。
+
+    整个合约池每个合约都要留约 1 小时（3600 个点），三列分开存进 array 每点约 25 字节；
+    用 tuple 加 datetime 存约 176 字节，两个检测器（短时异动、反弹回落）各一份时要多占几百 MB。
+    """
+
+    __slots__ = ("times", "prices", "trades")
+
+    def __init__(self) -> None:
+        self.times = array("q")
+        self.prices = array("d")
+        self.trades = array("q")
+
+    def __len__(self) -> int:
+        return len(self.times)
+
+    def append(self, second: int, price: float, trades: int, oldest_required: int) -> None:
+        self.times.append(second)
+        self.prices.append(price)
+        self.trades.append(trades)
+        self.trim(oldest_required)
+
+    def trim(self, oldest_required: int) -> None:
+        # 与秒桶相同：留一个不晚于最早所需时刻的点，那一刻的价格与累计笔数要靠它确定。
+        stale = bisect_right(self.times, oldest_required) - 1
+        if stale > 0:
+            del self.times[:stale]
+            del self.prices[:stale]
+            del self.trades[:stale]
+
+    def index_at(self, moment: int) -> int:
+        """moment 时刻最后一个有成交的秒的下标；没有那么早的记录时为 -1。"""
+        return bisect_right(self.times, moment) - 1
+
+
+_EMPTY_HISTORY = _SecondHistory()
 
 
 @dataclass(slots=True)
@@ -135,7 +181,11 @@ class AtrSpikeDetector:
         windows: Sequence[SpikeWindow],
         observer: Callable[[WindowEvaluation], None] | None = None,
         streak: StreakRule | None = None,
+        history_seconds: int = 0,
+        kind: SpikeKind = "spike",
     ) -> None:
+        """history_seconds 是子类另外需要的逐秒成交历史（秒），与各窗口附加条件所需的取较长者；
+        kind 区分按瞬时异动还是短时异动的参数在跑，只影响提醒的标签与 kind 字段，不影响判定。"""
         if not windows:
             raise ValueError("至少需要一个观察窗口")
         if len({window.name for window in windows}) != len(windows):
@@ -156,8 +206,65 @@ class AtrSpikeDetector:
         # 按（合约, 窗口）记录上次提醒：短窗口频繁提醒不能把长窗口的冷却一直续上。
         self._last_alert: dict[tuple[str, WindowName], datetime] = {}
         # 只串联短窗口提醒：长窗口冷却等于窗口长度，本身就在描述持续行情，不需要再串。
+        self.kind = kind
         self.streak_rule = streak
         self._streaks = StreakTracker(streak) if streak is not None else None
+        # 前置走势与成交暴增要看窗口之前、乃至 1 小时的成交，秒桶只按窗口保留，所以另记一份逐秒价格与累计笔数。
+        # 没有窗口用到它们时为 0，不记，实时监控不多花内存。
+        span = max([history_seconds, *(window.history_seconds for window in self.windows)])
+        self._history_span = span if span > 0 else None
+        self._history: dict[str, _SecondHistory] = {}
+        # 等待用 REST 补历史的合约：新加入或断线后历史不足，靠实时成交攒满要等 1 小时，期间附加条件判不了。
+        # 自然攒满或补上后移除。补的历史只能接在实时成交之前，所以要记下实时成交从哪一秒开始（秒桶为空时的第一笔）。
+        self._history_pending: set[str] = set()
+        self._live_start: dict[str, int] = {}
+
+    @property
+    def history_seconds(self) -> int:
+        """逐秒成交历史需要保留的秒数；为 0 时不记历史，也不需要补。"""
+        return self._history_span or 0
+
+    def history_backfill(self) -> dict[str, datetime | None]:
+        """等待补历史的合约 → 实时成交开始的那一秒；还没收到实时成交的为 None，此时补了也不知道接在哪里。"""
+        return {
+            symbol: (datetime.fromtimestamp(self._live_start[symbol], UTC) if symbol in self._live_start else None)
+            for symbol in sorted(self._history_pending)
+        }
+
+    def seed_history(self, symbol: str, seconds: Sequence[tuple[int, float, int]], live_start: datetime) -> bool:
+        """把 REST 取回的逐秒成交（Unix 秒、最后成交价、笔数，升序）接在实时成交之前，返回是否采用。
+
+        live_start 是请求前从 history_backfill 读到的实时成交起点，seconds 要含它之前的全部成交。
+        只有起点没变才首尾相接：取数途中断线重连时实时成交重新开始，中间缺了一段，1 小时笔数会算少、
+        暴增倍数算大，宁可不用。拿起点比对而不是比时间，本地时钟与交易所有偏差也不影响。
+        """
+        symbol = symbol.upper()
+        if (
+            self._history_span is None
+            or symbol not in self._history_pending
+            or self._live_start.get(symbol) != int(live_start.timestamp())
+        ):
+            return False
+        live_second = int(live_start.timestamp())
+        kept = [point for point in seconds if point[0] < live_second]
+        seeded = _SecondHistory()
+        # 实时成交第一个秒桶的累计笔数从 0 起算，REST 部分倒着排成负数，两段相减的笔数照样对。
+        running = -sum(count for _, _, count in kept)
+        for second, price, count in kept:
+            running += count
+            seeded.times.append(second)
+            seeded.prices.append(price)
+            seeded.trades.append(running)
+        live = self._history.get(symbol)
+        if live is not None:
+            seeded.times.extend(live.times)
+            seeded.prices.extend(live.prices)
+            seeded.trades.extend(live.trades)
+        if seeded:
+            seeded.trim(seeded.times[-1] - self._history_span)
+        self._history[symbol] = seeded
+        self._history_pending.discard(symbol)
+        return True
 
     @property
     def symbols(self) -> list[str]:
@@ -194,22 +301,37 @@ class AtrSpikeDetector:
             # 订阅前当前 K 线已走完一段，用 REST 的未收盘 K 线起步，避免只含订阅后成交的残缺 K 线低估 ATR。
             state.live_bar = _LiveBar.from_candle(live_candle)
         self._states[normalized] = state
+        self._reset_history(normalized, backfill=True)
 
     def remove_symbols(self, symbols: set[str]) -> None:
         # 冷却记录刻意保留：合约被移出后很快重新入池时，不应绕过冷却再次提醒同一段行情。
         for symbol in symbols:
             self._states.pop(symbol, None)
+            self._reset_history(symbol, backfill=False)
 
+    # 断线时一并清空逐秒历史：断线期间成交缺失，1 小时笔数基准已不可靠；秒桶清空后累计笔数从 0 重新计数，
+    # 留着旧记录会算出负数。重连后由服务用 REST 补上，补不上就重新攒满才判定，宁可漏报不误报。
     def mark_stream_gap(self) -> None:
         """行情中断后调用：丢弃秒级窗口与确认进度，并暂停 ATR 判定直到 resync_symbol 回补 K 线。"""
         for state in self._states.values():
             self._invalidate(state)
+        for symbol in list(self._states):
+            self._reset_history(symbol, backfill=True)
 
     def mark_symbol_gap(self, symbol: str) -> None:
         """单个合约的状态可能已不一致时调用（如处理成交中途出错）：与断线同样处理，等 resync_symbol 回补。"""
         state = self._states.get(symbol.upper())
         if state is not None:
             self._invalidate(state)
+            self._reset_history(symbol.upper(), backfill=True)
+
+    def _reset_history(self, symbol: str, backfill: bool) -> None:
+        self._history.pop(symbol, None)
+        self._live_start.pop(symbol, None)
+        if backfill and self._history_span is not None:
+            self._history_pending.add(symbol)
+        else:
+            self._history_pending.discard(symbol)
 
     @staticmethod
     def _invalidate(state: _SymbolState) -> None:
@@ -277,6 +399,9 @@ class AtrSpikeDetector:
         else:
             self._settle_through(symbol, state, second, tick.price, timestamp, alerts)
             trades_before = state.buckets[-1].trades_through if state.buckets else 0
+            if not state.buckets and self._history_span is not None:
+                # 秒桶为空（新加入或断线后）时的第一笔，累计笔数从这里的 0 起算，补的历史要接在这一秒之前。
+                self._live_start[symbol] = int(second.timestamp())
             current = _SecondBucket(second, trades_before=trades_before)
             current.add(tick.price, tick.size)
             state.buckets.append(current)
@@ -298,6 +423,19 @@ class AtrSpikeDetector:
         if not state.buckets:
             return
         completed = state.buckets[-1]
+        if self._history_span is not None:
+            # 进入结算时最后一个桶就是刚结束的真实秒（补齐桶在结算过程中才追加）。
+            assert completed.last_price is not None
+            completed_second = int(completed.timestamp.timestamp())
+            self._history.setdefault(symbol, _SecondHistory()).append(
+                completed_second,
+                completed.last_price,
+                completed.trades_through,
+                completed_second - self._history_span,
+            )
+            if symbol in self._history_pending and self._live_start[symbol] <= completed_second - self._history_span:
+                # 实时成交已攒满所需长度，不必再补。
+                self._history_pending.discard(symbol)
         missing_seconds = int((second - completed.timestamp).total_seconds()) - 1
         # 等一秒结束才用整秒 VWAP。空档后才结算的秒 VWAP 已过期，要用当前成交价复核；
         # 紧邻结算只迟一秒，不复核，免得新一秒的单笔离群成交否掉本该发出的提醒。
@@ -510,7 +648,63 @@ class AtrSpikeDetector:
             # 空档后才结算的秒价格已过期，触发结算的成交是唯一的当前价：它不满足门槛说明异动已在空档中结束。
             # 与补齐桶一样只拦提醒、不重置确认进度。
             return measured(Outcome.MOVE_FADED, confirmed)
-        return measured(Outcome.ALERT, confirmed)
+        if window.min_prior_move_percent is None and window.min_trade_burst_ratio is None:
+            return measured(Outcome.ALERT, confirmed)
+        # 两个附加条件只在可以提醒的那一秒判定，不满足同样只拦这一秒、不清零确认，与研究的判定一致。
+        history = self._history.get(symbol, _EMPTY_HISTORY)
+        prior = self._prior_change(
+            history, current.timestamp, baseline_price, direction, window.lookback_seconds + window.prior_seconds
+        )
+        burst = self._trade_burst(history, current)
+        gated = replace(
+            measured(Outcome.ALERT, confirmed),
+            # 内部按「顺急动方向为正」判定，记录里换回带符号的实际涨跌幅：急拉之前是负的（下跌）。
+            prior_change_percent=None if prior is None else (prior if direction == "surge" else -prior),
+            trade_burst_ratio=burst,
+        )
+        if window.min_prior_move_percent is not None and (prior is None or prior > -window.min_prior_move_percent):
+            return replace(gated, outcome=Outcome.PRIOR_TREND)
+        if window.min_trade_burst_ratio is not None and (burst is None or burst < window.min_trade_burst_ratio):
+            return replace(gated, outcome=Outcome.NO_TRADE_BURST)
+        return gated
+
+    @staticmethod
+    def _prior_change(
+        history: _SecondHistory,
+        second: datetime,
+        baseline_price: float,
+        direction: Literal["surge", "drop"],
+        offset_seconds: int,
+    ) -> float | None:
+        """second 之前 offset_seconds 秒那一刻（取该时刻最后一个有成交的秒的最后成交价）到基准价的涨跌幅，
+
+        顺急动方向为正；没有那么早的成交时返回 None。
+        """
+        index = history.index_at(int(second.timestamp()) - offset_seconds)
+        if index < 0:
+            return None
+        change = (baseline_price / history.prices[index] - 1.0) * 100.0
+        return change if direction == "surge" else -change
+
+    @staticmethod
+    def _trades_at(history: _SecondHistory, moment: int) -> int | None:
+        index = history.index_at(moment)
+        return history.trades[index] if index >= 0 else None
+
+    @classmethod
+    def _trade_burst(cls, history: _SecondHistory, current: _SecondBucket) -> float | None:
+        """最近 1 分钟成交笔数 ÷ 最近 1 小时每分钟平均笔数；不足 1 小时的成交历史时返回 None。"""
+        second = int(current.timestamp.timestamp())
+        hour_start = cls._trades_at(history, second - BURST_BASE_SECONDS)
+        if hour_start is None:
+            return None
+        hour = current.trades_through - hour_start
+        if hour <= 0:
+            return None
+        # 1 小时前有记录，1 分钟前必然也有。
+        minute_start = cls._trades_at(history, second - BURST_SECONDS)
+        assert minute_start is not None
+        return (current.trades_through - minute_start) / hour * (BURST_BASE_SECONDS / BURST_SECONDS)
 
     @staticmethod
     def _find_baseline(
@@ -577,5 +771,10 @@ class AtrSpikeDetector:
             volume_24h_quote=state.volume_24h_quote,
             timestamp=timestamp,
             window=window.name,
+            kind=self.kind,
             price_decimals=state.price_decimals,
+            # 只带窗口实际判了的条件，没开的那一项即使顺手算出了取值也不写进提醒。
+            prior_change_percent=evaluation.prior_change_percent if window.min_prior_move_percent is not None else None,
+            prior_seconds=window.prior_seconds if window.min_prior_move_percent is not None else None,
+            trade_burst_ratio=evaluation.trade_burst_ratio if window.min_trade_burst_ratio is not None else None,
         )

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import logging
+import threading
 import time
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from price_alert.assembly import build_detectors, build_rest_client
 from price_alert.common.models import INTERVAL_SECONDS, Candle, ContractTicker
@@ -32,6 +34,27 @@ _DETECTOR_REPAIR_SECONDS = 60.0
 
 # 预热几百个合约受限速约束要数十秒：没有输出像假死，逐个打印又刷屏，所以按时间节流报告进度。
 _WARMUP_PROGRESS_SECONDS = 5.0
+
+# 补逐秒成交历史（前置走势、1 小时成交暴增）的并发。实测 Gate 每个请求往返约 1.5~2.5 秒，瓶颈在往返而不在限速：
+# 6 个并发实测约 2.3 次/秒（全池约 190 页用了 83 秒），加上 K 线预热 8 个并发也在默认令牌桶 10 次/秒以内，
+# 互不明显拖慢；请求都走同一个令牌桶，调高并发也不会超过 gate.rest_rate_limit_per_second。
+_BACKFILL_CONCURRENCY = 6
+# 每个合约的区间按这个长度切段、各段并发取：一段只能一页接一页往前翻，ETH 一小时几十页串行要一两分钟。
+# 段的边界是整秒，各段互不重叠，拼起来不会重复计数。
+_BACKFILL_SLICE_SECONDS = 600
+# 比所需历史多取的秒数：所需时刻附近恰好没有成交时，还能取到它之前最近一个有成交的秒。
+_BACKFILL_MARGIN_SECONDS = 60
+# 单个合约的成交上限：研究数据里 ETH 最忙的一小时约 42 万笔（2026-09）；再多多半是异常数据，放弃这个合约，
+# 免得长期占住限速额度。
+_BACKFILL_MAX_TRADES = 1_000_000
+# 还没收到实时成交的合约（补的历史不知道接在哪里）隔多久再看一次。
+_BACKFILL_POLL_SECONDS = 1.0
+# 刚连上时各合约的第一笔实时成交陆续到达：最多等这么久凑齐一批再补，免得先到的几个合约单独成一轮、
+# 其余合约干等这一轮翻完（联调时第一轮只有 4 个合约，其余 23 个多等了 70 秒）。
+_BACKFILL_GATHER_SECONDS = 10.0
+# 补失败后重试的退避：比重连的退避长，每次重试都要重新翻页。
+_BACKFILL_RETRY_INITIAL_SECONDS = 10.0
+_BACKFILL_RETRY_MAX_SECONDS = 120.0
 
 
 class _Backoff:
@@ -92,6 +115,39 @@ class _DetectorFaults:
         return text
 
 
+@dataclass(slots=True)
+class _BackfillJob:
+    """一个合约的补拉任务：REST 取 [start, end) 的成交，补给各检测器（连同读到的实时成交起点）。"""
+
+    start: datetime
+    end: datetime
+    targets: list[tuple[MonitoredDetector, datetime]] = field(default_factory=list)
+
+
+def _slices(start: datetime, end: datetime) -> list[tuple[datetime, datetime]]:
+    """把 [start, end) 按 _BACKFILL_SLICE_SECONDS 切成首尾相接的整秒段，按时间升序。"""
+    first = int(start.timestamp())
+    last = int(end.timestamp())
+    bounds = [*range(first, last, _BACKFILL_SLICE_SECONDS), last]
+    return [
+        (datetime.fromtimestamp(lower, UTC), datetime.fromtimestamp(upper, UTC))
+        for lower, upper in itertools.pairwise(bounds)
+    ]
+
+
+def _log_backfill_failure(task: asyncio.Task[None]) -> None:
+    # 补拉任务没人 await，意外出错时 asyncio 只在任务被回收时才打一条含义不明的日志，这里出错当时就记下。
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        LOGGER.error(
+            "补拉成交任务异常退出，等下次行情重连、合约池刷新时重启：%s",
+            exc,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+
+
 async def _stop_task(task: asyncio.Task[None] | None) -> None:
     if task is None:
         return
@@ -104,7 +160,7 @@ async def _stop_task(task: asyncio.Task[None] | None) -> None:
         if current is not None and current.cancelling():
             raise
     except Exception as exc:
-        LOGGER.error("K 线回补任务异常退出：%s", exc)
+        LOGGER.error("后台任务 %s 异常退出：%s", task.get_name(), exc)
 
 
 @dataclass(slots=True)
@@ -120,6 +176,13 @@ class _Monitor:
     semaphore: asyncio.Semaphore
     # 首次订阅到合约后置位，行情循环等它再连接：启动时不必等全部检测器预热完才开始接收成交。
     subscribed: asyncio.Event = field(default_factory=asyncio.Event)
+    # 首次合约池初始化（含全部 K 线预热）完成后置位：补历史失败的合约等它之后再重试，不和启动预热抢限速额度。
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
+    backfill_semaphore: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(_BACKFILL_CONCURRENCY))
+    # 当前连接已收到成交：补的历史要接在实时成交之前，断线期间补了也接不上。
+    streaming: bool = False
+    _backfill_task: asyncio.Task[None] | None = None
+    _backfill_stop: threading.Event | None = None
 
     def _backoff(self) -> _Backoff:
         gate = self.config.gate
@@ -205,6 +268,150 @@ class _Monitor:
                 return
             LOGGER.warning("%d 个合约 K 线回补失败，暂停其异动判定，%.1f 秒后重试", failed, backoff.delay)
             await backoff.wait()
+
+    def start_backfill(self) -> None:
+        """有检测器缺逐秒成交历史时启动补拉任务；任务在跑时由它接着处理新出现的缺口，不重复启动。"""
+        if not self.streaming or not any(entry.history is not None for entry in self.detectors):
+            return
+        if self._backfill_task is None or self._backfill_task.done():
+            # 每个任务一个停止标志：旧任务线程里的翻页看到的是自己的标志，新任务不会被它误停。
+            self._backfill_stop = threading.Event()
+            self._backfill_task = asyncio.create_task(
+                self.backfill_history(self._backfill_stop), name="backfill-history"
+            )
+            self._backfill_task.add_done_callback(_log_backfill_failure)
+
+    async def stop_backfill(self) -> None:
+        # 先让线程里的翻页停下：取消任务只停得了 asyncio 这一侧，线程会把整段翻完。
+        if self._backfill_stop is not None:
+            self._backfill_stop.set()
+        task, self._backfill_task = self._backfill_task, None
+        # 已经结束的任务不再 await：出错结束的那次已由 _log_backfill_failure 记过，再 await 会把同一个异常记第二遍。
+        if task is not None and not task.done():
+            await _stop_task(task)
+
+    def _backfill_jobs(self) -> tuple[dict[str, _BackfillJob], bool]:
+        """要补的合约，以及是否还有没收到实时成交、暂时补不了的合约。"""
+        jobs: dict[str, _BackfillJob] = {}
+        waiting = False
+        for entry in self.detectors:
+            if entry.history is None:
+                continue
+            span = timedelta(seconds=entry.history.history_seconds + _BACKFILL_MARGIN_SECONDS)
+            for symbol, live_start in entry.history.history_backfill().items():
+                if live_start is None:
+                    waiting = True
+                    continue
+                # 同一合约在两个检测器里（短时异动、反弹回落合约池相同）只取一次，区间取两者的并集。
+                job = jobs.setdefault(symbol, _BackfillJob(live_start - span, live_start))
+                job.start = min(job.start, live_start - span)
+                job.end = max(job.end, live_start)
+                job.targets.append((entry, live_start))
+        return jobs, waiting
+
+    async def backfill_history(self, stop: threading.Event | None = None) -> None:
+        """用 REST 历史成交补上缺的逐秒历史，免得启动、新入池、断线重连后要等实时成交攒满 1 小时才能判定。
+
+        没补上的合约（请求失败、取数期间断线接不上）等首次初始化全部完成后按退避重试，直到补上、
+        实时成交自然攒满或合约移出合约池。stop 置位后线程里的翻页不再请求下一页。
+        """
+        stop = threading.Event() if stop is None else stop
+        backoff = _Backoff(_BACKFILL_RETRY_INITIAL_SECONDS, _BACKFILL_RETRY_MAX_SECONDS)
+        unfinished: set[str] = set()
+        loop = asyncio.get_running_loop()
+        while True:
+            jobs, waiting = self._backfill_jobs()
+            gather_until = loop.time() + _BACKFILL_GATHER_SECONDS
+            while jobs and waiting and loop.time() < gather_until:
+                await asyncio.sleep(_BACKFILL_POLL_SECONDS)
+                jobs, waiting = self._backfill_jobs()
+            if not jobs:
+                if not waiting:
+                    return
+                await asyncio.sleep(_BACKFILL_POLL_SECONDS)
+                continue
+            unfinished = await self._backfill_round(jobs, unfinished, stop)
+            if not unfinished:
+                backoff.reset()
+                continue
+            if not self.ready.is_set():
+                LOGGER.info("%d 个合约未补上成交历史，等合约池初始化全部完成后重试", len(unfinished))
+                await self.ready.wait()
+            LOGGER.info("%d 个合约未补上成交历史，%.0f 秒后重试", len(unfinished), backoff.delay)
+            await backoff.wait()
+
+    async def _backfill_round(
+        self, jobs: dict[str, _BackfillJob], previously_unfinished: set[str], stop: threading.Event
+    ) -> set[str]:
+        """补一轮，返回没补上的合约。previously_unfinished 是上一轮没补上的，只用于日志区分重试。"""
+        names = {entry.name for job in jobs.values() for entry, _ in job.targets}
+        # 重试轮可能夹着刚入池的新合约，只把上一轮没补上的算作重试。
+        retries = len(jobs.keys() & previously_unfinished)
+        LOGGER.info(
+            "开始为 %d 个合约补拉最近 1 小时成交（%s，并发 %d%s）",
+            len(jobs),
+            "、".join(entry.name for entry in self.detectors if entry.name in names),
+            _BACKFILL_CONCURRENCY,
+            f"，其中 {retries} 个是重试" if retries else "",
+        )
+        started = last_report = time.monotonic()
+        done = adopted = trades = 0
+        failed: set[str] = set()
+        rejected: set[str] = set()
+
+        async def backfill(symbol: str, job: _BackfillJob) -> None:
+            nonlocal done, adopted, trades, last_report
+            # 只取到实时成交起点之前：之后的由实时流覆盖。起点那一笔已经收到，它之前的成交此时都已可查。
+            parts = await asyncio.gather(
+                *(self._fetch_trade_slice(symbol, start, end, stop) for start, end in _slices(job.start, job.end)),
+                return_exceptions=True,
+            )
+            error = next((part for part in parts if isinstance(part, BaseException)), None)
+            seconds = [point for part in parts if not isinstance(part, BaseException) for point in part]
+            if error is None and sum(count for _, _, count in seconds) > _BACKFILL_MAX_TRADES:
+                error = ValueError(f"成交超过 {_BACKFILL_MAX_TRADES:,} 笔")
+            if error is not None:
+                if not isinstance(error, Exception):
+                    raise error
+                failed.add(symbol)
+                LOGGER.warning("%s 补拉成交失败：%s", symbol, error)
+            else:
+                histories = [entry.history for entry, _ in job.targets if entry.history is not None]
+                for entry, live_start in job.targets:
+                    assert entry.history is not None
+                    entry.history.seed_history(symbol, seconds, live_start)
+                # 实时成交可能已经自然攒满，seed_history 不采用也不算失败，所以按是否还缺来判断。
+                if any(symbol in history.history_backfill() for history in histories):
+                    rejected.add(symbol)
+                else:
+                    adopted += 1
+                    trades += sum(count for _, _, count in seconds)
+            done += 1
+            now = time.monotonic()
+            if now - last_report >= _WARMUP_PROGRESS_SECONDS and done < len(jobs):
+                last_report = now
+                LOGGER.info("补拉成交进度：%d/%d", done, len(jobs))
+
+        await asyncio.gather(*(backfill(symbol, job) for symbol, job in jobs.items()))
+        unfinished = failed | rejected
+        breakdown = f"（请求失败 {len(failed)} 个，取数期间行情中断、与实时成交接不上 {len(rejected)} 个）"
+        LOGGER.info(
+            "补拉成交完成：成功 %d 个，失败 %d 个%s，共 %s 笔成交，耗时 %.1f 秒",
+            adopted,
+            len(unfinished),
+            breakdown if unfinished else "",
+            f"{trades:,}",
+            time.monotonic() - started,
+        )
+        return unfinished
+
+    async def _fetch_trade_slice(
+        self, symbol: str, start: datetime, end: datetime, stop: threading.Event
+    ) -> list[tuple[int, float, int]]:
+        async with self.backfill_semaphore:
+            return await asyncio.to_thread(
+                self.rest.fetch_trade_seconds, symbol, start, end, _BACKFILL_MAX_TRADES, stop
+            )
 
     async def sync_universe(self, selections: Sequence[list[ContractTicker]]) -> None:
         """selections 与 detectors 一一对应，是各检测器本轮筛选出的合约池。"""
@@ -304,6 +511,7 @@ class _Monitor:
         await self.sync_universe(selections)
         # 先完成预热再订阅，新合约的第一笔实时成交到达时检测器已经就绪。
         await self._subscribe()
+        self.start_backfill()
         LOGGER.info(
             "交易对池已刷新：%s，共订阅 %d 个合约（24h 计价成交额，USDT）",
             "，".join(
@@ -320,6 +528,7 @@ class _Monitor:
         while True:
             try:
                 await self.refresh_universe()
+                self.ready.set()
                 return
             except Exception as exc:
                 LOGGER.error("交易对池初始化失败：%s；%.1f 秒后重试", exc, backoff.delay)
@@ -379,6 +588,9 @@ class _Monitor:
                                     self.resync_stale_symbols(),
                                     name="resync-stale-symbols",
                                 )
+                            # 逐秒成交历史同理：补的部分接在实时成交之前，只有连上之后才知道接在哪一秒。
+                            self.streaming = True
+                            self.start_backfill()
 
                         tick_count += 1
                         current_time = time.monotonic()
@@ -394,6 +606,7 @@ class _Monitor:
                                         resync_task = asyncio.create_task(
                                             self.resync_stale_symbols(), name="resync-stale-symbols"
                                         )
+                                    self.start_backfill()
                                 continue
                             for alert in alerts:
                                 dispatcher.publish(alert)
@@ -414,8 +627,10 @@ class _Monitor:
                 # 连接、握手、网络超时都会走到这里；合约池刷新已与连接解耦，任何异常都按故障退避重连。
                 LOGGER.warning("Gate.io 行情连接异常：%s；%.1f 秒后重连", exc, backoff.delay)
             finally:
-                # 断线后本轮回补的 K 线又与新缺口不一致，停止回补，等连接恢复后重来。
+                # 断线后本轮回补的 K 线又与新缺口不一致，停止回补，等连接恢复后重来；补成交历史同理。
+                self.streaming = False
                 await _stop_task(resync_task)
+                await self.stop_backfill()
             for detector in detectors:
                 detector.mark_stream_gap()
             had_stream_gap = True

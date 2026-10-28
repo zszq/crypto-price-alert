@@ -152,11 +152,11 @@ def make_streak(direction: str = "surge") -> StreakAlert:
 def test_streak_text_and_structured_fields():
     surge = make_streak()
     assert format_alert(surge) == (
-        "[急涨提醒·连续急涨] 2026-10-09 13:55:13 | RLC_USDT | "
+        "[瞬时急涨·连续急涨] 2026-10-09 13:55:13 | RLC_USDT | "
         "30秒窗口连续 3 次急涨，近1分32秒累计上涨 7.33% | 0.8745 → 0.9386"
     )
     drop = make_streak("drop")
-    assert "[急跌提醒·连续急跌]" in format_alert(drop) and "累计下跌 6.83%" in format_alert(drop)
+    assert "[瞬时急跌·连续急跌]" in format_alert(drop) and "累计下跌 6.83%" in format_alert(drop)
 
     payload = surge.to_dict()
     assert payload["kind"] == "streak"
@@ -176,8 +176,8 @@ def test_streak_label_uses_direction_color():
     alert = make_streak()
     text = colorize_alert(alert, format_alert(alert))
 
-    # 标签和急涨提醒一样用方向色，不另外着色。
-    assert text.startswith(f"{SURGE_COLOR}[急涨提醒·连续急涨] ")
+    # 标签和瞬时异动提醒一样用方向色，不另外着色。
+    assert text.startswith(f"{SURGE_COLOR}[瞬时急涨·连续急涨] ")
     assert f"{SYMBOL_COLOR}RLC_USDT" in text
     drop = make_streak("drop")
-    assert colorize_alert(drop, format_alert(drop)).startswith(f"{DROP_COLOR}[急跌提醒·连续急跌] ")
+    assert colorize_alert(drop, format_alert(drop)).startswith(f"{DROP_COLOR}[瞬时急跌·连续急跌] ")

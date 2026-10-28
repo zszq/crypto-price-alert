@@ -38,7 +38,7 @@ def test_rejects_atr_configuration_without_enough_warmup_data():
 def test_noise_protection_defaults_are_enabled():
     config = AppConfig()
 
-    short = config.spike.short_window
+    short = config.instant.short_window
     assert short.trigger_atr_multiple == 1.5
     assert short.min_change_percent == 1.0
     assert short.confirmation_seconds == 3
@@ -121,12 +121,16 @@ def test_launch_f1_yaml_runs_both_launch_directions_on_its_own_file(monkeypatch)
 
 
 def test_spike_can_be_disabled_but_not_every_detector():
-    config = AppConfig.model_validate({"spike": {"enabled": False}})
-
-    assert [entry.name for entry in build_detectors(config)] == ["放量上涨", "K 线趋势", "冷门启动", "反弹回落"]
+    names = ["瞬时异动", "短时异动", "放量上涨", "K 线趋势", "冷门启动", "反弹回落"]
+    assert [entry.name for entry in build_detectors(AppConfig())] == names
+    # 瞬时异动与短时异动各自开关，关掉一个不影响另一个。
+    for section, name in (("instant", "瞬时异动"), ("spike", "短时异动")):
+        config = AppConfig.model_validate({section: {"enabled": False}})
+        assert [entry.name for entry in build_detectors(config)] == [item for item in names if item != name]
     with pytest.raises(ValidationError, match="至少要启用一个"):
         AppConfig.model_validate(
             {
+                "instant": {"enabled": False},
                 "spike": {"enabled": False},
                 "trend": {"enabled": False},
                 "launch": {"rise": {"enabled": False}},
@@ -223,12 +227,51 @@ def test_rejects_unknown_long_window_keys():
 
 
 def test_streak_defaults_and_validation():
-    streak = AppConfig().spike.streak
+    streak = AppConfig().instant.streak
     assert (streak.enabled, streak.min_alerts, streak.gap_tolerance_seconds) == (True, 3, 30)
 
     # 连续提醒不能反过来卡住原有参数：调大短窗口冷却仍然是合法配置。
-    AppConfig.model_validate({"spike": {"short_window": {"cooldown_seconds": 600}}})
+    AppConfig.model_validate({"instant": {"short_window": {"cooldown_seconds": 600}}})
     with pytest.raises(ValidationError):
-        AppConfig.model_validate({"spike": {"streak": {"min_alerts": 1}}})
+        AppConfig.model_validate({"instant": {"streak": {"min_alerts": 1}}})
     with pytest.raises(ValidationError):
-        AppConfig.model_validate({"spike": {"streak": {"gap_tolerance_seconds": 0}}})
+        AppConfig.model_validate({"instant": {"streak": {"gap_tolerance_seconds": 0}}})
+    # 连续提醒只属于瞬时异动，短时异动段没有这个键。
+    with pytest.raises(ValidationError, match="streak"):
+        AppConfig.model_validate({"spike": {"streak": {"enabled": False}}})
+
+
+def test_spike_gates_default_off_and_validate_ranges():
+    # 瞬时异动代码默认不判两个附加条件；短时异动代码默认就是研究第四轮方案 A，两个窗口都开。
+    config = AppConfig()
+    for window in (config.instant.short_window, config.instant.long_window):
+        assert (window.min_prior_move_percent, window.min_trade_burst_ratio, window.prior_seconds) == (None, None, 300)
+    for window in (config.spike.short_window, config.spike.long_window):
+        assert (window.min_prior_move_percent, window.min_trade_burst_ratio, window.prior_seconds) == (2.0, 4.0, 300)
+    # 填 null 关掉某一项。
+    off = AppConfig.model_validate({"spike": {"short_window": {"min_trade_burst_ratio": None}}})
+    assert off.spike.short_window.min_trade_burst_ratio is None
+    # 倍数理论上限是 60（全部成交都落在最近 1 分钟），门槛不小于它就永远不会提醒。
+    with pytest.raises(ValidationError, match="min_trade_burst_ratio"):
+        AppConfig.model_validate({"spike": {"long_window": {"min_trade_burst_ratio": 60}}})
+    with pytest.raises(ValidationError, match="min_prior_move_percent"):
+        AppConfig.model_validate({"spike": {"short_window": {"min_prior_move_percent": -1}}})
+
+
+def test_only_detectors_judging_trade_history_ask_for_backfill():
+    # 代码默认瞬时异动不判附加条件、不需要补逐秒成交；短时异动（方案 A）与反弹回落都要 1 小时成交暴增。
+    entries = {entry.name: entry for entry in build_detectors(AppConfig())}
+    assert entries["瞬时异动"].history is None
+    for name in ("短时异动", "反弹回落"):
+        assert entries[name].history is entries[name].detector
+        assert entries[name].history.history_seconds == 3600
+    for name in ("K 线趋势", "放量上涨", "冷门启动"):
+        assert entries[name].history is None
+
+    # 瞬时异动若也开了附加条件，同样要补。
+    gated = AppConfig.model_validate({"instant": {"short_window": {"min_trade_burst_ratio": 4}}})
+    instant = next(entry for entry in build_detectors(gated) if entry.name == "瞬时异动")
+    assert instant.history is instant.detector and instant.history.history_seconds == 3600
+
+    daily = {entry.name: entry for entry in build_detectors(load_config(Path("config/default")))}
+    assert daily["瞬时异动"].history is None and daily["短时异动"].history is not None

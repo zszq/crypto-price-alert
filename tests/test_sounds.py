@@ -32,6 +32,7 @@ PRICE_ALERT = PriceAlert(
     trade_count=10,
     volume_24h_quote=1_000_000_000,
     timestamp=NOW,
+    kind="instant",
 )
 STREAK_ALERT = StreakAlert("BTC_USDT", "drop", 3, NOW, 100.0, 97.0, -3.0, 30, 1_000_000_000, NOW)
 TREND_ALERT = TrendAlert(
@@ -73,6 +74,9 @@ def decode(name: sounds.SoundName) -> tuple[wave._wave_params, array]:
 def test_each_alert_kind_maps_to_its_own_sound():
     assert sounds.sound_for(PRICE_ALERT) == "short"
     assert sounds.sound_for(replace(PRICE_ALERT, window="long", lookback_seconds=180)) == "long"
+    # 短时异动不分窗口，一个音。
+    assert sounds.sound_for(replace(PRICE_ALERT, kind="spike")) == "spike"
+    assert sounds.sound_for(replace(PRICE_ALERT, kind="spike", window="long", lookback_seconds=180)) == "spike"
     assert sounds.sound_for(STREAK_ALERT) == "streak"
     assert sounds.sound_for(TREND_ALERT) == "trend"
     assert sounds.sound_for(replace(TREND_ALERT, continuing=True)) == "trend_continuing"
@@ -84,7 +88,9 @@ def test_each_alert_kind_maps_to_its_own_sound():
 
 def test_priority_order_is_launch_streak_trend_then_second_level():
     priority = sounds.SOUND_PRIORITY
-    assert priority["launch"] > priority["dormant"] > priority["streak"] > priority["trend"] > priority["short"]
+    assert priority["launch"] > priority["dormant"] > priority["streak"] > priority["trend"]
+    # 短时异动比瞬时异动重要（每天几十条、提醒后更常延续），仍让位于趋势。
+    assert priority["trend"] > priority["spike"] > priority["short"]
     # 反弹回落每天只有几条，比连续提醒重要，与冷门启动同级、低于放量启动。
     assert priority["dormant"] == priority["reversal"] > priority["streak"]
     assert priority["trend"] == priority["trend_continuing"]
@@ -128,11 +134,12 @@ def test_launch_sound_is_the_loudest():
 
 
 def test_frequent_second_level_sounds_are_quieter_than_the_rest():
-    # 短时异动最常响：音量低于趋势与放量，连续提醒稍响。
+    # 瞬时异动最常响：音量低于趋势与放量，短时异动稍响，连续提醒再响一点。
     specs = sounds.SOUND_SPECS
-    for name in ("short", "long", "streak"):
+    for name in ("short", "long", "spike", "streak"):
         assert specs[name].peak_level < specs["trend"].peak_level == specs["trend_continuing"].peak_level
-    assert specs["short"].peak_level == specs["long"].peak_level < specs["streak"].peak_level
+    assert specs["short"].peak_level == specs["long"].peak_level
+    assert specs["long"].peak_level < specs["spike"].peak_level < specs["streak"].peak_level
 
 
 def test_trend_bell_has_no_harsh_high_partials():
@@ -156,15 +163,16 @@ def test_families_share_timbre_so_each_kind_is_recognizable():
     assert specs["trend"].timbre == specs["trend_continuing"].timbre
     timbres = {
         specs["short"].timbre,
+        specs["spike"].timbre,
         specs["trend"].timbre,
         specs["launch"].timbre,
         specs["dormant"].timbre,
         specs["reversal"].timbre,
     }
-    assert len(timbres) == 5
+    assert len(timbres) == 6
     # 「敲两下」在两类里都表示连续/延续。
     assert len(specs["streak"].strikes) == len(specs["trend_continuing"].strikes) == 2
-    assert len(specs["short"].strikes) == len(specs["trend"].strikes) == 1
+    assert len(specs["short"].strikes) == len(specs["spike"].strikes) == len(specs["trend"].strikes) == 1
     # 冷门启动与放量启动时长相同、同样上行，但音色不同、节奏更慢，不会听混。
     assert specs["dormant"].length_seconds == specs["launch"].length_seconds
     def gaps(name: sounds.SoundName) -> list[float]:

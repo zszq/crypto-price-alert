@@ -2,13 +2,15 @@
 
 音色区分大类、敲击方式区分小类，听到就能分辨是哪一类提醒：
 
-- 短时异动（短窗口、长窗口、连续提醒）：木琴音色，短促。短窗口敲一下，长窗口音更低、余音更长，
+- 瞬时异动（短窗口、长窗口、连续提醒）：木琴音色，短促。短窗口敲一下，长窗口音更低、余音更长，
   连续提醒是短窗口的音连敲两下。数量最多，音量最小。
+- 短时异动（短、长窗口同一个音）：拇指琴音色（基音之外只有一个很高、衰减很快的分音，比木琴圆润、余音稍长），
+  敲一下。每天几十条，比瞬时异动响一点。
 - 趋势（新成立、延续）：清亮但不刺耳的钟音。新成立敲一下，延续连敲两下（与连续提醒一样，“两下”表示延续）。
 - 放量启动：明亮的号角音色快速上行琶音（大三和弦），音量最大，最醒目，但收得干脆。
 - 冷门启动：簧管音色（只有奇次谐波，比号角空、闷）三个音一步一步上行，时长与放量启动相同、音量稍小：
   同样醒目，但音色和节奏都与放量启动不同，不会听混。
-- 反弹回落：拨弦音色（衰减快、干净利落）先落后起三个音，音高的「拐弯」对应走势的反转；比短时异动响，比两种启动轻。
+- 反弹回落：拨弦音色（衰减快、干净利落）先落后起三个音，音高的「拐弯」对应走势的反转；比瞬时、短时异动响，比两种启动轻。
 """
 
 from __future__ import annotations
@@ -33,11 +35,12 @@ from price_alert.detectors.reversal.alerts import ReversalAlert
 from price_alert.detectors.spike.streak import StreakAlert
 from price_alert.detectors.trend.alerts import TrendAlert
 
-SoundName = Literal["short", "long", "streak", "trend", "trend_continuing", "reversal", "dormant", "launch"]
+SoundName = Literal["short", "long", "streak", "spike", "trend", "trend_continuing", "reversal", "dormant", "launch"]
 SOUND_NAMES: tuple[SoundName, ...] = (
     "short",
     "long",
     "streak",
+    "spike",
     "trend",
     "trend_continuing",
     "reversal",
@@ -45,9 +48,10 @@ SOUND_NAMES: tuple[SoundName, ...] = (
     "launch",
 )
 SOUND_LABELS: dict[SoundName, str] = {
-    "short": "短时异动·短窗口",
-    "long": "短时异动·长窗口",
+    "short": "瞬时异动·短窗口",
+    "long": "瞬时异动·长窗口",
     "streak": "连续提醒",
+    "spike": "短时异动",
     "trend": "趋势提醒",
     "trend_continuing": "趋势提醒·延续",
     "reversal": "反弹回落",
@@ -58,13 +62,15 @@ SOUND_LABELS: dict[SoundName, str] = {
 SOUND_PRIORITY: dict[SoundName, int] = {
     "short": 0,
     "long": 0,
-    "trend": 1,
-    "trend_continuing": 1,
-    "streak": 2,
+    # 短时异动每天几十条、提醒后更常沿提醒方向继续走，比瞬时异动重要；仍让位于趋势。
+    "spike": 1,
+    "trend": 2,
+    "trend_continuing": 2,
+    "streak": 3,
     # 每天只有几条、提醒后几分钟内最可能延续，比连续提醒重要；仍让位于两种启动提醒。
-    "reversal": 3,
-    "dormant": 3,
-    "launch": 4,
+    "reversal": 4,
+    "dormant": 4,
+    "launch": 5,
 }
 # 必须完整播放的音效：优先级最高；播放中到达的同类提醒不跳过，播完后补响一次（见 notifier.MUST_PLAY_MERGE_SECONDS）。
 # 放量启动最重要，一段行情才响一次，补响不会吵；其他类型一波异动会连发，仍只响一次。
@@ -104,11 +110,15 @@ class _SoundSpec:
     fade_out_seconds: float = FADE_OUT_SECONDS
 
 
-# 木琴：第二分音约 3.9 倍、衰减很快，短促不拖尾，适合最常响的短时异动。
+# 木琴：第二分音约 3.9 倍、衰减很快，短促不拖尾，适合最常响的瞬时异动。
 WOOD = (_Partial(1.0, 1.0, 0.16), _Partial(3.93, 0.30, 0.035), _Partial(9.2, 0.08, 0.012))
-# 短时异动的音量：最常响，压低到其他提醒以下；连续提醒稍响一点。
+# 瞬时异动的音量：最常响，压低到其他提醒以下；连续提醒稍响一点。
 SECOND_LEVEL_PEAK = 0.5
 STREAK_PEAK = 0.6
+# 拇指琴：基音之外只有一个约 5.4 倍、很快衰减的金属分音，比木琴圆润、余音稍长，与其他音色都不同。
+KALIMBA = (_Partial(1.0, 1.0, 0.24), _Partial(5.4, 0.18, 0.025), _Partial(2.0, 0.08, 0.10))
+# 短时异动的音量：介于瞬时异动与连续提醒之间。
+SPIKE_PEAK = 0.55
 # 钟音：八度泛音和 2.76 倍分音给出清亮质感；最高分音控制在 4kHz 以内（5~10kHz 的分音刺耳），只留基音又发闷。
 SOFT_BELL = (_Partial(1.0, 1.0, 0.30), _Partial(2.0, 0.30, 0.12), _Partial(2.76, 0.15, 0.06))
 # 钟音的起音：比敲击默认的 3 毫秒稍缓，削掉“叮”的冲击，又保留敲击感。
@@ -144,9 +154,11 @@ DOUBLE_STRIKE_GAP = 0.11
 
 SOUND_SPECS: dict[SoundName, _SoundSpec] = {
     "short": _SoundSpec(WOOD, (_Strike(659.0),), 0.5, SECOND_LEVEL_PEAK),
-    # 长窗口音更低、余音更长：窗口越长音越沉，同一音色仍能一听就归到短时异动。
+    # 长窗口音更低、余音更长：窗口越长音越沉，同一音色仍能一听就归到瞬时异动。
     "long": _SoundSpec(WOOD, (_Strike(440.0, sustain=1.5),), 0.7, SECOND_LEVEL_PEAK),
     "streak": _SoundSpec(WOOD, (_Strike(659.0), _Strike(659.0, DOUBLE_STRIKE_GAP)), 0.6, STREAK_PEAK),
+    # A5 敲一下：与瞬时异动的 E5 同样是「一声」，换了音色，高一点更醒目；余音比木琴长，要长淡出才收得住。
+    "spike": _SoundSpec(KALIMBA, (_Strike(880.0),), 0.6, SPIKE_PEAK, fade_out_seconds=LONG_FADE_OUT_SECONDS),
     "trend": _SoundSpec(
         SOFT_BELL,
         (_Strike(1175.0),),
@@ -174,7 +186,7 @@ SOUND_SPECS: dict[SoundName, _SoundSpec] = {
         peak_level=0.95,
         fade_out_seconds=LONG_FADE_OUT_SECONDS,
     ),
-    # E6-B5-E6 先落后起：音高的「拐弯」对应走势的反转，比短时异动响、比两种启动轻。
+    # E6-B5-E6 先落后起：音高的「拐弯」对应走势的反转，比瞬时、短时异动响、比两种启动轻。
     "reversal": _SoundSpec(
         PLUCK,
         (_Strike(1319.0), _Strike(988.0, TURN_GAP), _Strike(1319.0, TURN_GAP * 2, sustain=1.3)),
@@ -204,6 +216,8 @@ def sound_for(alert: Alert) -> SoundName:
         return "streak"
     if isinstance(alert, TrendAlert):
         return "trend_continuing" if alert.continuing else "trend"
+    if alert.kind == "spike":
+        return "spike"
     return "long" if alert.window == "long" else "short"
 
 

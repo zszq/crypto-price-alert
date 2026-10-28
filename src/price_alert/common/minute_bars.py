@@ -205,7 +205,7 @@ class MinuteBarDetector(Generic[StateT, AlertT]):
             if late:
                 closed.append(flat_candle(minute - MINUTE, live.close))
             # 隔了空档才结算时收盘价已过期，用这笔成交价复核；紧邻结算只晚几秒，不复核，
-            # 免得新一分钟的单笔离群成交否掉提醒（与短时异动口径一致）。
+            # 免得新一分钟的单笔离群成交否掉提醒（与瞬时、短时异动口径一致）。
             for candle in closed:
                 alerts.extend(self._close_minute(symbol, state, candle, tick.price if late else None))
         # 失效期间只维护当前这一分钟，已收盘的分钟等 REST 回补。

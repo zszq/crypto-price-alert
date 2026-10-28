@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# 成交笔数暴增：最近 BURST_SECONDS 秒的成交笔数与最近 BURST_BASE_SECONDS 秒的每分钟平均相比。
-# 两个长度固定：研究只验证过 1 分钟对 1 小时（research/move_accuracy/move_accuracy.md），不开放成配置。
-BURST_SECONDS = 60
-BURST_BASE_SECONDS = 3600
-# 全部成交都落在最近 1 分钟时倍数最大，等于两个长度之比；门槛不小于它就永远不会提醒。
-MAX_BURST_RATIO = BURST_BASE_SECONDS / BURST_SECONDS
-# ATR 口径与短时异动的代码默认值相同（研究用的就是这一套），不单独开放配置。
+# 成交笔数暴增的两个固定长度与倍数上限与短时异动窗口的附加条件共用（计算也在基类），定义在 spike 子包里，
+# 这里转出，反弹回落的配置、模拟仍从本模块取。
+from price_alert.detectors.spike.windows import BURST_BASE_SECONDS as BURST_BASE_SECONDS
+from price_alert.detectors.spike.windows import BURST_SECONDS as BURST_SECONDS
+from price_alert.detectors.spike.windows import MAX_BURST_RATIO as MAX_BURST_RATIO
+
+# ATR 口径与瞬时、短时异动的代码默认值相同（研究用的就是这一套），不单独开放配置。
 ATR_PERIOD = 14
 CANDLE_INTERVAL = "1m"
 CANDLE_INTERVAL_SECONDS = 60
@@ -22,7 +22,7 @@ EXTREME_MINUTES = 1440
 
 @dataclass(frozen=True, slots=True)
 class ReversalRule:
-    # 急动窗口：与短时异动相同的判定（秒级 VWAP、基准桶、ATR、连续确认、空档复核、冷却）。
+    # 急动窗口：与瞬时、短时异动相同的判定（秒级 VWAP、基准桶、ATR、连续确认、空档复核、冷却）。
     lookback_seconds: int
     min_change_percent: float
     trigger_atr_multiple: float

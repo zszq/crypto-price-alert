@@ -103,7 +103,7 @@ def plan_minute_replay(
 
 
 def fetch_replay_data(rest: GateRestClient, plan: ReplayPlan, candle_interval: str) -> ReplayData:
-    """candle_interval 为预热 K 线周期：短时异动取 spike.candle_interval，反弹回落固定用 1 分钟。"""
+    """candle_interval 为预热 K 线周期：瞬时、短时异动取各自配置段的 candle_interval，反弹回落固定用 1 分钟。"""
     decimals = fetch_price_decimals(rest, plan.symbol)
     interval = timedelta(seconds=INTERVAL_SECONDS[candle_interval])
     candles = rest.fetch_candles_between(

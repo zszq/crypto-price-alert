@@ -1,6 +1,6 @@
 """反弹回落回放：用 REST 历史成交逐秒重放同一个检测器，解释为什么提醒或没有提醒。
 
-与短时异动的回放相同分三步（取数复用 detectors.replay.fetch_replay_data）：plan_reversal_replay 只做时间推算，
+与瞬时、短时异动的回放相同分三步（取数复用 detectors.replay.fetch_replay_data）：plan_reversal_replay 只做时间推算，
 run_reversal_replay 离线驱动检测器，render_reversal_replay 排成文本。
 """
 
@@ -70,7 +70,7 @@ def run_reversal_replay(rule: ReversalRule, plan: ReplayPlan, data: ReplayData) 
         return plan.start <= second <= plan.end
 
     kept = [item for item in evaluations if in_range(item.window.second)]
-    # 按判定所属的秒取舍提醒，而不是按结算它的那笔成交的时间，与短时异动回放一致。
+    # 按判定所属的秒取舍提醒，而不是按结算它的那笔成交的时间，与瞬时、短时异动回放一致。
     alerts = [item.alert for item in kept if item.alert is not None]
     return ReversalReplayResult(
         plan=plan,

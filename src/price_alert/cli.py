@@ -44,6 +44,8 @@ from price_alert.detectors.reversal.alerts import describe_reversal_rule
 from price_alert.detectors.reversal.replay import plan_reversal_replay, render_reversal_replay, run_reversal_replay
 from price_alert.detectors.reversal.rule import CANDLE_INTERVAL as REVERSAL_INTERVAL
 from price_alert.detectors.reversal.simulate import simulate_reversal
+from price_alert.detectors.spike.alerts import NAMES as SPIKE_NAMES
+from price_alert.detectors.spike.config import AtrSpikeConfig
 from price_alert.detectors.spike.replay import plan_replay, render_replay, run_replay
 from price_alert.detectors.spike.simulate import simulate_spike
 from price_alert.detectors.spike.streak import describe_streak_rule
@@ -59,7 +61,7 @@ from price_alert.notify.sounds import SOUND_LABELS, SOUND_NAMES, SOUND_PRIORITY
 from price_alert.service import run_monitor
 
 LOGGER = logging.getLogger(__name__)
-# 以下是只给开始时间时各回放的时长。短时异动：覆盖长窗口一个完整周期及前后行情。
+# 以下是只给开始时间时各回放的时长。瞬时、短时异动：覆盖长窗口一个完整周期及前后行情。
 DEFAULT_REPLAY_MINUTES = 15
 # 趋势以十几分钟到数小时计，要容下一段完整的开始到结束。
 DEFAULT_TREND_REPLAY_HOURS = 3
@@ -82,8 +84,9 @@ def build_parser() -> argparse.ArgumentParser:
         ("run", "启动 Gate.io 全市场实时监控"),
         ("universe", "查看当前满足成交额条件的合约"),
         ("check-config", "校验配置文件"),
-        ("simulate", "使用合成行情验证短时异动提醒"),
-        ("replay", "用历史成交回放某个合约，逐秒解释为什么提醒或没有提醒"),
+        ("simulate", "使用合成行情验证各类提醒"),
+        ("replay", "用历史成交回放某个合约的短时异动提醒，逐秒解释为什么提醒或没有提醒"),
+        ("instant-replay", "用历史成交回放某个合约的瞬时异动提醒，逐秒解释为什么提醒或没有提醒"),
         ("trend-replay", "用历史 1 分钟 K 线回放某个合约的趋势提醒，逐根解释判定结果"),
         ("launch-replay", "用历史 1 分钟 K 线回放某个合约的放量启动提醒，逐分钟解释判定结果"),
         ("dormant-replay", "用历史 1 分钟 K 线回放某个合约的冷门启动提醒，逐分钟解释判定结果"),
@@ -92,11 +95,12 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         command = commands.add_parser(name, help=help_text)
         command.add_argument("--config", default="config/default", help="配置文件，或目录（合并其中全部 .yaml）")
-    _add_replay_arguments(
-        commands.choices["replay"],
-        f"默认开始后 {DEFAULT_REPLAY_MINUTES} 分钟",
-        "输出每一秒每个窗口的判定，而不只是达标的秒",
-    )
+    for name in ("replay", "instant-replay"):
+        _add_replay_arguments(
+            commands.choices[name],
+            f"默认开始后 {DEFAULT_REPLAY_MINUTES} 分钟",
+            "输出每一秒每个窗口的判定，而不只是达标的秒",
+        )
     _add_replay_arguments(
         commands.choices["trend-replay"],
         f"默认开始后 {DEFAULT_TREND_REPLAY_HOURS} 小时",
@@ -128,19 +132,21 @@ def _add_replay_arguments(command: argparse.ArgumentParser, end_default: str, al
 
 
 def expected_simulated_alerts(config: AppConfig) -> int:
-    windows = len(build_windows(config.spike)) if config.spike.enabled else 0
+    windows = sum(len(build_windows(spike)) for spike in (config.instant, config.spike) if spike.enabled)
     trend_periods = len(config.trend.rules()) if config.trend.enabled else 0
     singles = len(config.dormant.rules()) + int(config.reversal.enabled)
     return windows + trend_periods + len(config.launch.sides()) + singles
 
 
 async def simulate(config: AppConfig) -> int:
-    """为每个启用的观察窗口、趋势周期、放量方向、冷门启动参数组和反弹回落各跑一遍合成行情，返回提醒总数；
-    正常时等于 expected_simulated_alerts。"""
+    """为瞬时、短时异动每个启用的观察窗口和每个趋势周期、放量方向、冷门启动参数组、反弹回落各跑一遍合成行情，
+    返回提醒总数；正常时等于 expected_simulated_alerts。"""
     notifier = ConsoleNotifier(beep=False, colors=config.alerts.console_colors)
     alert_count = 0
-    if config.spike.enabled:
-        for alert in simulate_spike(config.spike):
+    for spike in (config.instant, config.spike):
+        if not spike.enabled:
+            continue
+        for alert in simulate_spike(spike):
             alert_count += 1
             await notifier.send(alert)
     if config.trend.enabled:
@@ -173,14 +179,15 @@ async def preview_sounds() -> None:
         await asyncio.sleep(SOUND_PREVIEW_PAUSE_SECONDS)
 
 
-def replay(config: AppConfig, args: argparse.Namespace) -> None:
+def replay(config: AppConfig, args: argparse.Namespace, spike: AtrSpikeConfig) -> None:
+    """replay 回放短时异动（spike 段），instant-replay 回放瞬时异动（instant 段）；两者判定代码相同、参数不同。"""
     plan = _plan_or_exit(
         args,
         timedelta(minutes=DEFAULT_REPLAY_MINUTES),
-        lambda symbol, start, end: plan_replay(symbol, start, end, config.spike),
+        lambda symbol, start, end: plan_replay(symbol, start, end, spike),
     )
-    data = _fetch_trades_or_exit(config, plan, config.spike.candle_interval)
-    print("\n".join(render_replay(run_replay(config.spike, plan, data), show_all=args.all)))
+    data = _fetch_trades_or_exit(config, plan, spike.candle_interval)
+    print("\n".join(render_replay(run_replay(spike, plan, data), show_all=args.all)))
 
 
 def reversal_replay(config: AppConfig, args: argparse.Namespace) -> None:
@@ -315,14 +322,16 @@ def main() -> None:
     if args.command == "check-config":
         ranges = "，".join(f"{entry.name} {entry.volume.describe()}" for entry in build_detectors(config))
         print(f"配置有效：Gate.io USDT 永续，24h 计价成交额范围：{ranges}")
-        if config.spike.enabled:
-            for window in build_windows(config.spike):
-                print(f"  {describe_rule(window)}")
-            streak_rule = build_detector(config.spike).streak_rule
-            if streak_rule is not None:
-                print(f"  {describe_streak_rule(streak_rule)}")
-        else:
-            print("  短时异动提醒：已关闭")
+        for spike in (config.instant, config.spike):
+            detector = build_detector(spike)
+            name = SPIKE_NAMES[detector.kind]
+            if not spike.enabled:
+                print(f"  {name}提醒：已关闭")
+                continue
+            for window in detector.windows:
+                print(f"  {name}·{describe_rule(window)}")
+            if detector.streak_rule is not None:
+                print(f"  {name}·{describe_streak_rule(detector.streak_rule)}")
         if config.trend.enabled:
             for rule in config.trend.rules():
                 print(f"  {describe_trend_rule(rule)}")
@@ -364,12 +373,15 @@ def main() -> None:
         produced = asyncio.run(simulate(config))
         if produced != expected:
             raise SystemExit(
-                f"模拟应产生 {expected} 条提醒（每个窗口、每个趋势周期、每个放量方向、冷门启动、反弹回落各一条），"
-                f"实际 {produced} 条，请检查 spike、trend、launch、dormant 与 reversal 配置"
+                f"模拟应产生 {expected} 条提醒（瞬时、短时异动每个窗口，每个趋势周期、每个放量方向、冷门启动、"
+                f"反弹回落各一条），实际 {produced} 条，请检查 instant、spike、trend、launch、dormant 与 reversal 配置"
             )
         return
     if args.command == "replay":
-        replay(config, args)
+        replay(config, args, config.spike)
+        return
+    if args.command == "instant-replay":
+        replay(config, args, config.instant)
         return
     if args.command == "trend-replay":
         trend_replay(config, args)

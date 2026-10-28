@@ -4,6 +4,7 @@ import email.utils
 import http.client
 import io
 import json
+import threading
 import urllib.error
 import urllib.parse
 from datetime import UTC, datetime, timedelta
@@ -657,3 +658,58 @@ def test_futures_trade_url_is_ascii_and_path_safe(symbol, expected):
     assert url == expected
     assert url.isascii()
     assert urllib.parse.unquote(url.removeprefix(gate.TRADE_PAGE_URL)) == symbol
+
+
+def test_fetch_trade_seconds_aggregates_per_second_across_overlapping_pages(monkeypatch):
+    monkeypatch.setattr(gate, "TRADES_PAGE_SIZE", 3)
+    base = 1_790_645_220
+    # 每秒 2~3 笔，页边界落在秒中间，同一秒会在相邻两页里重复出现；第 6 秒挤了 7 笔，要靠 offset 翻完。
+    trades = [history_trade(index, base + index * 0.4, price=str(100 + index)) for index in range(1, 14)]
+    trades += [history_trade(100 + index, base + 6.1 + index / 1000, price=str(200 + index)) for index in range(7)]
+    trades.append(history_trade(999, base + 3.9, price="1", is_internal=True))
+    client = GateRestClient("https://example.test")
+    monkeypatch.setattr(client, "_get", FakeTradeHistory(trades))
+
+    seconds = client.fetch_trade_seconds(
+        "QNT_USDT", datetime.fromtimestamp(base, tz=UTC), datetime.fromtimestamp(base + 10, tz=UTC), 1000
+    )
+
+    expected: dict[int, tuple[float, int]] = {}
+    for item in sorted((t for t in trades if not t.get("is_internal")), key=lambda t: (t["create_time"], t["id"])):
+        second = int(item["create_time"])
+        expected[second] = (float(item["price"]), expected.get(second, (0.0, 0))[1] + 1)
+    assert seconds == [(second, *expected[second]) for second in sorted(expected)]
+
+
+def test_fetch_trade_seconds_refuses_too_many_trades(monkeypatch):
+    monkeypatch.setattr(gate, "TRADES_PAGE_SIZE", 3)
+    base = 1_790_645_220
+    client = GateRestClient("https://example.test")
+    monkeypatch.setattr(client, "_get", FakeTradeHistory([history_trade(i, base + i) for i in range(10)]))
+
+    with pytest.raises(ValueError, match="成交超过"):
+        client.fetch_trade_seconds(
+            "QNT_USDT", datetime.fromtimestamp(base, tz=UTC), datetime.fromtimestamp(base + 10, tz=UTC), 5
+        )
+
+
+def test_fetch_trade_seconds_stops_before_the_next_page_once_asked(monkeypatch):
+    monkeypatch.setattr(gate, "TRADES_PAGE_SIZE", 3)
+    base = 1_790_645_220
+    fake = FakeTradeHistory([history_trade(i, base + i) for i in range(10)])
+    stop = threading.Event()
+
+    def get(path, params=None):
+        page = fake(path, params)
+        stop.set()
+        return page
+
+    client = GateRestClient("https://example.test")
+    monkeypatch.setattr(client, "_get", get)
+
+    with pytest.raises(gate.FetchCancelled):
+        client.fetch_trade_seconds(
+            "QNT_USDT", datetime.fromtimestamp(base, tz=UTC), datetime.fromtimestamp(base + 10, tz=UTC), 1000, stop
+        )
+    # 第一页取回后就被叫停，不再请求第二页。
+    assert len(fake.requests) == 1

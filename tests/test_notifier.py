@@ -32,7 +32,7 @@ from price_alert.notify.notifier import (
     colorize_alert,
     format_alert,
 )
-from price_alert.notify.sounds import sound_duration, synthesize
+from price_alert.notify.sounds import sound_duration, sound_for, synthesize
 
 
 def test_jsonl_notifier_writes_atr_alert(tmp_path):
@@ -49,6 +49,7 @@ def test_jsonl_notifier_writes_atr_alert(tmp_path):
         trade_count=10,
         volume_24h_quote=1_000_000_000,
         timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+        kind="instant",
     )
     target = tmp_path / "alerts.jsonl"
 
@@ -57,7 +58,10 @@ def test_jsonl_notifier_writes_atr_alert(tmp_path):
     payload = json.loads(target.read_text(encoding="utf-8"))
     assert payload["move_atr"] == 1.25
     assert payload["color"] == "green"
+    # 瞬时异动与短时异动写进同一个 JSONL，下游靠 kind 区分。
+    assert payload["kind"] == "instant"
     text = format_alert(alert)
+    assert text.startswith("[瞬时急涨] ")
     assert "2026-01-01 08:00:00" in text
     assert "价格上涨 1.00%" in text
     assert "异动强度 1.25 ATR" in text
@@ -90,10 +94,10 @@ def test_drop_alert_is_red():
 def test_colorize_highlights_symbol():
     alert = make_alert("ETH_USDT")
 
-    text = colorize_alert(alert, "[急涨提醒] | ETH_USDT | 价格上涨")
+    text = colorize_alert(alert, "[瞬时急涨] | ETH_USDT | 价格上涨")
 
     symbol = f"{SYMBOL_COLOR}ETH_USDT{Style.RESET_ALL}{SURGE_COLOR}"
-    assert text == f"{SURGE_COLOR}[急涨提醒] | {symbol} | 价格上涨{Style.RESET_ALL}"
+    assert text == f"{SURGE_COLOR}[瞬时急涨] | {symbol} | 价格上涨{Style.RESET_ALL}"
     assert colorize_alert(alert, "ETH_USDT", enabled=False) == "ETH_USDT"
 
 
@@ -124,7 +128,19 @@ def make_alert(symbol: str = "BTC_USDT") -> PriceAlert:
         trade_count=10,
         volume_24h_quote=1_000_000_000,
         timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+        # 这些用例原本针对改名前的短时异动（现在的瞬时异动）：木琴音效、[瞬时急涨] 标签。
+        kind="instant",
     )
+
+
+def test_spike_kind_has_its_own_label_and_sound():
+    spike = replace(make_alert(), kind="spike")
+    assert format_alert(spike).startswith("[短时急涨] ")
+    assert format_alert(replace(spike, direction="drop", change_percent=-1.0)).startswith("[短时急跌] ")
+    assert spike.to_dict()["kind"] == "spike"
+    assert sound_for(spike) == "spike"
+    # 长窗口也是同一个音：短时异动不按窗口分音效。
+    assert sound_for(replace(spike, window="long", lookback_seconds=180)) == "spike"
 
 
 class FakeSoundProcess:
@@ -336,7 +352,7 @@ def test_macos_sound_failure_does_not_hide_alert(monkeypatch, capsys, caplog, tm
 
     asyncio.run(scenario())
 
-    assert "[急涨提醒]" in capsys.readouterr().out
+    assert "[瞬时急涨]" in capsys.readouterr().out
     assert "macOS 提示音播放失败" in caplog.text
 
 
@@ -400,7 +416,7 @@ def test_windows_sound_failure_is_logged(monkeypatch, capsys, caplog, tmp_path):
 
     asyncio.run(scenario())
 
-    assert "[急涨提醒]" in capsys.readouterr().out
+    assert "[瞬时急涨]" in capsys.readouterr().out
     assert "Windows 提示音播放失败" in caplog.text
 
 
@@ -446,7 +462,7 @@ def test_sound_regeneration_failure_skips_sound_and_throttles_warning(monkeypatc
     asyncio.run(scenario())
 
     assert winsound.calls == []
-    assert capsys.readouterr().out.count("[急涨提醒]") == 3
+    assert capsys.readouterr().out.count("[瞬时急涨]") == 3
     assert caplog.text.count("重新生成失败") == 1
 
 
@@ -475,7 +491,7 @@ def test_console_notifier_keeps_terminal_bell_on_other_platforms(monkeypatch, ca
 
     asyncio.run(ConsoleNotifier(beep=True, colors=False).send(make_alert()))
 
-    assert capsys.readouterr().out.startswith("\a[急涨提醒]")
+    assert capsys.readouterr().out.startswith("\a[瞬时急涨]")
 
 
 def test_sound_file_failure_falls_back_to_terminal_bell(monkeypatch, capsys, caplog, tmp_path):
@@ -486,7 +502,7 @@ def test_sound_file_failure_falls_back_to_terminal_bell(monkeypatch, capsys, cap
 
     asyncio.run(ConsoleNotifier(beep=True, colors=False, sound_dir=blocker).send(make_alert()))
 
-    assert capsys.readouterr().out.startswith("\a[急涨提醒]")
+    assert capsys.readouterr().out.startswith("\a[瞬时急涨]")
     assert "提示音文件生成失败" in caplog.text
 
 

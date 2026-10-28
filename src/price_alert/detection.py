@@ -1,6 +1,6 @@
 """服务主循环对检测器的约定。
 
-实时监控可以同时运行多个检测器（短时异动及其连续提醒、K 线形态趋势、放量启动、冷门启动、反弹回落），
+实时监控可以同时运行多个检测器（瞬时异动及其连续提醒、短时异动、K 线形态趋势、放量启动、冷门启动、反弹回落），
 它们共用同一路成交，各自按成交额范围筛选合约池。
 服务只依赖这里的接口：新增或移除一种检测器只改 assembly.build_detectors，不必改动服务编排。
 """
@@ -52,6 +52,17 @@ class Detector(Protocol):
     def add_tick(self, tick: PriceTick) -> Sequence[Alert]: ...
 
 
+class HistoryBackfill(Protocol):
+    """要逐秒成交历史（前置走势、1 小时成交暴增）的检测器：启动、新入池、断线后由服务用 REST 补上，不必等实时攒满。"""
+
+    @property
+    def history_seconds(self) -> int: ...
+
+    def history_backfill(self) -> dict[str, datetime | None]: ...
+
+    def seed_history(self, symbol: str, seconds: Sequence[tuple[int, float, int]], live_start: datetime) -> bool: ...
+
+
 @dataclass(frozen=True, slots=True)
 class MonitoredDetector:
     """检测器及其合约池范围与预热所需的 K 线：周期相同的检测器共用一次 REST 请求，按各自根数截取。"""
@@ -62,3 +73,5 @@ class MonitoredDetector:
     # 请求的 K 线根数，含一根未收盘的当前 K 线。
     warmup_candles: int
     volume: VolumeRange
+    # 需要补逐秒成交历史时是检测器本身，否则为 None。
+    history: HistoryBackfill | None = None

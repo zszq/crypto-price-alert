@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from price_alert.common.models import Candle, PriceTick
-from price_alert.detectors.spike.alerts import PriceAlert
+from price_alert.detectors.spike.alerts import PriceAlert, format_spike_alert
 from price_alert.detectors.spike.detector import AtrSpikeDetector
 from price_alert.detectors.spike.streak import StreakAlert, StreakRule
 from price_alert.detectors.spike.windows import Outcome, SpikeWindow
@@ -742,3 +742,193 @@ def test_detector_without_streak_rule_never_adds_streak_alerts():
 
     assert len(alerts) > 3
     assert all(isinstance(alert, PriceAlert) for alert in alerts)
+
+
+# ---- 前置走势与成交暴增两个附加条件（研究第四轮）----
+
+GATED_START = BASE + timedelta(minutes=3)
+
+
+def gated_detector(observer=None, **overrides) -> AtrSpikeDetector:
+    instance = AtrSpikeDetector(
+        atr_period=3,
+        candle_interval_seconds=60,
+        max_atr_age_seconds=180,
+        windows=[short_window(**overrides)],
+        observer=observer,
+    )
+    instance.add_symbol("GATE_USDT", history(0.2), 20_000_000)
+    return instance
+
+
+def feed_path(
+    instance: AtrSpikeDetector, prices: list[float], counts: list[int] | None = None, start: datetime = GATED_START
+) -> list:
+    """从 start 起第 i 秒按 prices[i] 成交 counts[i] 笔（默认 1 笔），返回全部提醒。"""
+    alerts = []
+    for second, price in enumerate(prices):
+        count = 1 if counts is None else counts[second]
+        for index in range(count):
+            moment = start + timedelta(seconds=second + index / count)
+            alerts.extend(instance.add_tick(PriceTick("GATE_USDT", price, 1.0, moment, f"{second}-{index}")))
+    return alerts
+
+
+def test_prior_gate_blocks_with_trend_move_without_resetting_confirmation():
+    evaluations = []
+    instance = gated_detector(observer=evaluations.append, min_prior_move_percent=2.0, prior_seconds=60)
+    # 一直横盘后急拉：此前没有逆向走势，确认已满的秒都被拦下，确认进度照常累加。
+    alerts = feed_path(instance, [100.0] * 120 + [102.0] * 5)
+
+    assert alerts == []
+    blocked = [item for item in evaluations if item.outcome is Outcome.PRIOR_TREND]
+    assert [item.confirmed_seconds for item in blocked] == [2, 3, 4]
+    assert blocked[0].prior_change_percent == pytest.approx(0.0)
+
+
+def test_prior_gate_allows_rebound_after_decline_and_reports_signed_prior_change():
+    instance = gated_detector(min_prior_move_percent=2.0, prior_seconds=60)
+    # 横盘后跌到 97 停一会儿，再急拉 2%：窗口开始前 60 秒那一刻（仍在 100）到基准价（97）跌了 3%。
+    alerts = feed_path(instance, [100.0] * 60 + [97.0] * 15 + [98.94] * 3)
+
+    assert len(alerts) == 1
+    assert alerts[0].direction == "surge"
+    assert alerts[0].prior_change_percent == pytest.approx(-3.0)
+    assert alerts[0].prior_seconds == 60
+    assert alerts[0].trade_burst_ratio is None
+    assert "此前1分钟 -3.00%" in format_spike_alert(alerts[0])
+
+
+def test_burst_gate_needs_an_hour_of_history_and_a_surge_in_trades():
+    evaluations = []
+    instance = gated_detector(observer=evaluations.append, min_trade_burst_ratio=4.0)
+    # 不足 1 小时的成交历史：判不了成交暴增，宁可不报。
+    alerts = feed_path(instance, [100.0] * 1800 + [102.0] * 3, [1] * 1800 + [20] * 3)
+    assert alerts == []
+    assert evaluations[-1].outcome is Outcome.NO_TRADE_BURST
+    assert evaluations[-1].trade_burst_ratio is None
+
+    instance = gated_detector(min_trade_burst_ratio=4.0)
+    counts = [1] * 3700 + [20] * 23
+    alerts = feed_path(instance, [100.0] * 3720 + [102.0] * 3, counts)
+    assert len(alerts) == 1
+    assert alerts[0].trade_burst_ratio > 4.0
+    assert alerts[0].prior_change_percent is None
+
+
+def test_burst_gate_rejects_move_without_trade_surge():
+    evaluations = []
+    instance = gated_detector(observer=evaluations.append, min_trade_burst_ratio=4.0)
+    assert feed_path(instance, [100.0] * 3720 + [102.0] * 3) == []
+    assert evaluations[-1].outcome is Outcome.NO_TRADE_BURST
+    assert evaluations[-1].trade_burst_ratio == pytest.approx(1.0, abs=0.1)
+
+
+def test_gated_history_is_bounded_and_cleared_on_gaps():
+    instance = gated_detector(min_trade_burst_ratio=4.0)
+    feed_path(instance, [100.0] * 4000)
+    assert len(instance._history["GATE_USDT"]) <= 3602
+    instance.mark_symbol_gap("GATE_USDT")
+    assert "GATE_USDT" not in instance._history
+    feed_path(instance, [100.0] * 5)
+    instance.mark_stream_gap()
+    assert instance._history == {}
+
+
+def test_windows_without_gates_keep_no_history():
+    instance = gated_detector()
+    feed_path(instance, [100.0] * 30)
+    assert instance._history == {}
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"min_trade_burst_ratio": 60.0},
+        {"min_trade_burst_ratio": 0.0},
+        {"min_prior_move_percent": -1.0},
+        {"prior_seconds": 0},
+    ],
+)
+def test_window_rejects_invalid_gate_values(overrides):
+    with pytest.raises(ValueError):
+        short_window(**overrides)
+
+
+# ---- 用 REST 补逐秒成交历史 ----
+
+
+def rest_seconds(end_second: int, length: int, trades_per_second: int = 1) -> list[tuple[int, float, int]]:
+    return [(second, 100.0, trades_per_second) for second in range(end_second - length, end_second)]
+
+
+def test_backfill_waits_for_live_trades_then_seeded_history_judges_burst_at_once():
+    instance = gated_detector(min_trade_burst_ratio=4.0)
+    # 还没有实时成交，不知道补的历史接在哪里。
+    assert instance.history_backfill() == {"GATE_USDT": None}
+    assert instance.history_seconds == 3600
+
+    feed_path(instance, [100.0])
+    live_start = instance.history_backfill()["GATE_USDT"]
+    assert live_start == GATED_START
+    second = int(GATED_START.timestamp())
+    assert instance.seed_history("GATE_USDT", rest_seconds(second + 5, 3700), live_start)
+    assert instance.history_backfill() == {}
+
+    # 补上 1 小时历史后，刚启动 20 秒就能判成交暴增，不用再等 1 小时。
+    alerts = feed_path(instance, [100.0] * 20 + [102.0] * 3, [20] * 23)
+    assert len(alerts) == 1
+    # 提醒在第 21 秒：实时 441 笔（第 0 秒先后共 21 笔），最近 1 分钟另含补上的 38 秒，1 小时含补上的 3578 秒。
+    assert alerts[0].trade_burst_ratio == pytest.approx((38 + 441) / (3578 + 441) * 60)
+
+
+def test_seeded_history_stops_before_live_start_and_lines_up_trade_counts():
+    instance = gated_detector(min_trade_burst_ratio=4.0)
+    feed_path(instance, [100.0] * 3, [2, 2, 2])
+    live_start = instance.history_backfill()["GATE_USDT"]
+    second = int(GATED_START.timestamp())
+    # REST 区间盖过了实时起点：起点及之后的秒由实时成交负责，不能重复计数。
+    assert instance.seed_history("GATE_USDT", rest_seconds(second + 3, 100, 5), live_start)
+
+    history = instance._history["GATE_USDT"]
+    assert list(history.times) == [*range(second - 97, second), second, second + 1]
+    # REST 最后一秒的累计笔数是 0，与实时第一个秒桶的起算点相同，跨两段相减的笔数照样对。
+    assert history.trades[96] == 0
+    assert history.trades[0] == -96 * 5
+    assert list(history.trades[-2:]) == [2, 4]
+
+
+def test_seed_is_refused_after_the_live_stream_restarts():
+    instance = gated_detector(min_trade_burst_ratio=4.0)
+    feed_path(instance, [100.0])
+    stale_start = instance.history_backfill()["GATE_USDT"]
+    instance.mark_stream_gap()
+    # 断线后实时成交还没恢复：旧起点之前的历史与之后的实时成交之间缺了一段，不能用。
+    assert instance.history_backfill() == {"GATE_USDT": None}
+    assert not instance.seed_history("GATE_USDT", rest_seconds(int(GATED_START.timestamp()), 3700), stale_start)
+
+    instance.resync_symbol("GATE_USDT", history(0.2), None, GATED_START)
+    feed_path(instance, [100.0] * 10, start=GATED_START + timedelta(seconds=30))
+    restarted = instance.history_backfill()["GATE_USDT"]
+    assert restarted is not None and restarted > stale_start
+    assert not instance.seed_history("GATE_USDT", [], stale_start)
+    assert instance.seed_history("GATE_USDT", rest_seconds(int(restarted.timestamp()), 3700), restarted)
+
+
+def test_backfill_is_no_longer_needed_once_live_history_covers_the_span():
+    instance = gated_detector(min_prior_move_percent=2.0, prior_seconds=60)
+    assert instance.history_seconds == 70
+    feed_path(instance, [100.0] * 75)
+    assert instance.history_backfill() == {}
+    instance.mark_symbol_gap("GATE_USDT")
+    assert instance.history_backfill() == {"GATE_USDT": None}
+    instance.remove_symbols({"GATE_USDT"})
+    assert instance.history_backfill() == {}
+
+
+def test_windows_without_gates_never_ask_for_backfill():
+    instance = gated_detector()
+    feed_path(instance, [100.0] * 5)
+    assert instance.history_seconds == 0
+    assert instance.history_backfill() == {}
+    assert not instance.seed_history("GATE_USDT", rest_seconds(int(GATED_START.timestamp()), 10), GATED_START)

@@ -20,7 +20,8 @@ from price_alert.detectors.reversal.alerts import NAME as REVERSAL_NAME
 from price_alert.detectors.reversal.detector import ReversalDetector
 from price_alert.detectors.reversal.rule import CANDLE_INTERVAL as REVERSAL_INTERVAL
 from price_alert.detectors.reversal.rule import ReversalRule
-from price_alert.detectors.spike.config import SpikeConfig, WindowConfig
+from price_alert.detectors.spike.alerts import NAMES as SPIKE_NAMES
+from price_alert.detectors.spike.config import AtrSpikeConfig, InstantConfig, WindowConfig
 from price_alert.detectors.spike.detector import AtrSpikeDetector
 from price_alert.detectors.spike.streak import StreakRule
 from price_alert.detectors.spike.windows import SpikeWindow, WindowEvaluation, WindowName
@@ -31,7 +32,7 @@ from price_alert.exchange.gate import GateRestClient, RateLimiter
 from price_alert.exchange.universe import VolumeRange
 
 
-def build_windows(spike: SpikeConfig, cooldown_seconds: int | None = None) -> list[SpikeWindow]:
+def build_windows(spike: AtrSpikeConfig, cooldown_seconds: int | None = None) -> list[SpikeWindow]:
     """按配置生成观察窗口，短窗口在前：同一秒两个窗口都提醒时，更紧迫的短窗口提醒排在前面。
 
     cooldown_seconds 覆盖全部窗口的冷却，供 simulate 这类不需要冷却的场景使用。
@@ -48,21 +49,27 @@ def build_windows(spike: SpikeConfig, cooldown_seconds: int | None = None) -> li
             confirmation_seconds=window.confirmation_seconds,
             min_window_trades=window.min_window_trades,
             cooldown_seconds=window.cooldown_seconds if cooldown_seconds is None else cooldown_seconds,
+            prior_seconds=window.prior_seconds,
+            min_prior_move_percent=window.min_prior_move_percent,
+            min_trade_burst_ratio=window.min_trade_burst_ratio,
         )
         for name, window in configured
     ]
 
 
 def build_detector(
-    spike: SpikeConfig,
+    spike: AtrSpikeConfig,
     cooldown_seconds: int | None = None,
     *,
     windows: Sequence[SpikeWindow] | None = None,
     observer: Callable[[WindowEvaluation], None] | None = None,
     streak: bool = True,
 ) -> AtrSpikeDetector:
-    """streak=False 不追加连续提醒，供 simulate 这类只验证单个窗口门槛的场景使用。"""
-    streak_config = spike.streak
+    """按瞬时异动（InstantConfig）或短时异动（SpikeConfig）的参数组装；只有瞬时异动带连续提醒。
+
+    streak=False 不追加连续提醒，供 simulate 这类只验证单个窗口门槛的场景使用。
+    """
+    instant = isinstance(spike, InstantConfig)
     return AtrSpikeDetector(
         atr_period=spike.atr_period,
         candle_interval_seconds=INTERVAL_SECONDS[spike.candle_interval],
@@ -71,12 +78,13 @@ def build_detector(
         observer=observer,
         streak=(
             StreakRule(
-                streak_config.min_alerts,
-                spike.short_window.cooldown_seconds + streak_config.gap_tolerance_seconds,
+                spike.streak.min_alerts,
+                spike.short_window.cooldown_seconds + spike.streak.gap_tolerance_seconds,
             )
-            if streak and streak_config.enabled
+            if isinstance(spike, InstantConfig) and streak and spike.streak.enabled
             else None
         ),
+        kind="instant" if instant else "spike",
     )
 
 
@@ -113,18 +121,23 @@ def build_reversal_detector(rule: ReversalRule) -> ReversalDetector:
 
 
 def build_detectors(config: AppConfig) -> list[MonitoredDetector]:
-    """实时监控运行的全部检测器，顺序固定为短时异动、放量上涨、放量下跌、趋势、冷门启动、反弹回落；
+    """实时监控运行的全部检测器，顺序固定为瞬时异动、短时异动、放量上涨、放量下跌、趋势、冷门启动、反弹回落；
     关闭的检测器不创建，不多订阅、不多拉 K 线。"""
-    spike = config.spike
     detectors: list[MonitoredDetector] = []
-    if spike.enabled:
+    # 瞬时异动与短时异动是同一套检测器按两组参数各跑一个：合约池、冷却、秒级数据互不影响。
+    for spike in (config.instant, config.spike):
+        if not spike.enabled:
+            continue
+        detector = build_detector(spike)
         detectors.append(
             MonitoredDetector(
-                "短时异动",
-                build_detector(spike),
+                SPIKE_NAMES[detector.kind],
+                detector,
                 spike.candle_interval,
                 spike.warmup_candles,
                 VolumeRange(spike.min_volume_24h_quote),
+                # 窗口开了前置走势或成交暴增时才要补逐秒成交历史。
+                detector if detector.history_seconds else None,
             )
         )
     # 放量上涨与放量下跌是两个检测器：各自的门槛、K 线保留长度与合约池（服务按各自的成交额范围增删合约）。
@@ -148,10 +161,9 @@ def build_detectors(config: AppConfig) -> list[MonitoredDetector]:
     if reversal.enabled:
         volume = VolumeRange(reversal.min_volume_24h_quote, reversal.max_volume_24h_quote)
         rule = reversal.to_rule()
+        detector = build_reversal_detector(rule)
         detectors.append(
-            MonitoredDetector(
-                REVERSAL_NAME, build_reversal_detector(rule), REVERSAL_INTERVAL, rule.warmup_candles, volume
-            )
+            MonitoredDetector(REVERSAL_NAME, detector, REVERSAL_INTERVAL, rule.warmup_candles, volume, detector)
         )
     return detectors
 

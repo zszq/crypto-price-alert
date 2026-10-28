@@ -14,7 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -72,6 +72,10 @@ def futures_trade_url(symbol: str) -> str:
     # 整段编码，中文也不例外：终端识别网址时遇到非 ASCII 字符就截断，原样保留中文时点击打开的地址会丢掉合约名；
     # 编码后的地址浏览器会还原成中文，合约名在提醒正文里已经有了，这里不必为了好看保留原文。
     return f"{TRADE_PAGE_URL}{urllib.parse.quote(symbol, safe='')}"
+
+
+class FetchCancelled(Exception):
+    """调用方要求停止时，分页取数在请求下一页之前抛出。"""
 
 
 class RateLimiter:
@@ -227,20 +231,75 @@ class GateRestClient:
         Gate 按从新到旧分页、每页最多 1000 笔。翻页把 to（开区间）收缩到本页最早秒 + 1，
         同一秒更早的成交留到下一页，重复的按 id 去重；整页挤在同一秒时 to 收缩不动，只能用 offset 继续翻。
         """
+        trades: dict[str, PriceTick] = {}
+        for page in self._trade_pages(symbol, start, end):
+            self._collect_trades(page, trades, max_trades)
+        return sorted(trades.values(), key=lambda tick: (tick.timestamp, _trade_order(tick)))
+
+    def fetch_trade_seconds(
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        max_trades: int,
+        stop: threading.Event | None = None,
+    ) -> list[tuple[int, float, int]]:
+        """[start, end) 内每个有成交的秒：（Unix 秒、该秒最后一笔成交价、成交笔数），按时间升序。
+
+        补逐秒成交历史只用得到每秒的汇总，活跃合约一小时就有几十万笔，逐笔留到最后要上百 MB 内存，
+        所以边翻页边汇总：下一页只会取到本页最早那一秒及更早的成交，比它晚的秒已经齐了，汇总后丢掉逐笔。
+        超过 max_trades 笔时抛出 ValueError，免得一个合约占住限速额度太久。
+        stop 置位后不再请求下一页、抛出 FetchCancelled：线程里的翻页没法从 asyncio 取消，不停下来的话断线后
+        还在为用不上的数据消耗限速额度，退出程序时也要等它翻完这一段。
+        """
+        done: dict[int, tuple[float, int]] = {}
+        # 还可能在下一页重复出现的秒：按 id 去重后才能计数。
+        open_seconds: dict[int, dict[str, PriceTick]] = {}
+        total = 0
+
+        def close_after(boundary: float) -> None:
+            nonlocal total
+            for second in [second for second in open_seconds if second > boundary]:
+                ticks = open_seconds.pop(second)
+                last = max(ticks.values(), key=lambda tick: (tick.timestamp, _trade_order(tick)))
+                done[second] = (last.price, len(ticks))
+                total += len(ticks)
+            if total > max_trades:
+                raise ValueError(f"成交超过 {max_trades:,} 笔")
+
+        def check_stop() -> None:
+            if stop is not None and stop.is_set():
+                raise FetchCancelled(f"{symbol} 取数已取消")
+
+        check_stop()
+        for page in self._trade_pages(symbol, start, end):
+            parsed: dict[str, PriceTick] = {}
+            self._collect_trades(page, parsed, math.inf)
+            for key, tick in parsed.items():
+                open_seconds.setdefault(math.floor(tick.timestamp.timestamp()), {})[key] = tick
+            if page:
+                close_after(_oldest_trade_second(page))
+            # 生成器在下一轮循环才请求下一页，在这里检查就能赶在请求之前停下。
+            check_stop()
+        close_after(-math.inf)
+        return [(second, *done[second]) for second in sorted(done)]
+
+    def _trade_pages(self, symbol: str, start: datetime, end: datetime) -> Iterator[list[Mapping[str, Any]]]:
+        """按 fetch_trades 说明的方式翻页，依次给出 [start, end) 内的原始成交页（从新到旧）。"""
         start_second = math.floor(start.timestamp())
         to = math.ceil(end.timestamp())
-        trades: dict[str, PriceTick] = {}
-        pages = 0
+        pages = fetched = 0
         while to > start_second:
             page = self._trades_page(symbol, start_second, to)
-            self._collect_trades(page, trades, max_trades)
+            yield page
             pages += 1
+            fetched += len(page)
             if pages % TRADES_PROGRESS_PAGES == 0:
                 # 长区间要翻上百页、耗时以分钟计，定期报告进度，免得被误以为卡死。
                 reached = beijing_time(datetime.fromtimestamp(to, tz=UTC))
-                LOGGER.info("%s 已获取 %s 笔历史成交，回溯到北京时间 %s", symbol, f"{len(trades):,}", reached)
+                LOGGER.info("%s 已获取 %s 笔历史成交，回溯到北京时间 %s", symbol, f"{fetched:,}", reached)
             if len(page) < TRADES_PAGE_SIZE:
-                break
+                return
             oldest_second = _oldest_trade_second(page)
             if oldest_second + 1 < to:
                 to = oldest_second + 1
@@ -248,10 +307,9 @@ class GateRestClient:
             offset = TRADES_PAGE_SIZE
             while len(page) == TRADES_PAGE_SIZE:
                 page = self._trades_page(symbol, oldest_second, oldest_second + 1, offset)
-                self._collect_trades(page, trades, max_trades)
+                yield page
                 offset += TRADES_PAGE_SIZE
             to = oldest_second
-        return sorted(trades.values(), key=lambda tick: (tick.timestamp, _trade_order(tick)))
 
     def _trades_page(self, symbol: str, start: int, end: int, offset: int = 0) -> list[Mapping[str, Any]]:
         params: dict[str, object] = {"contract": symbol, "from": start, "to": end, "limit": TRADES_PAGE_SIZE}
@@ -263,7 +321,7 @@ class GateRestClient:
         return [item for item in payload if isinstance(item, Mapping)]
 
     @staticmethod
-    def _collect_trades(page: list[Mapping[str, Any]], trades: dict[str, PriceTick], max_trades: int) -> None:
+    def _collect_trades(page: list[Mapping[str, Any]], trades: dict[str, PriceTick], max_trades: float) -> None:
         for item in page:
             try:
                 tick = parse_rest_trade(item)

@@ -11,19 +11,14 @@ from price_alert.assembly import build_reversal_detector
 from price_alert.common.models import Candle, PriceTick
 from price_alert.detectors.reversal.alerts import ReversalAlert
 from price_alert.detectors.reversal.config import ReversalConfig
-from price_alert.detectors.reversal.rule import ATR_PERIOD, BURST_BASE_SECONDS, BURST_SECONDS, MAX_BURST_RATIO
+from price_alert.detectors.reversal.rule import ATR_PERIOD, BURST_BASE_SECONDS, MAX_BURST_RATIO
+
+# 急拉前成交涌入的秒数与暴增倍数的算法与短时异动附加条件的模拟共用。
+from price_alert.detectors.spike.simulate import BUSY_LEAD_SECONDS as _BUSY_LEAD
+from price_alert.detectors.spike.simulate import burst_ratio as _burst_ratio
 
 SYMBOL = "BTC_USDT"
 _PRICE = 100.0
-# 急拉前成交开始涌入的秒数；加上最多 10 秒的确认仍在 1 分钟之内。
-_BUSY_LEAD = 50
-
-
-def _burst_ratio(busy: int, busy_seconds: int) -> float:
-    """最近 1 分钟有 busy_seconds 秒每秒 busy 笔、其余每秒 1 笔时，成交暴增倍数。"""
-    minute = busy_seconds * busy + (BURST_SECONDS - busy_seconds)
-    hour = busy_seconds * busy + (BURST_BASE_SECONDS - busy_seconds)
-    return minute / hour * MAX_BURST_RATIO
 
 
 def simulate_reversal(config: ReversalConfig) -> list[ReversalAlert]:
