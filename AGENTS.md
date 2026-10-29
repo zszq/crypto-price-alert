@@ -63,6 +63,7 @@ python -m venv .venv
 - `sync_universe` 按检测器分别做增量同步：移除的合约丢弃检测状态（冷却记录保留），保留的合约只更新成交额，新增合约并发（`warmup_concurrency`）拉 K 线预热（同一合约同时新进多个检测器时只预热一次）；只有所有检测器都选不出合约时才按刷新失败处理；`_split_candles` 把已收盘 K 线用于 seed ATR，未收盘的当前 K 线作为 `live_candle` 初始化实时 K 线。预热失败的合约仍加入，靠实时 K 线自行就绪。
 - 提醒通过 `AlertDispatcher.publish` 非阻塞投递，每个通道独立队列和后台任务，绝不能在成交循环里 `await` 通知发送。
 - `GateRestClient` 是同步 `urllib` 实现，异步代码中通过 `asyncio.to_thread` 调用。只重试 408/429/5xx 与网络/读取/JSON 解析类临时错误，其他 4xx 直接抛出。
+- REST 请求与 WebSocket 握手都带 `gate.SIZE_DECIMAL_HEADERS`（`X-Gate-Size-Decimal: 1`）：允许小数张数的合约（`enable_decimal`）不带它时成交张数被截成整数，放量、冷门启动的成交额会被低估。
 
 ### 瞬时异动与短时异动（spike/）
 

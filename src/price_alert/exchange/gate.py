@@ -44,6 +44,10 @@ GATE_MINUTE_HISTORY = 10_000
 MINUTE_CANDLES_PER_REQUEST = 1000
 # 提醒里附带的合约交易页，末尾拼接合约名。
 TRADE_PAGE_URL = "https://www.gate.com/zh/futures/USDT/"
+# 允许小数张数的合约（contracts 的 enable_decimal 为真），Gate 默认把成交张数截成整数（0.6 张变 0），
+# 带上这个头才返回小数。不带时放量、冷门启动的成交额被低估（实测 BTW 少两到四成、PEPE 少 5%~8%），
+# 成交量加权均价也会失真；REST 与 WebSocket 都要带。
+SIZE_DECIMAL_HEADERS = {"X-Gate-Size-Decimal": "1"}
 
 
 def price_decimals(order_price_round: Any) -> int | None:
@@ -340,7 +344,7 @@ class GateRestClient:
         query = f"?{urllib.parse.urlencode(params)}" if params else ""
         request = urllib.request.Request(  # noqa: S310 - 基础地址来自本地配置
             f"{self.base_url}{path}{query}",
-            headers={"Accept": "application/json", "User-Agent": "price_alert/1.0"},
+            headers={"Accept": "application/json", "User-Agent": "price_alert/1.0", **SIZE_DECIMAL_HEADERS},
         )
         for attempt in range(self.retries):
             is_last_attempt = attempt == self.retries - 1
@@ -540,6 +544,7 @@ class GateTradeFeed:
     async def stream(self) -> AsyncIterator[PriceTick]:
         async with self._connect(
             self.url,
+            additional_headers=SIZE_DECIMAL_HEADERS,
             ping_interval=20,
             # pong 与成交推送共用一条 TCP 流，拥塞时被队头阻塞，RTT 可从 200 毫秒涨到二十几秒。
             # 放宽到 30 秒，断线判定交给 stream_loop 按成交时间戳的滞后熔断，keepalive 只兜底死连接。

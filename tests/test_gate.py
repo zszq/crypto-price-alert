@@ -153,6 +153,28 @@ def test_rest_retries_rate_limit_and_body_read_failures(monkeypatch):
     assert len(calls) == 3
 
 
+def test_rest_requests_ask_for_decimal_sizes(monkeypatch):
+    headers = []
+
+    def fake_urlopen(request, timeout):
+        headers.append({name.lower(): value for name, value in request.header_items()})
+        return FakeResponse(b"[]")
+
+    monkeypatch.setattr(gate.urllib.request, "urlopen", fake_urlopen)
+    GateRestClient("https://example.test").fetch_tickers()
+
+    assert headers[0]["x-gate-size-decimal"] == "1"
+
+
+def test_decimal_trade_sizes_are_kept():
+    # 带了小数头后 Gate 把张数写成字符串小数，不能再被截成整数。
+    message = json.dumps(update(trade(size="-0.6")))
+
+    assert parse_trade_message(message)[0].size == 0.6
+    tick = gate.parse_rest_trade(history_trade(9, 1_790_645_229.845, size="1.6"))
+    assert tick is not None and tick.size == 1.6
+
+
 def test_rest_raises_after_exhausting_retries(monkeypatch):
     client, calls = rest_with_responses(monkeypatch, [http_error(503)] * 3)
 
@@ -212,6 +234,25 @@ def test_feed_subscribes_in_chunks_and_skips_undecodable_messages():
 
     assert [request["payload"] for request in websocket.sent] == [["BTC_USDT", "ETH_USDT"], ["SOL_USDT"]]
     assert tick.symbol == "SOL_USDT"
+
+
+def test_feed_connects_asking_for_decimal_sizes():
+    options = {}
+
+    def connect(url, **kwargs):
+        options.update(kwargs)
+        return FakeWebSocket(lambda request: [ack(request), update(trade())])
+
+    async def scenario():
+        feed = GateTradeFeed("wss://example.test", connect=connect)
+        await feed.set_symbols(["BTC_USDT"])
+        stream = feed.stream()
+        await anext(stream)
+        await stream.aclose()
+
+    asyncio.run(scenario())
+
+    assert options["additional_headers"] == {"X-Gate-Size-Decimal": "1"}
 
 
 def test_failed_batch_subscription_is_retried_per_symbol_and_bad_symbol_is_reported():
