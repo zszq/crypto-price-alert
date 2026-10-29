@@ -273,5 +273,8 @@ def test_only_detectors_judging_trade_history_ask_for_backfill():
     instant = next(entry for entry in build_detectors(gated) if entry.name == "瞬时异动")
     assert instant.history is instant.detector and instant.history.history_seconds == 3600
 
+    # 日常配置的瞬时异动（研究第七轮方案 C）只开前置走势，补到最长的长窗口 180 + 300 秒即可，不需要 1 小时。
     daily = {entry.name: entry for entry in build_detectors(load_config(Path("config/default")))}
-    assert daily["瞬时异动"].history is None and daily["短时异动"].history is not None
+    assert daily["瞬时异动"].history is daily["瞬时异动"].detector
+    assert daily["瞬时异动"].history.history_seconds == 480
+    assert daily["短时异动"].history is not None
