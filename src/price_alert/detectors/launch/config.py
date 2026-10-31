@@ -13,18 +13,17 @@ class LaunchSideConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
-    # 24 小时成交额不足 100 万的币提醒后多半没人跟进；不再提高，是因为启动中的币成交额涨得快、
-    # 多数第一波刚过就会入池，再提高就开始漏掉之后大涨的提醒（6.6 天回测）。
+    # 24 小时成交额不足 100 万的币提醒后多半没人跟进；也不宜更高：启动中的币成交额涨得快、
+    # 多数第一波刚过就会入池，门槛再高就会漏掉之后大涨的提醒。
     min_volume_24h_quote: float = Field(default=1_000_000, ge=0)
     max_volume_24h_quote: float | None = Field(default=None, gt=0)
     window_minutes: int = Field(default=5, ge=1, le=60)
     # 基准期加窗口不超过 1500 分钟，预热一次请求就能取完（Gate 单次上限 2000 根）。
     baseline_minutes: int = Field(default=360, ge=30, le=1440)
     # 量比：窗口成交额是基准期同长度均值的多少倍，按相对放大衡量，不必按币分别定门槛。
-    # 半年回测中从 5 降到 3，多报的都是基准期本就活跃的币，假启动不增反降。
     min_volume_ratio: float = Field(default=3.0, gt=1, le=1000)
-    # 拉升后成交随即冷清的假启动几乎都是窗口成交额只有几万的冷门币；提到 10 万的效果与
-    # 「拉升后再观察几分钟成交」相当，却不必延迟提醒，大行情也一段不漏。
+    # 拉升后成交随即冷清的假启动几乎都是窗口成交额只有几万的冷门币：用绝对成交额挡掉它们，
+    # 不必等拉升后再观察几分钟成交、推迟提醒。
     min_window_quote: float = Field(default=100_000, ge=0)
     min_change_percent: float = Field(default=3.0, gt=0, le=100)
     require_breakout: bool = True
@@ -32,8 +31,8 @@ class LaunchSideConfig(BaseModel):
     realert_step_percent: float = Field(default=5.0, ge=0, le=100)
     # 涨跌幅上限：窗口内就走完这么多的多是插针式拉盘，提醒时已在高点；None 表示不设上限。
     max_change_percent: float | None = Field(default=15.0, gt=0, le=1000)
-    # 涨跌幅从窗口内最低价（下跌为最高价）算起，而不是窗口前一根收盘价。最近两年的回测中，
-    # 两个方向都是提醒多约 1/4~1/3、准确率低 1~1.5 个百分点（launch_grid.md 第四轮），所以默认关闭。
+    # 涨跌幅从窗口内最低价（下跌为最高价）算起，而不是窗口前一根收盘价。默认关闭：
+    # 多报的是窗口内先反向再拉回的行情，这类提醒更不准。
     change_from_window_extreme: bool = False
 
     @model_validator(mode="after")

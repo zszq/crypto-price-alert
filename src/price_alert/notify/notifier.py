@@ -65,7 +65,7 @@ SPIKE_LABEL_COLOR = Fore.CYAN
 TREND_LABEL_COLOR = Fore.LIGHTMAGENTA_EX
 # 放量启动提醒的标签（[放量上涨] 等）：亮黄色，放量启动优先级最高，用最醒目的颜色；与金黄的交易对分得开，不带涨跌含义。
 LAUNCH_LABEL_COLOR = Fore.LIGHTYELLOW_EX
-# 冷门启动提醒的标签：亮蓝色，与放量启动分开，准确率较低的这一类一眼就能认出。
+# 冷门启动提醒的标签：亮蓝色，与放量启动分开，可靠程度不同的两类一眼就能认出。
 DORMANT_LABEL_COLOR = Fore.LIGHTBLUE_EX
 # 反弹回落提醒的标签（[下跌反弹]/[冲高回落]）：亮白色，不与方向色、交易对、其他标签撞色；
 # 正文仍按急动方向着色，靠标签与瞬时、短时异动区分。

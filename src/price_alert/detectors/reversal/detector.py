@@ -1,6 +1,6 @@
 """反弹回落检测器：在瞬时、短时异动共用的单窗口判定之上，再要求前置走势反向、成交笔数暴增。
 
-急动判定与 AtrSpikeDetector 完全相同（研究也按这套判定选参），所以继承它，只另外做三件事：
+急动判定与 AtrSpikeDetector 完全相同（门槛也是按这套判定定的），所以继承它，只另外做三件事：
 - 让基类记逐秒价格与累计成交笔数（前置走势与成交暴增的计算与短时异动窗口的附加条件共用基类的实现）；
 - 配置了反向极值距离时，另记最近 24 小时已收盘的 1 分钟 K 线高低点（基类的 K 线只喂给 ATR，不保留）；
 - 可以提醒的那一秒再判这几个条件：不满足只拦这一秒、不清零确认，与基类对补齐秒、空档复核失败的处理一致。
@@ -94,7 +94,7 @@ class ReversalDetector(AtrSpikeDetector):
         # 不判反向极值时不记 K 线：每个合约省掉 1440 根的内存与逐分钟的追加。
         self._track_bars = rule.max_extreme_distance_percent is not None
         self._bars: dict[str, deque[_Bar]] = {}
-        # 触发结算的那笔成交价：反向极值距离按它算（研究的入场价），提醒里的价格仍是那一秒的 VWAP。
+        # 触发结算的那笔成交价：反向极值距离按它算（看到提醒时能成交的价格），提醒里的价格仍是那一秒的 VWAP。
         self._settle_price: float | None = None
 
     def add_symbol(
@@ -138,7 +138,7 @@ class ReversalDetector(AtrSpikeDetector):
         was_stale = state.atr_stale
         alerts = super().add_tick(tick)
         # 基类跨入新一分钟时换掉实时 K 线对象，旧的那根就此收盘。放在 super 之后追加：这笔成交触发结算的秒
-        # 看到的仍只是它所在分钟之前的 K 线，与研究「不含被判定那一秒所在的分钟」一致。
+        # 看到的仍只是它所在分钟之前已收盘的 K 线，与预热、回补用 REST 重建的 K 线同一口径。
         current = state.live_bar
         if previous is not None and current is not None and current is not previous and not was_stale:
             self._close_bar(symbol, previous.to_candle(), current.timestamp)
@@ -260,7 +260,7 @@ class ReversalDetector(AtrSpikeDetector):
     def _extreme_distance(self, symbol: str, second: datetime, direction: Literal["surge", "drop"]) -> float | None:
         """触发价相对此前 24 小时已收盘 K 线（不含 second 所在分钟）最低价 / 最高价的涨跌幅，顺急动方向为正。
 
-        K 线覆盖不满 24 小时（新上线、回补不全）时返回 None，与研究里数据不足不提醒一致。
+        K 线覆盖不满 24 小时（新上线、回补不全）时返回 None：不知道真正的极值在哪，宁可不报。
         """
         bars = self._bars.get(symbol)
         price = self._settle_price

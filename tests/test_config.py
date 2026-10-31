@@ -201,7 +201,7 @@ def test_rejects_long_window_not_longer_than_short_window():
         {"spike": {"lookback_seconds": 30}},
         {"spike": {"cooldown_seconds": 30}},
         {"alerts": {"cooldown_seconds": 30}},
-        # 短时异动段先由 indicator 改名为 move、再改为 spike，合约池门槛从 gate 移到了这一段。
+        # 以前用过的段名（indicator、move）与写在 gate 里的合约池门槛。
         {"indicator": {"atr_period": 14}},
         {"move": {"enabled": False}},
         {"gate": {"min_volume_24h_quote": 8_000_000}},
@@ -242,7 +242,7 @@ def test_streak_defaults_and_validation():
 
 
 def test_spike_gates_default_off_and_validate_ranges():
-    # 瞬时异动代码默认不判两个附加条件；短时异动代码默认就是研究第四轮方案 A，两个窗口都开。
+    # 瞬时异动代码默认不判两个附加条件；短时异动代码默认两个窗口都开。
     config = AppConfig()
     for window in (config.instant.short_window, config.instant.long_window):
         assert (window.min_prior_move_percent, window.min_trade_burst_ratio, window.prior_seconds) == (None, None, 300)
@@ -259,7 +259,7 @@ def test_spike_gates_default_off_and_validate_ranges():
 
 
 def test_only_detectors_judging_trade_history_ask_for_backfill():
-    # 代码默认瞬时异动不判附加条件、不需要补逐秒成交；短时异动（方案 A）与反弹回落都要 1 小时成交暴增。
+    # 代码默认瞬时异动不判附加条件、不需要补逐秒成交；短时异动与反弹回落都要 1 小时成交暴增。
     entries = {entry.name: entry for entry in build_detectors(AppConfig())}
     assert entries["瞬时异动"].history is None
     for name in ("短时异动", "反弹回落"):

@@ -9,8 +9,8 @@ from typing import Literal
 from price_alert.common.formatting import beijing_time, describe_window, format_price
 from price_alert.detectors.spike.windows import WindowName
 
-# 同一个 AtrSpikeDetector 按两组参数跑成两种提醒：瞬时异动（instant，即研究第四轮之前的短时异动，
-# 急拉急砸都报、量大）与短时异动（spike，研究第四轮方案 A，只报逆势、成交涌入的急动）。kind 写进 JSONL，下游据此区分。
+# 同一个 AtrSpikeDetector 按两组参数跑成两种提醒：瞬时异动（instant，急拉急砸都报、量大）
+# 与短时异动（spike，只报逆势、成交涌入的急动）。kind 写进 JSONL，下游据此区分。
 SpikeKind = Literal["instant", "spike"]
 NAMES: dict[SpikeKind, str] = {"instant": "瞬时异动", "spike": "短时异动"}
 # 提醒标签的前缀，接「急涨」「急跌」。

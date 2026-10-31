@@ -650,7 +650,7 @@ class AtrSpikeDetector:
             return measured(Outcome.MOVE_FADED, confirmed)
         if window.min_prior_move_percent is None and window.min_trade_burst_ratio is None:
             return measured(Outcome.ALERT, confirmed)
-        # 两个附加条件只在可以提醒的那一秒判定，不满足同样只拦这一秒、不清零确认，与研究的判定一致。
+        # 两个附加条件只在可以提醒的那一秒判定，不满足同样只拦这一秒、不清零确认：急动本身仍成立，下一秒条件满足就该报。
         history = self._history.get(symbol, _EMPTY_HISTORY)
         prior = self._prior_change(
             history, current.timestamp, baseline_price, direction, window.lookback_seconds + window.prior_seconds

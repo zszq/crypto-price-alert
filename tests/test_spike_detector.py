@@ -744,7 +744,7 @@ def test_detector_without_streak_rule_never_adds_streak_alerts():
     assert all(isinstance(alert, PriceAlert) for alert in alerts)
 
 
-# ---- 前置走势与成交暴增两个附加条件（研究第四轮）----
+# ---- 前置走势与成交暴增两个附加条件 ----
 
 GATED_START = BASE + timedelta(minutes=3)
 

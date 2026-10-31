@@ -198,7 +198,7 @@ def test_simulate_skips_windows_when_spike_is_disabled(capsys):
     assert "急涨]" not in capsys.readouterr().out
 
 
-def test_lock_path_is_per_config_file_and_default_keeps_its_old_name():
+def test_lock_path_is_per_config_file_and_default_has_no_suffix():
     assert cli.lock_path("config/default") == Path("data/price-alert.lock")
     assert cli.lock_path("config/default/") == Path("data/price-alert.lock")
     assert cli.lock_path("config/default.yaml") == Path("data/price-alert.lock")

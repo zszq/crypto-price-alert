@@ -40,8 +40,8 @@ def test_each_config_builds_its_own_kind(config, kind):
     assert build_detector(config).kind == kind
 
 
-def test_spike_defaults_are_scheme_a_without_streak():
-    # 短时异动的代码默认值就是研究第四轮方案 A；连续提醒只属于瞬时异动，这一段没有 streak 键。
+def test_spike_defaults_enable_gates_without_streak():
+    # 短时异动代码默认两个窗口都开附加条件；连续提醒只属于瞬时异动，这一段没有 streak 键。
     short, long = build_windows(SpikeConfig())
     assert (short.lookback_seconds, short.min_change_percent, short.trigger_atr_multiple) == (10, 1.0, 1.0)
     assert (short.confirmation_seconds, short.min_window_trades, short.cooldown_seconds) == (1, 15, 30)

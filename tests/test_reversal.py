@@ -300,7 +300,7 @@ def test_pullback_measured_from_the_day_high():
 def test_needs_a_full_day_of_candles_when_extreme_distance_is_set():
     # 只有 15 根预热 K 线：不满 24 小时不知道当天极值在哪，宁可不报。
     assert feed_day(extreme_detector(), warmup_candles()) == []
-    # 不配置这一条件时不记 K 线，行为与之前相同。
+    # 不配置这一条件时不记 K 线，也不因 K 线不满 24 小时而少报。
     instance = detector()
     assert len(feed_day(instance, warmup_candles())) == 1
     assert instance._bars == {}

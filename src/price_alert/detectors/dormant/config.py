@@ -1,7 +1,4 @@
-"""冷门启动提醒的配置模型（YAML 的 dormant 段：共用的开关与合约池、main 与 slow 两组参数）。
-
-现行一组的默认值见 research/launch_trade/dormant_calm.md 的开发期选参；慢启动一组见 dormant_slow.md 第三节第 2 小节。
-"""
+"""冷门启动提醒的配置模型（YAML 的 dormant 段：共用的开关与合约池、main 与 slow 两组参数）。"""
 
 from __future__ import annotations
 
@@ -74,7 +71,7 @@ class DormantRuleConfig(BaseModel):
 
 
 class DormantMainConfig(DormantRuleConfig):
-    """现行一组（YAML 的 dormant.main），始终启用；默认值见 dormant_calm.md 的开发期选参。"""
+    """现行一组（YAML 的 dormant.main），始终启用。"""
 
     group: ClassVar[DormantGroup] = DormantGroup.MAIN
 
@@ -97,16 +94,15 @@ class DormantMainConfig(DormantRuleConfig):
 class DormantSlowConfig(DormantRuleConfig):
     """慢启动一组（YAML 的 dormant.slow）：涨前近乎一条直线、60 分钟里量价缓慢拉升的冷门币。
 
-    默认值是 dormant_slow.md 第三节第 2 小节按 JCT_USDT 的形态挑的一组：判据未通过，样本外准确率约 0.34
-    （现行一组约 0.45）、每天多约 6 条，是用户知情后的例外，所以代码默认关闭，只由 YAML 开启。
-    研究没考察的实体占比、涨前波动倍数、最后一分钟成交额与第 N 波补报默认不限。
-    效率、量比、回落与跟踪补报（follow_*，dormant_waves.md 判据未通过）只在这一组开放，跟踪补报代码默认关闭。
+    比现行一组更不可靠，所以代码默认关闭，只由 YAML 开启。
+    实体占比、涨前波动倍数、最后一分钟成交额与第 N 波补报默认不限。
+    效率、量比、回落与跟踪补报（follow_*）只在这一组开放，跟踪补报代码默认关闭。
     """
 
     group: ClassVar[DormantGroup] = DormantGroup.SLOW
 
     enabled: bool = False
-    # 研究考察了 30~120 分钟的窗口，超出这个范围没有依据。
+    # 慢启动要看一两个小时的缓慢拉升，上限比现行一组的 60 分钟宽。
     window_minutes: int = Field(default=60, ge=1, le=120)
     max_prior_quote: float = Field(default=1_000_000, gt=0)
     min_window_quote: float = Field(default=10_000, ge=0)
@@ -124,7 +120,6 @@ class DormantSlowConfig(DormantRuleConfig):
     min_volume_ratio: float = Field(default=3.0, ge=0)
     # 从窗口最高价回落的比例（占窗口起点到最高价涨幅）上限；null 即不限。
     max_retrace: float | None = Field(default=0.3, ge=0, le=1)
-    # 研究按冷却 120 分钟、冷却内不补报评估。
     cooldown_minutes: int = Field(default=120, ge=1, le=1440)
     realert_step_percent: float | None = Field(default=None, gt=0, le=100)
     # 跟踪补报：提醒（含补报）后收盘价比上次提醒价再涨这么多（百分比）就补报下一波，不看其他条件；null 即不跟踪。

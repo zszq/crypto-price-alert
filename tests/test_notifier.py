@@ -130,7 +130,7 @@ def make_alert(symbol: str = "BTC_USDT") -> PriceAlert:
         trade_count=10,
         volume_24h_quote=1_000_000_000,
         timestamp=datetime(2026, 1, 1, tzinfo=UTC),
-        # 这些用例原本针对改名前的短时异动（现在的瞬时异动）：木琴音效、[瞬时急涨] 标签。
+        # 这些用例针对瞬时异动：木琴音效、[瞬时急涨] 标签。
         kind="instant",
     )
 

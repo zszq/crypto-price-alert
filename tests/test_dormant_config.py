@@ -13,8 +13,7 @@ from price_alert.detectors.dormant.rule import DormantGroup, DormantMetrics, Dor
 from price_alert.exchange.universe import VolumeRange
 
 
-def test_defaults_are_the_research_selection():
-    # research/launch_trade/dormant_calm.md 开发期选出的一组。
+def test_main_group_defaults():
     assert DormantConfig().main.to_rule() == DormantRule(
         window_minutes=10,
         max_prior_quote=1_000_000,
@@ -64,7 +63,7 @@ def test_main_group_rejects_inconsistent_values(values, message):
     ("values", "message"),
     [
         ({"min_volume_24h_quote": 5_000_000}, "max_volume_24h_quote 必须大于 min_volume_24h_quote"),
-        # 旧格式把现行一组的门槛写在顶层，改成 main 段后直接报错，不会悄悄退回代码默认值。
+        # 门槛写在顶层而不是 main 段里时直接报错，不会悄悄退回代码默认值。
         ({"window_minutes": 15}, "Extra inputs"),
         ({"unknown": 1}, "Extra inputs"),
     ],
@@ -127,13 +126,12 @@ def test_rule_description_lists_every_threshold():
     )
 
 
-def test_slow_group_is_off_by_default_and_uses_the_research_shape():
+def test_slow_group_is_off_by_default_and_has_its_own_defaults():
     config = DormantConfig()
     assert not config.slow.enabled
     assert config.rules() == (config.main.to_rule(),)
 
     slow = DormantConfig.model_validate({"slow": {"enabled": True}})
-    # research/launch_trade/dormant_slow.md 第三节第 2 小节按 JCT 形态挑的第一组。
     assert slow.rules() == (
         config.main.to_rule(),
         DormantRule(

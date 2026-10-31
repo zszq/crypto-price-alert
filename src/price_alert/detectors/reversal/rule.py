@@ -10,13 +10,13 @@ from price_alert.detectors.spike.windows import BURST_BASE_SECONDS as BURST_BASE
 from price_alert.detectors.spike.windows import BURST_SECONDS as BURST_SECONDS
 from price_alert.detectors.spike.windows import MAX_BURST_RATIO as MAX_BURST_RATIO
 
-# ATR 口径与瞬时、短时异动的代码默认值相同（研究用的就是这一套），不单独开放配置。
+# ATR 口径与瞬时、短时异动的代码默认值相同，不单独开放配置：急动门槛是按这套口径定的。
 ATR_PERIOD = 14
 CANDLE_INTERVAL = "1m"
 CANDLE_INTERVAL_SECONDS = 60
 WARMUP_CANDLES = 50
 MAX_ATR_AGE_SECONDS = 180
-# 反向极值距离回看此前多少分钟的已收盘 1 分钟 K 线：研究第三轮 720 / 1440 / 2880 分钟里选中 24 小时，不开放配置。
+# 反向极值距离回看此前多少分钟的已收盘 1 分钟 K 线，不开放配置：距离上限是按 24 小时定的。
 EXTREME_MINUTES = 1440
 
 

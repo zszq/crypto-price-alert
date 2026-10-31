@@ -45,7 +45,7 @@ MINUTE_CANDLES_PER_REQUEST = 1000
 # 提醒里附带的合约交易页，末尾拼接合约名。
 TRADE_PAGE_URL = "https://www.gate.com/zh/futures/USDT/"
 # 允许小数张数的合约（contracts 的 enable_decimal 为真），Gate 默认把成交张数截成整数（0.6 张变 0），
-# 带上这个头才返回小数。不带时放量、冷门启动的成交额被低估（实测 BTW 少两到四成、PEPE 少 5%~8%），
+# 带上这个头才返回小数。不带时放量、冷门启动的成交额会被低估，
 # 成交量加权均价也会失真；REST 与 WebSocket 都要带。
 SIZE_DECIMAL_HEADERS = {"X-Gate-Size-Decimal": "1"}
 

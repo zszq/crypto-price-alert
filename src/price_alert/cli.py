@@ -290,7 +290,7 @@ def print_universe(config: AppConfig) -> None:
 
 def lock_path(config_path: str) -> Path:
     """同一份配置只允许一个实例（否则重复提醒、抢写同一个 JSONL），不同配置可同时运行。
-    默认配置（config/default 目录，拆分前是 config/default.yaml）沿用原锁文件名，升级时仍能挡住旧版实例。"""
+    日常监控的 config/default 用不带文件名的 data/price-alert.lock，其他配置按文件名各用一把锁。"""
     stem = Path(config_path).stem
     return Path("data/price-alert.lock" if stem == "default" else f"data/price-alert-{stem}.lock")
 

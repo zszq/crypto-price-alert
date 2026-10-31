@@ -16,7 +16,7 @@ from price_alert.detectors.spike.alerts import PriceAlert
 Direction = Literal["surge", "drop"]
 
 # 标签以对应短窗口提醒的「瞬时急涨/瞬时急跌」开头，表明它是瞬时异动的延伸，而不是另一种独立的提醒。
-# 只串瞬时异动：短时异动每天约 60 条，很少连发。
+# 只串瞬时异动：短时异动提醒少，很少连发。
 LABELS: dict[Direction, str] = {"surge": "瞬时急涨·连续急涨", "drop": "瞬时急跌·连续急跌"}
 
 

@@ -23,7 +23,7 @@ class WindowConfig(BaseModel):
     confirmation_seconds: int
     min_window_trades: int
     cooldown_seconds: int
-    # 两个附加条件（研究第四轮：只在逆势、成交突然涌入时急动才更常延续）；瞬时异动代码默认不判，短时异动默认开。
+    # 两个附加条件：只有逆势、成交突然涌入的急动才更常沿提醒方向延续；瞬时异动代码默认不判，短时异动默认开。
     prior_seconds: int = Field(default=300, ge=60, le=3600)
     min_prior_move_percent: float | None = Field(default=None, ge=0, le=100)
     min_trade_burst_ratio: float | None = Field(default=None, gt=0, lt=MAX_BURST_RATIO)
@@ -69,7 +69,7 @@ class LongWindowConfig(WindowConfig):
 
 
 class SpikeShortWindowConfig(ShortWindowConfig):
-    """短时异动的短窗口：研究第四轮方案 A（research/move_accuracy/move_accuracy.md 第十三节）。"""
+    """短时异动的短窗口：窗口更短、确认更快，靠两个附加条件筛掉多半会回吐的急动。"""
 
     lookback_seconds: int = Field(default=10, ge=5, le=3600)
     trigger_atr_multiple: float = Field(default=1.0, gt=0, le=20)
@@ -81,7 +81,7 @@ class SpikeShortWindowConfig(ShortWindowConfig):
 
 
 class SpikeLongWindowConfig(LongWindowConfig):
-    """短时异动的长窗口：方案 A 沿用研究时的长窗口门槛，加与短窗口相同的两个附加条件。"""
+    """短时异动的长窗口：加与短窗口相同的两个附加条件。"""
 
     trigger_atr_multiple: float = Field(default=1.8, gt=0, le=20)
     min_change_percent: float = Field(default=1.6, gt=0, le=100)
@@ -95,10 +95,10 @@ class StreakConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
-    # 实际日志中同向连发 3 条的几乎都是累计 5% 以上的单边行情，2 条则大量是一次插针的余波。
+    # 同向连发 3 条才像持续的单边行情，2 条常常只是一次插针的余波。
     min_alerts: int = Field(default=3, ge=2, le=10)
     # 相邻同向提醒至少隔一个短窗口冷却，这里只配冷却之外的容差（重新确认、短暂停顿）；按冷却加容差，
-    # 调短窗口冷却时连续提醒不会失效。实际日志里冷却 30 秒时，持续行情的间隔在 30~60 秒之间。
+    # 调短窗口冷却时连续提醒不会失效。
     gap_tolerance_seconds: int = Field(default=30, ge=1, le=3600)
 
 

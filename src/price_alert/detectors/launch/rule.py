@@ -38,7 +38,7 @@ CONDITION_LABELS: dict[Condition, str] = {
 @dataclass(frozen=True, slots=True)
 class LaunchRule:
     """一个方向的全部门槛。放量上涨与放量下跌各用一份：放量下跌之后常有恐慌盘回补，
-    同样的门槛对两个方向效果不同，回测选出的参数也不一样。"""
+    同样的门槛对两个方向效果不同，两个方向要各自定参数。"""
 
     direction: Direction
     window_minutes: int
@@ -51,7 +51,7 @@ class LaunchRule:
     realert_step_percent: float = 5.0
     max_change_percent: float | None = 15.0
     # 涨跌幅的起点改用窗口内最低价（下跌为最高价）。窗口内先反向、再拉回的也能报到，
-    # 但回测中这类提醒更不准（research/launch_trade/launch_grid.md 第四轮），所以默认不开。
+    # 但这类提醒更不准，所以默认不开。
     change_from_window_extreme: bool = False
 
     def __post_init__(self) -> None:

@@ -18,7 +18,7 @@ WindowName = Literal["short", "long"]
 WINDOW_LABELS: dict[WindowName, str] = {"short": "短窗口", "long": "长窗口"}
 
 # 成交笔数暴增：最近 BURST_SECONDS 秒的成交笔数与最近 BURST_BASE_SECONDS 秒的每分钟平均相比。
-# 两个长度固定：研究只验证过 1 分钟对 1 小时（research/move_accuracy/move_accuracy.md），不开放成配置。
+# 两个长度固定、不开放成配置：倍数门槛是按 1 分钟对 1 小时定的，换了长度门槛就失去含义。
 BURST_SECONDS = 60
 BURST_BASE_SECONDS = 3600
 # 全部成交都落在最近 1 分钟时倍数最大，等于两个长度之比；门槛不小于它就永远不会提醒。
@@ -37,7 +37,7 @@ class SpikeWindow:
     min_window_trades: int
     cooldown_seconds: int
     # 前置走势：窗口开始前 prior_seconds 秒到窗口基准价，逆着急动方向至少走了 min_prior_move_percent；None 不判。
-    # 研究第四轮：急动之后多半回吐，只有逆势的急动（急跌一段后的急拉）更常沿提醒方向继续走。
+    # 急动之后多半回吐，只有逆势的急动（急跌一段后的急拉）更常沿提醒方向继续走。
     prior_seconds: int = 300
     min_prior_move_percent: float | None = None
     # 最近 1 分钟成交笔数 ÷ 最近 1 小时每分钟平均笔数的下限；None 不判。

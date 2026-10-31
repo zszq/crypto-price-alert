@@ -21,7 +21,7 @@ def test_defaults_and_build_rule():
     assert (rule.min_volume_ratio, rule.min_window_quote, rule.min_change_percent) == (3.0, 100_000, 3.0)
     assert rule.require_breakout is True
     assert (rule.cooldown_minutes, rule.realert_step_percent, rule.max_change_percent) == (15, 5.0, 15.0)
-    # 默认与原来一样，从窗口前一根收盘价算涨跌幅；YAML 打开后传到规则里。
+    # 默认从窗口前一根收盘价算涨跌幅；YAML 打开后传到规则里。
     assert rule.change_from_window_extreme is False
     assert LaunchConfig.model_validate({"rise": {"change_from_window_extreme": True}}).rise.to_rule(
         "surge"
@@ -96,8 +96,8 @@ def test_rejects_inconsistent_settings(side, values, message):
 
 
 def test_old_flat_keys_are_rejected():
-    # 旧版写在 launch 顶层的键已经移到 rise / fall 下，留在顶层要直接报错，不能悄悄被忽略；
-    # 下跌段曾叫 drop，同样要报错，否则旧配置里的下跌参数会被当作没写、退回默认关闭。
+    # 门槛只能写在 rise / fall 下，写在 launch 顶层或 launch.drop 里要直接报错：
+    # 悄悄忽略的话，以为改了的参数其实退回了默认值（下跌还会默认关闭）。
     for values in ({"enabled": True}, {"alert_drops": True}, {"min_volume_ratio": 3}, {"drop": {"enabled": True}}):
         with pytest.raises(ValidationError):
             AppConfig.model_validate({"launch": values})

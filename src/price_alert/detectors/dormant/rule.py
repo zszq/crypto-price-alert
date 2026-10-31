@@ -1,11 +1,8 @@
 """冷门启动的判定规则：纯函数，实时检测、回放与测试共用。
 
-门槛来自 research/launch_trade/dormant_solo.md 与 dormant_calm.md，按开发期准确率与冷门大行情召回率选出；
-量比、突破、回吐没让提醒更准，现行一组不设。冷门币一两笔单子就能撑起涨幅，有成交的分钟数是「有人在持续买」的条件。
-以下几项都是用户知情后的例外（判据未通过或未经选参）：
-- 涨幅相对涨前波动的倍数、单分钟涨幅上限、总实体占比下限、涨前波动上限：用户要求的形态（dormant_calm.md 第四、六节）；
-- 最后一分钟成交额、后半窗口成交额占比：dormant_early.md 第三轮，代码默认不限，只由 YAML 开启；
-- 效率、量比、回吐：只给慢启动一组用（dormant_slow.md），代码默认不限。
+冷门币一两笔单子就能撑起涨幅，所以除了涨幅与成交额，还要求多分钟有成交（有人在持续买）、涨前平稳、
+不靠一两分钟跳涨、实体饱满。最后一分钟成交额、后半窗口成交额占比代码默认不限；
+效率、量比、回吐只给慢启动一组用，代码默认不限。
 """
 
 from __future__ import annotations
@@ -18,9 +15,10 @@ from itertools import pairwise
 
 from price_alert.common.models import Candle
 
-# 「之前 24 小时」：判断是否冷门的区间，回测只验证过这一个长度，不开放配置。
+# 「之前 24 小时」：判断是否冷门的区间。不开放配置：冷门门槛 max_prior_quote 是 24 小时的成交额，
+# 换了长度门槛就失去含义。
 PRIOR_MINUTES = 1440
-# 「涨前波动」的统计区间（窗口之前的分钟数）：回测在 60 与 240 中选了 240，不开放配置；
+# 「涨前波动」的统计区间（窗口之前的分钟数），不开放配置：涨前波动上限与倍数门槛都是按这个长度定的。
 # 须短于 PRIOR_MINUTES，保留的 K 线才够用。
 CALM_MINUTES = 240
 
@@ -66,7 +64,7 @@ CONDITION_LABELS: dict[Condition, str] = {
 
 
 def late_minutes(window_minutes: int) -> int:
-    """「后半窗口」的分钟数：最后 ⌈W/2⌉ 根，与回测口径相同（奇数窗口时中间那根算后半）。"""
+    """「后半窗口」的分钟数：最后 ⌈W/2⌉ 根（奇数窗口时中间那根算后半）。"""
     return (window_minutes + 1) // 2
 
 
@@ -90,8 +88,8 @@ class DormantRule:
     # 后半窗口（最后 late_minutes 根）成交额占比下限，0 即不限：成交集中在前半段、后面跟不上的容易回落。
     min_late_quote_share: float = 0.0
     cooldown_minutes: int = 60
-    # 冷却期内价格比上次提醒价再涨这么多（%）就再报「第 N 波」，None 即冷却内不再报。
-    # 回测中补报的准确率不低于第一次提醒（dormant_calm.md 第五节，判据全部通过）。
+    # 冷却期内价格比上次提醒价再涨这么多（%）就再报「第 N 波」，None 即冷却内不再报：
+    # 一段拉升中再涨一截同样值得提醒，冷却只挡原地不动的重复。
     realert_step_percent: float | None = 3.0
     # 效率（窗口净涨幅价差 ÷ 逐分钟收盘价差绝对值之和）下限，0 即不限：慢启动要一路往上，不是来回拉扯。
     min_efficiency: float = 0.0
@@ -100,8 +98,7 @@ class DormantRule:
     # 从窗口最高价回落的比例上限（回落 ÷ 窗口起点到最高价的涨幅），None 不限：提醒时还要在高位附近。
     max_retrace: float | None = None
     # 跟踪补报：提醒（含补报）后收盘价比上次提醒价再涨这么多（%）就补报下一波，不看其他条件；None 即不跟踪。
-    # 不同于 realert_step_percent：慢启动启动后涨前波动、效率很快不再满足，要求条件仍满足的第 N 波几乎报不出来
-    # （dormant_waves.md 第一节）。
+    # 不同于 realert_step_percent：慢启动启动后涨前波动、效率很快不再满足，要求条件仍满足的第 N 波几乎报不出来。
     follow_step_percent: float | None = None
     # 距上次提醒（含补报）超过这么久（分钟）还没再涨够，就停止跟踪：一路涨就一路跟，停涨了就结束。
     follow_minutes: int = 240

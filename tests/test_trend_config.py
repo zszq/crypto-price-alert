@@ -46,10 +46,10 @@ def test_unknown_keys_and_periods_are_rejected():
         AppConfig.model_validate({"trend": {"periods": {"2m": {}}}})
     with pytest.raises(ValidationError):
         AppConfig.model_validate({"trend": {"periods": {"3m": {"lookback": 5}}}})
-    # 1 分钟周期已移除。
+    # 1 分钟周期噪声太大，不提供。
     with pytest.raises(ValidationError):
         AppConfig.model_validate({"trend": {"periods": {"1m": {}}}})
-    # 已移除的配置项残留在旧 YAML 里时要报错，而不是被静默忽略。
+    # 不再支持的配置项留在 YAML 里时要报错，而不是被静默忽略。
     for removed in ({"exhaustion": {"enabled": False}}, {"cooldown_minutes": 30}, {"notify_end": True}):
         with pytest.raises(ValidationError):
             AppConfig.model_validate({"trend": removed})

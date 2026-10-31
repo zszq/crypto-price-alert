@@ -26,7 +26,7 @@ class DormantAlert:
     price_decimals: int | None = None
     # 冷却期内价格继续上涨的补报从 2 起算。
     wave: int = 1
-    # 慢启动一组准确率明显低于现行一组，标签分开，看到提醒就知道该信几分。
+    # 两组的可靠程度不同，标签分开，看到提醒就知道是哪一组、该信几分。
     group: DormantGroup = DormantGroup.MAIN
 
     # 只检测拉升；方向与颜色给按方向着色的通知代码用，与其他提醒一致。
