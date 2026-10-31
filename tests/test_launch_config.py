@@ -21,6 +21,11 @@ def test_defaults_and_build_rule():
     assert (rule.min_volume_ratio, rule.min_window_quote, rule.min_change_percent) == (3.0, 100_000, 3.0)
     assert rule.require_breakout is True
     assert (rule.cooldown_minutes, rule.realert_step_percent, rule.max_change_percent) == (15, 5.0, 15.0)
+    # 默认与原来一样，从窗口前一根收盘价算涨跌幅；YAML 打开后传到规则里。
+    assert rule.change_from_window_extreme is False
+    assert LaunchConfig.model_validate({"rise": {"change_from_window_extreme": True}}).rise.to_rule(
+        "surge"
+    ).change_from_window_extreme
     assert config.fall.model_dump(exclude={"enabled"}) == config.rise.model_dump(exclude={"enabled"})
 
 

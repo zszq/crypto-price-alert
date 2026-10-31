@@ -50,6 +50,9 @@ class LaunchRule:
     cooldown_minutes: int = 15
     realert_step_percent: float = 5.0
     max_change_percent: float | None = 15.0
+    # 涨跌幅的起点改用窗口内最低价（下跌为最高价）。窗口内先反向、再拉回的也能报到，
+    # 但回测中这类提醒更不准（research/launch_trade/launch_grid.md 第四轮），所以默认不开。
+    change_from_window_extreme: bool = False
 
     def __post_init__(self) -> None:
         if self.window_minutes < 1:
@@ -77,7 +80,8 @@ class LaunchRule:
 class LaunchMetrics:
     # 判定所用规则的方向，不是这段行情实际的涨跌方向（方向相反记为 Condition.DIRECTION）。
     direction: Direction
-    # 窗口开始前最后一根 K 线的收盘价，即这一小段行情的起点。
+    # 这一小段行情的起点：窗口开始前最后一根 K 线的收盘价；规则开了 change_from_window_extreme 时，
+    # 再与窗口内最低价（下跌为最高价）取更低（更高）的那个。
     start_price: float
     end_price: float
     change_percent: float
@@ -117,10 +121,16 @@ def evaluate_launch(history: Sequence[Candle], rule: LaunchRule) -> LaunchMetric
         raise ValueError(f"需要 {rule.history_minutes} 根 K 线，实际 {len(history)} 根")
     baseline = history[: rule.baseline_minutes]
     window = history[rule.baseline_minutes :]
+    direction = rule.direction
     start_price = baseline[-1].close
+    if rule.change_from_window_extreme:
+        # 带上前一根收盘价一起比，涨跌幅就不会小于默认口径，两者只差窗口内先反向再拉回的那一段。
+        if direction == "surge":
+            start_price = min(start_price, *(candle.low for candle in window))
+        else:
+            start_price = max(start_price, *(candle.high for candle in window))
     end_price = window[-1].close
     change_percent = (end_price / start_price - 1) * 100
-    direction = rule.direction
 
     window_quote = sum(candle.quote_volume for candle in window)
     # 用均值而不是中位数：冷门币多数分钟零成交，中位数常为 0，任何一点成交都会显得「放量」。

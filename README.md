@@ -490,6 +490,7 @@ $env:PRICE_ALERT_WEBHOOK_URL = "https://example.com/your-webhook"
 - `launch.<方向>.min_volume_ratio` / `min_window_quote` / `min_change_percent`：量比、窗口成交额（USDT）与涨跌幅门槛，默认 3 倍、100000、3%；窗口成交额门槛同时剔除拉升后没人跟进的冷门币；
 - `launch.<方向>.require_breakout`：是否要求收盘突破基准期高点（下跌为低点），默认开启；
 - `launch.<方向>.max_change_percent`：窗口涨跌幅上限，默认 15%，须大于 `min_change_percent`，null 表示不限；超过时不提醒，但按同样的冷却与再推进规则当作提醒记入；
+- `launch.<方向>.change_from_window_extreme`：涨跌幅（及其上限）是否从窗口内最低价（下跌为最高价）算起，默认关闭，即从窗口开始前一根 K 线的收盘价算起；开启后窗口内先反向、再拉回的也能报到，但回测中提醒更多、准确率更低（`research/launch_trade/launch_grid.md` 第四轮）；
 - `launch.<方向>.cooldown_minutes` / `realert_step_percent`：再次提醒的最小间隔（不能小于窗口）与价格须再推进的幅度，默认 15 分钟、5%；
 - `dormant.enabled`：是否启用冷门启动提醒，默认开启；关闭后不创建该检测器，也不会多订阅、多拉 K 线，现行一组（`dormant.main`）与慢启动一组（`dormant.slow`）都不报；
 - `dormant.min_volume_24h_quote` / `max_volume_24h_quote`：冷门启动的合约池范围，默认 0~3M；两组共用，上限要明显高于各组的 `max_prior_quote`，设为 null 不设上限；

@@ -97,6 +97,9 @@ def test_rule_description_lists_thresholds_and_repeat_policy():
     loose = replace(rule, require_breakout=False, baseline_minutes=90, max_change_percent=None)
     assert "突破" not in describe_launch_rule(loose)
     assert "涨幅 ≥ 3%" in describe_launch_rule(loose) and "近90分钟" in describe_launch_rule(loose)
+    assert "，从窗口最低价起的涨幅 3%~15%，" in describe_launch_rule(replace(rule, change_from_window_extreme=True))
+    drop = replace(rule, direction="drop", change_from_window_extreme=True)
+    assert "，从窗口最高价起的跌幅 3%~15%，" in describe_launch_rule(drop)
 
 
 def test_drop_rule_description_uses_drop_wording():

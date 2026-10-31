@@ -97,8 +97,21 @@ def _rolling_extreme(values, width, is_max):
 
 
 @njit(cache=True)
+def _start_price(close, win_high, win_low, t, window, extreme_sign):
+    start = close[t - window]
+    if extreme_sign > 0:
+        return min(start, win_low[t])
+    if extreme_sign < 0:
+        return max(start, win_high[t])
+    return start
+
+
+@njit(cache=True)
 def _extract(high, low, close, cum_quote, cum_uncovered, window, baseline, base_high, base_low, win_high, win_low,
-             min_ratio, min_quote, min_change, delays, horizons, forward, clip, cost):
+             min_ratio, min_quote, min_change, delays, horizons, forward, clip, cost, extreme_sign):
+    """extreme_sign 为起点价口径：0 是实盘口径（窗口前一根收盘，两个方向一起抽）；1 / -1 只抽放量上涨 / 下跌，
+    起点取窗口前一根收盘与窗口内最低价（最高价）中更低（更高）的那个，研究「从窗口极值算涨跌幅」是否更好。
+    把前一根收盘也算进去，是为了让这个口径的涨跌幅总不小于实盘口径，两者只差「窗口内先反向再拉回」的那部分。"""
     n = len(close)
     keep = np.zeros(n, np.bool_)
     for t in range(window + baseline - 1, n):
@@ -109,8 +122,8 @@ def _extract(high, low, close, cum_quote, cum_uncovered, window, baseline, base_
         quote = cum_quote[t + 1] - cum_quote[t - window + 1]
         if quote < min_quote:
             continue
-        change = (close[t] / close[t - window] - 1) * 100
-        if abs(change) < min_change:
+        change = (close[t] / _start_price(close, win_high, win_low, t, window, extreme_sign) - 1) * 100
+        if (change * extreme_sign if extreme_sign != 0 else abs(change)) < min_change:
             continue
         base = (cum_quote[t - window + 1] - cum_quote[first]) / baseline * window
         if base > 0 and quote / base < min_ratio:
@@ -130,10 +143,11 @@ def _extract(high, low, close, cum_quote, cum_uncovered, window, baseline, base_
     for k in range(m):
         t = index[k]
         first = t - window - baseline + 1
-        start = close[t - window]
+        start = _start_price(close, win_high, win_low, t, window, extreme_sign)
         end = close[t]
         change = (end / start - 1) * 100
-        s = 1 if change >= 0 else -1
+        # 极值口径下上涨的涨幅恒 ≥ 0、下跌恒 ≤ 0，方向就是抽取的方向。
+        s = extreme_sign if extreme_sign != 0 else (1 if change >= 0 else -1)
         sign[k] = s
         change_abs[k] = abs(change)
         quote = cum_quote[t + 1] - cum_quote[t - window + 1]
@@ -200,7 +214,7 @@ def _extract_symbol(args: tuple[int, str, float]) -> tuple[int, dict]:
             win_high, win_low = win_cache[window]
             fields = _extract(series.high, series.low, series.close, cum_quote, cum_uncovered, window, baseline,
                               base_high, base_low, win_high, win_low, RATIOS[0], QUOTES[0], CHANGES[0],
-                              delays, horizons, FORWARD, CLIP, COST)
+                              delays, horizons, FORWARD, CLIP, COST, 0)
             index = fields[0]
             result[(window, baseline)] = {
                 "t": (index + offset).astype(np.int64),

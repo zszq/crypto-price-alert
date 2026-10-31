@@ -32,6 +32,9 @@ class LaunchSideConfig(BaseModel):
     realert_step_percent: float = Field(default=5.0, ge=0, le=100)
     # 涨跌幅上限：窗口内就走完这么多的多是插针式拉盘，提醒时已在高点；None 表示不设上限。
     max_change_percent: float | None = Field(default=15.0, gt=0, le=1000)
+    # 涨跌幅从窗口内最低价（下跌为最高价）算起，而不是窗口前一根收盘价。最近两年的回测中，
+    # 两个方向都是提醒多约 1/4~1/3、准确率低 1~1.5 个百分点（launch_grid.md 第四轮），所以默认关闭。
+    change_from_window_extreme: bool = False
 
     @model_validator(mode="after")
     def validate_ranges(self) -> LaunchSideConfig:
@@ -58,6 +61,7 @@ class LaunchSideConfig(BaseModel):
             cooldown_minutes=self.cooldown_minutes,
             realert_step_percent=self.realert_step_percent,
             max_change_percent=self.max_change_percent,
+            change_from_window_extreme=self.change_from_window_extreme,
         )
 
 

@@ -54,6 +54,11 @@ launch:
     # 调高会报出更多插针，调低会误伤正常的强势启动；null 不设上限。
     # 默认：15
     max_change_percent: 15.0
+    # 涨跌幅是否从窗口内最低价（下跌为最高价）算起，而不是从窗口开始前一根的收盘价算起（涨跌幅上限同理）。
+    # 开启后，窗口内先跌后拉回的也能报到。但最近两年的回测中提醒多约 1/3、准确率反而低约 1 个百分点
+    # （research/launch_trade/launch_grid.md 第四轮）。
+    # 默认：false
+    change_from_window_extreme: false
   # 放量下跌。每一项的含义、取值范围与上面 rise 相同（突破看基准期最低价，涨跌幅按跌幅的绝对值）。
   # 取值来自 research/launch_trade/launch_grid.md 第三轮（F0.5 选参，通过过拟合判据）：样本外准确率 0.359 → 0.409，
   # ≥20% 的急跌在前半段报到 25% → 49%，代价是提醒多约 1/3（每天约 52 → 69 条）。
@@ -82,3 +87,5 @@ launch:
     min_change_percent: 3.0
     # 默认：15
     max_change_percent: 15.0
+    # 默认：false
+    change_from_window_extreme: false

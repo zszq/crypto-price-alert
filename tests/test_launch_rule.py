@@ -129,3 +129,45 @@ def test_still_launching_rechecks_drops():
     assert not still_launching(metrics, 97.5, drop)
     # 方向不能弄反：价格反而涨上去，对下跌提醒来说当然不再成立。
     assert not still_launching(metrics, 104.0, drop)
+
+
+def test_change_can_start_from_the_window_low():
+    # 窗口先砸到 97 再拉到 101：从前一根收盘 100 算只涨 1%，从窗口最低价 97 算涨 4.1%。
+    candles = history([(97.0, 1000), (98.5, 1000), (101.0, 1000)])
+
+    assert evaluate_launch(candles, rule()).failures == (Condition.CHANGE,)
+    metrics = evaluate_launch(candles, rule(change_from_window_extreme=True))
+    assert metrics.passed
+    assert metrics.start_price == 97.0
+    assert metrics.change_percent == pytest.approx((101 / 97 - 1) * 100)
+
+
+def test_window_extreme_never_starts_above_the_previous_close():
+    # 窗口一路上涨、最低价就是前一根收盘：两种口径完全相同。
+    candles = history([(101.0, 1000), (102.5, 1000), (104.0, 1000)])
+
+    assert evaluate_launch(candles, rule(change_from_window_extreme=True)) == evaluate_launch(candles, rule())
+
+
+def test_drop_change_can_start_from_the_window_high():
+    # 窗口先冲到 103 再砸到 99：从 100 算只跌 1%，从窗口最高价 103 算跌 3.9%，收盘也跌破基准低点 99.5。
+    candles = history([(103.0, 1000), (101.5, 1000), (99.0, 1000)])
+    drop = rule(direction="drop", change_from_window_extreme=True)
+
+    assert evaluate_launch(candles, rule(direction="drop")).failures == (Condition.CHANGE,)
+    metrics = evaluate_launch(candles, drop)
+    assert metrics.passed and metrics.start_price == 103.0
+    assert metrics.change_percent == pytest.approx((99 / 103 - 1) * 100)
+
+
+def test_window_extreme_also_applies_to_the_overshoot_cap_and_recheck():
+    # 从 100 算涨 4%，从窗口最低价 90 算涨 15.6%，超过 15% 的上限：按插针处理。
+    spiked = history([(90.0, 1000), (95.0, 1000), (104.0, 1000)])
+    assert evaluate_launch(spiked, rule()).passed
+    assert evaluate_launch(spiked, rule(change_from_window_extreme=True)).failures == (Condition.OVERSHOOT,)
+
+    # 空档后复核同样以窗口最低价 97 为起点：99 只涨 2.1% 不够，101 仍涨 4.1%。
+    extreme = rule(change_from_window_extreme=True)
+    metrics = evaluate_launch(history([(97.0, 1000), (98.5, 1000), (101.0, 1000)]), extreme)
+    assert still_launching(metrics, 101.0, extreme)
+    assert not still_launching(metrics, 99.0, extreme)

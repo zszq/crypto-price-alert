@@ -68,6 +68,8 @@ class LaunchAlert:
 def describe_launch_rule(rule: LaunchRule) -> str:
     baseline = describe_minutes(rule.baseline_minutes)
     move = "涨幅" if rule.direction == "surge" else "跌幅"
+    if rule.change_from_window_extreme:
+        move = f"从窗口{'最低' if rule.direction == 'surge' else '最高'}价起的{move}"
     change = f"{move} ≥ {rule.min_change_percent:g}%"
     if rule.max_change_percent is not None:
         change = f"{move} {rule.min_change_percent:g}%~{rule.max_change_percent:g}%"
