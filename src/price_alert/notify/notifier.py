@@ -48,8 +48,8 @@ SOUND_REGENERATE_LOG_INTERVAL_SECONDS = 60.0
 # 正文：急涨绿色、急跌红色。
 SURGE_COLOR = Fore.GREEN
 DROP_COLOR = Fore.RED
-# 交易对：亮黄色。
-SYMBOL_COLOR = Fore.LIGHTYELLOW_EX
+# 交易对：金黄色（标准黄），每条提醒都有，比亮黄收敛，把最亮的黄留给放量标签。
+SYMBOL_COLOR = Fore.YELLOW
 # 涨跌幅：同方向的亮绿/亮红。
 SURGE_CHANGE_COLOR = Fore.LIGHTGREEN_EX
 DROP_CHANGE_COLOR = Fore.LIGHTRED_EX
@@ -59,8 +59,8 @@ TRADE_URL_COLOR = Fore.LIGHTBLACK_EX
 LONG_WINDOW_COLOR = Fore.LIGHTCYAN_EX
 # 趋势提醒的标签（[趋势下跌] 等）：亮紫色，与瞬时、短时异动提醒一眼区分。
 TREND_LABEL_COLOR = Fore.LIGHTMAGENTA_EX
-# 放量启动提醒的标签（[放量上涨] 等）：金黄色（标准黄），偏橙，与淡黄的交易对分得开，不带涨跌含义。
-LAUNCH_LABEL_COLOR = Fore.YELLOW
+# 放量启动提醒的标签（[放量上涨] 等）：亮黄色，放量启动优先级最高，用最醒目的颜色；与金黄的交易对分得开，不带涨跌含义。
+LAUNCH_LABEL_COLOR = Fore.LIGHTYELLOW_EX
 # 冷门启动提醒的标签：亮蓝色，与放量启动分开，准确率较低的这一类一眼就能认出。
 DORMANT_LABEL_COLOR = Fore.LIGHTBLUE_EX
 # 反弹回落提醒的标签（[下跌反弹]/[冲高回落]）：亮白色，不与方向色、交易对、其他标签撞色；
