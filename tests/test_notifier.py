@@ -20,6 +20,8 @@ from price_alert.notify.notifier import (
     LONG_WINDOW_COLOR,
     MACOS_SOUND_PLAYER,
     MUST_PLAY_MERGE_SECONDS,
+    REVERSAL_LABEL_COLOR,
+    SPIKE_LABEL_COLOR,
     SURGE_CHANGE_COLOR,
     SURGE_COLOR,
     SYMBOL_COLOR,
@@ -671,11 +673,28 @@ def test_only_long_window_length_is_highlighted_in_one_color_for_both_directions
     drop = replace(surge, direction="drop", change_percent=-2.5)
     drop_text = colorize_alert(drop, format_alert(drop))
     assert f"{LONG_WINDOW_COLOR}3分钟{Style.RESET_ALL}{DROP_COLOR}内价格下跌" in drop_text
-    # 不能与正文、交易对、涨跌幅、地址、趋势/放量标签撞色，否则起不到区分作用。
+    # 不能与正文、交易对、涨跌幅、地址、各类标签撞色，否则起不到区分作用。
     used = {SURGE_COLOR, DROP_COLOR, SYMBOL_COLOR, SURGE_CHANGE_COLOR, DROP_CHANGE_COLOR, TRADE_URL_COLOR}
-    used |= {TREND_LABEL_COLOR, LAUNCH_LABEL_COLOR, DORMANT_LABEL_COLOR}
+    used |= {TREND_LABEL_COLOR, LAUNCH_LABEL_COLOR, DORMANT_LABEL_COLOR, REVERSAL_LABEL_COLOR, SPIKE_LABEL_COLOR}
     assert LONG_WINDOW_COLOR not in used
-    assert len(used) == 9
+    assert len(used) == 11
+
+
+def test_only_spike_label_has_its_own_color():
+    # 瞬时异动标签沿用正文色，行首直接是标签、不插入颜色码。
+    instant = make_alert()
+    assert colorize_alert(instant, format_alert(instant)).startswith(f"{SURGE_COLOR}[瞬时急涨] ")
+
+    surge = replace(make_alert(), kind="spike", lookback_seconds=10)
+    surge_text = colorize_alert(surge, format_alert(surge))
+    assert surge_text.startswith(f"{SURGE_COLOR}{SPIKE_LABEL_COLOR}[短时急涨]{Style.RESET_ALL}{SURGE_COLOR} ")
+    assert f"{SYMBOL_COLOR}BTC_USDT{Style.RESET_ALL}{SURGE_COLOR}" in surge_text
+
+    # 长窗口提醒标签与窗口长度各自着色，急跌之后恢复红色正文。
+    drop = replace(surge, direction="drop", change_percent=-2.5, lookback_seconds=180, window="long")
+    drop_text = colorize_alert(drop, format_alert(drop))
+    assert drop_text.startswith(f"{DROP_COLOR}{SPIKE_LABEL_COLOR}[短时急跌]{Style.RESET_ALL}{DROP_COLOR} ")
+    assert f"{LONG_WINDOW_COLOR}3分钟{Style.RESET_ALL}{DROP_COLOR}内价格下跌" in drop_text
 
 
 def make_dormant() -> DormantAlert:

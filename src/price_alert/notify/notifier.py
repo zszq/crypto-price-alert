@@ -57,6 +57,10 @@ DROP_CHANGE_COLOR = Fore.LIGHTRED_EX
 TRADE_URL_COLOR = Fore.LIGHTBLACK_EX
 # 长窗口的窗口长度（3分钟）：亮青色。
 LONG_WINDOW_COLOR = Fore.LIGHTCYAN_EX
+# 短时异动提醒的标签（[短时急涨]/[短时急跌]）：青色。与瞬时异动的标签只差两个字，单独着色才能一眼分开；
+# 标准 16 色里尚未占用的只剩青、蓝、紫、白，蓝、紫在黑底上太暗，白像没着色；青色比长窗口长度的亮青偏蓝偏暗，
+# 同一行里也分得开。瞬时异动标签保持正文色。
+SPIKE_LABEL_COLOR = Fore.CYAN
 # 趋势提醒的标签（[趋势下跌] 等）：亮紫色，与瞬时、短时异动提醒一眼区分。
 TREND_LABEL_COLOR = Fore.LIGHTMAGENTA_EX
 # 放量启动提醒的标签（[放量上涨] 等）：亮黄色，放量启动优先级最高，用最醒目的颜色；与金黄的交易对分得开，不带涨跌含义。
@@ -122,10 +126,14 @@ def colorize_alert(alert: Alert, text: str, enabled: bool = True) -> str:
     elif isinstance(alert, StreakAlert):
         # 连续提醒是瞬时异动的延伸，标签沿用方向色，靠文字区分即可。
         pass
-    elif alert.window == "long":
-        # 只高亮长窗口，短窗口保持正文色。窗口字样带“秒”或“分钟”，按首次出现替换不会误伤。
-        window = spike_alerts.format_window(alert)
-        text = text.replace(window, f"{LONG_WINDOW_COLOR}{window}{Style.RESET_ALL}{color}", 1)
+    else:
+        if alert.kind == "spike":
+            label = f"[{alert.label}]"
+            text = text.replace(label, f"{SPIKE_LABEL_COLOR}{label}{Style.RESET_ALL}{color}", 1)
+        if alert.window == "long":
+            # 只高亮长窗口，短窗口保持正文色。窗口字样带“秒”或“分钟”，按首次出现替换不会误伤。
+            window = spike_alerts.format_window(alert)
+            text = text.replace(window, f"{LONG_WINDOW_COLOR}{window}{Style.RESET_ALL}{color}", 1)
     return f"{color}{text}{Style.RESET_ALL}"
 
 
