@@ -562,7 +562,7 @@ $P exit6.py alerts oos && $P exit6.py grid oos 6 && $P exit6.py oos    # 只运�
 
 ### 3. 落地方式与对拍（`verify7.py`）
 
-用户选方案 C，已写进 `config/default/instant.yaml`（代码默认值不变）。两个方案都只改这个文件，检测器已支持这两个条件（第四轮加的窗口可选参数），不改代码：
+用户选方案 C，曾写进 `config/default/instant.yaml`（代码默认值不变），之后用户又改回方案 C 之前的取值。两个方案都只改这个文件，检测器已支持这两个条件（第四轮加的窗口可选参数），不改代码：
 
 ```yaml
 # 方案 C                                   # 方案 D
