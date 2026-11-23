@@ -13,7 +13,7 @@ from price_alert.detectors.replay import (
     parse_time,
 )
 from price_alert.detectors.spike.alerts import PriceAlert
-from price_alert.detectors.spike.config import InstantConfig, SpikeConfig
+from price_alert.detectors.spike.config import InstantConfig
 from price_alert.detectors.spike.replay import plan_replay, render_replay, run_replay
 
 START = datetime(2026, 9, 29, 9, 27, tzinfo=BEIJING_TIME)
@@ -266,17 +266,3 @@ def test_replay_keeps_streak_alert_right_after_its_short_alert():
     assert "连续提醒：短窗口同方向提醒连续 3 次" in text
     assert "[瞬时急涨·连续急涨]" in text
 
-
-def test_plan_reserves_an_hour_when_a_window_judges_trade_burst():
-    # 成交暴增要看 1 小时成交，喂入起点按它留，否则区间开头一小时都判不了。
-    spike = SpikeConfig.model_validate({"short_window": {"min_trade_burst_ratio": 4}})
-    plan = plan_replay("QNT_USDT", START, END, spike)
-    assert plan.feed_start <= START - timedelta(seconds=3600)
-
-
-def test_spike_replay_is_titled_and_reserves_its_gate_history():
-    # 短时异动代码默认开着附加条件：喂入起点要往前留 1 小时，标题写明回放的是哪一种。
-    plan = plan_replay("QNT_USDT", START, END, SpikeConfig())
-    assert plan.feed_start <= START - timedelta(seconds=3600)
-    result = run_replay(SpikeConfig(), plan, ReplayData(flat_candles(plan), tail_jump_trades(plan)))
-    assert "\n".join(render_replay(result)).startswith("短时异动回放 QNT_USDT")

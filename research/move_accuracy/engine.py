@@ -47,7 +47,7 @@ def load_trades(symbol: str, month: str) -> tuple[np.ndarray, np.ndarray, np.nda
     t, p, s = t[keep], df["p"].to_numpy(np.float64)[keep], df["s"].to_numpy(np.float32)[keep]
     ok = (p > 0) & np.isfinite(p)
     t, p, s = t[ok], p[ok], s[ok]
-    # 缓存约是压缩成交的两倍大，磁盘不够时（第三轮）设 NO_NPY=1 每次重新解析
+    # 缓存约是压缩成交的两倍大，磁盘不够时设 NO_NPY=1 每次重新解析
     if not os.environ.get("NO_NPY"):
         NPY.mkdir(parents=True, exist_ok=True)
         np.savez(cache, t=t, p=p, s=s)
@@ -161,13 +161,7 @@ def minute_bars(symbol: str, month: str, t: np.ndarray, p: np.ndarray, start: in
     return m0, has, o, h, lo, c
 
 
-# 第二轮新特征（PLAN.md 第二轮）：6 小时极值要 360 根之前的 K 线，月初多取一些预热
-EXTRA_WARM = 400
-
-
-def process(
-    job: tuple[str, str], days: float | None = None, variants: dict | None = None, extras: bool = False
-) -> dict:
+def process(job: tuple[str, str], days: float | None = None, variants: dict | None = None) -> dict:
     symbol, month = job
     start, end = month_start(month), month_end(month)
     t, p, s = load_trades(symbol, month)
@@ -178,11 +172,9 @@ def process(
     if len(t) < 100:
         return out
     mult = multiplier(contracts().get(symbol))
-    m0, has, o, h, lo, c = minute_bars(symbol, month, t, p, start, end, EXTRA_WARM if extras else 60)
+    m0, has, o, h, lo, c = minute_bars(symbol, month, t, p, start, end, 60)
     atr_before = _atr_before(has, h, lo, c, ATR_PERIOD)
     hi60, lo60 = _rolling_extreme(h, lo, 60)
-    if extras:
-        hi6h, lo6h = _rolling_extreme(h, lo, 360)
 
     # 真实秒桶
     sec_all = np.floor(t).astype(np.int64)
@@ -323,29 +315,6 @@ def process(
                 f"{name}_atrpct": (atr[i] / bprice[i] * 100).astype(f32),
             }
         )
-        if extras:
-            # 成交笔数暴增：最近 60 秒笔数 ÷（最近 3600 秒笔数 ÷ 60），取 ≤ 该时刻的最后一个真实秒的累计笔数
-            def through_at(when):
-                k = np.searchsorted(sec_u, when, side="right") - 1
-                return np.where(k >= 0, through[np.clip(k, 0, None)], -1)
-
-            now_n = bthrough[i]
-            n60 = now_n - through_at(bsec[i] - 60)
-            k3600 = through_at(bsec[i] - 3600)
-            n3600 = now_n - k3600
-            burst = np.where((k3600 >= 0) & (n3600 > 0), n60 / np.maximum(n3600, 1) * 60.0, np.nan)
-            k300 = np.searchsorted(sec_u, wstart - 300, side="right") - 1
-            pre300 = direction * (base[i] / np.where(k300 >= 0, last[np.clip(k300, 0, None)], np.nan) - 1) * 100.0
-            # 离 6 小时极值：当前秒价格相对此前 360 根已收盘 1 分钟 K 线（不含当前分钟）的最高 / 最低价
-            mnow = np.clip(bsec[i] // 60 - m0, 0, len(hi6h) - 1)
-            ext6h = np.where(direction > 0, bprice[i] / hi6h[mnow] - 1, 1 - bprice[i] / lo6h[mnow]) * 100.0
-            out.update(
-                {
-                    f"{name}_burst": burst.astype(f32),
-                    f"{name}_pre300": pre300.astype(f32),
-                    f"{name}_ext6h": ext6h.astype(f32),
-                }
-            )
 
     # 随机基准：每天 300 个随机时刻、随机方向
     rng = np.random.default_rng(zlib.crc32(f"{symbol}-{month}".encode()))
@@ -381,11 +350,11 @@ def parse_variant(name: str) -> tuple[int, int]:
     return int(length), int(fill or length)
 
 
-def run(job: tuple[str, str], variant: str | None = None, extras: bool = False) -> tuple[str, str, int]:
+def run(job: tuple[str, str], variant: str | None = None) -> tuple[str, str, int]:
     out_path = rows_dir(variant) / f"{job[0]}-{job[1]}.npz"
     if out_path.exists():
         return job[0], job[1], -1
-    out = process(job, variants={variant: parse_variant(variant)} if variant else None, extras=extras)
+    out = process(job, variants={variant: parse_variant(variant)} if variant else None)
     # 先写临时文件再改名：中断或两个进程碰巧处理同一文件时不会留下半个文件
     tmp = out_path.with_name(out_path.stem + ".tmp.npz")
     np.savez(tmp, **out)
@@ -393,7 +362,7 @@ def run(job: tuple[str, str], variant: str | None = None, extras: bool = False) 
     return job[0], job[1], len(out.get(f"{variant or 'L30'}_sec", []))
 
 
-def run_extra(args: tuple[tuple[str, str], str | None, bool]) -> tuple[str, str, int]:
+def run_job(args: tuple[tuple[str, str], str | None]) -> tuple[str, str, int]:
     return run(*args)
 
 
@@ -404,8 +373,7 @@ def all_jobs(months: list[str]) -> list[tuple[str, str]]:
 
 
 if __name__ == "__main__":
-    # 用法：engine.py 进程数 [--asc] [--variant L20F10] [--extras] [月份 ...]
-    # --extras 另算第二轮的成交笔数暴增、前置走势等特征
+    # 用法：engine.py 进程数 [--asc] [--variant L20F10] [月份 ...]
     args = sys.argv[2:]
     variant = None
     if "--variant" in args:
@@ -415,11 +383,11 @@ if __name__ == "__main__":
     rows_dir(variant).mkdir(parents=True, exist_ok=True)
     workers = int(sys.argv[1]) if len(sys.argv) > 1 else 6
     ascending = "--asc" in args
-    jobs = all_jobs([a for a in args if a not in ("--asc", "--extras")] or MONTHS)
+    jobs = all_jobs([a for a in args if a != "--asc"] or MONTHS)
     if ascending:
         jobs.reverse()
     with Pool(workers) as pool:
         for n, (sym, month, rows) in enumerate(
-            pool.imap_unordered(run_extra, [(j, variant, "--extras" in args) for j in jobs]), 1
+            pool.imap_unordered(run_job, [(j, variant) for j in jobs]), 1
         ):
             print(n, "/", len(jobs), sym, month, rows, flush=True)

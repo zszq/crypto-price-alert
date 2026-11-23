@@ -10,7 +10,7 @@ from price_alert.detectors.launch.simulate import simulate_launch
 
 
 @pytest.mark.parametrize(
-    ("spike_config", "expected_alerts"),
+    ("instant_config", "expected_alerts"),
     [
         ({}, 2),
         ({"short_window": {"lookback_seconds": 60}}, 2),
@@ -35,27 +35,21 @@ from price_alert.detectors.launch.simulate import simulate_launch
         ({"long_window": {"lookback_seconds": 300, "min_window_trades": 1000, "trigger_atr_multiple": 20}}, 2),
     ],
 )
-@pytest.mark.parametrize(
-    ("section", "other", "label"), [("instant", "spike", "瞬时急涨"), ("spike", "instant", "短时急涨")]
-)
-def test_simulate_produces_one_alert_per_enabled_window(section, other, label, spike_config, expected_alerts, capsys):
+def test_simulate_produces_one_alert_per_enabled_window(instant_config, expected_alerts, capsys):
     # 关闭趋势与放量提醒，只验证观察窗口；趋势周期、放量启动由下面的用例单独覆盖。
-    # 瞬时异动与短时异动同一套窗口参数，各用一次：短时异动开着附加条件，走另一种合成行情。
     config = AppConfig.model_validate(
         {
-            section: spike_config,
-            other: {"enabled": False},
+            "instant": instant_config,
             "trend": {"enabled": False},
             "launch": {"rise": {"enabled": False}},
             "dormant": {"enabled": False},
-            "reversal": {"enabled": False},
             "alerts": {"console_colors": False},
         }
     )
 
     assert asyncio.run(cli.simulate(config)) == expected_alerts == cli.expected_simulated_alerts(config)
     output = capsys.readouterr().out
-    assert f"[{label}]" in output
+    assert "[瞬时急涨]" in output
     if expected_alerts == 2:
         assert "分钟内价格上涨" in output
 
@@ -75,12 +69,11 @@ def test_simulate_produces_one_alert_per_enabled_trend_period(periods, expected_
             "trend": {"periods": periods},
             "launch": {"rise": {"enabled": False}},
             "dormant": {"enabled": False},
-            "reversal": {"enabled": False},
             "alerts": {"console_colors": False},
         }
     )
-    # 瞬时异动、短时异动各两个窗口。
-    windows = 4
+    # 瞬时异动两个窗口。
+    windows = 2
 
     assert asyncio.run(cli.simulate(config)) == windows + expected_trend_alerts
     assert cli.expected_simulated_alerts(config) == windows + expected_trend_alerts
@@ -110,18 +103,18 @@ def test_missing_config_file_exits_with_readable_message(tmp_path):
 
 def test_invalid_config_lists_field_path(tmp_path):
     path = tmp_path / "config.yaml"
-    path.write_text("spike:\n  atr_period: 1\n", encoding="utf-8")
+    path.write_text("instant:\n  atr_period: 1\n", encoding="utf-8")
 
-    with pytest.raises(SystemExit, match=r"spike\.atr_period"):
+    with pytest.raises(SystemExit, match=r"instant\.atr_period"):
         cli._load_config_or_exit(str(path))
 
 
 def test_replay_arguments_require_symbol_and_start():
-    args = cli.build_parser().parse_args(["replay", "qnt", "--start", "09:25", "--all"])
+    args = cli.build_parser().parse_args(["instant-replay", "qnt", "--start", "09:25", "--all"])
 
     assert (args.symbol, args.start, args.end, args.all) == ("qnt", "09:25", None, True)
     with pytest.raises(SystemExit):
-        cli.build_parser().parse_args(["replay", "QNT_USDT"])
+        cli.build_parser().parse_args(["instant-replay", "QNT_USDT"])
 
 
 def test_replay_end_with_only_clock_time_uses_start_date(monkeypatch):
@@ -132,19 +125,19 @@ def test_replay_end_with_only_clock_time_uses_start_date(monkeypatch):
         raise ValueError("stop")
 
     monkeypatch.setattr(cli, "plan_replay", fake_plan)
-    args = cli.build_parser().parse_args(["replay", "QNT", "--start", "2026-09-28 09:25", "--end", "09:36"])
+    args = cli.build_parser().parse_args(["instant-replay", "QNT", "--start", "2026-09-28 09:25", "--end", "09:36"])
 
     with pytest.raises(SystemExit):
-        cli.replay(AppConfig(), args, AppConfig().spike)
+        cli.instant_replay(AppConfig(), args)
     assert captured["symbol"] == "QNT_USDT"
     assert captured["end"].date().isoformat() == "2026-09-28"
 
 
 def test_replay_rejects_end_before_start(tmp_path):
-    args = cli.build_parser().parse_args(["replay", "QNT", "--start", "09:30", "--end", "09:20"])
+    args = cli.build_parser().parse_args(["instant-replay", "QNT", "--start", "09:30", "--end", "09:20"])
 
     with pytest.raises(SystemExit, match="结束时间必须晚于开始时间"):
-        cli.replay(AppConfig(), args, AppConfig().instant)
+        cli.instant_replay(AppConfig(), args)
 
 
 def test_trend_replay_survives_missing_contract_precision(monkeypatch, capsys):
@@ -182,14 +175,12 @@ def test_trend_replay_without_enabled_periods_exits_readably():
         cli.trend_replay(config, args)
 
 
-def test_simulate_skips_windows_when_spike_is_disabled(capsys):
+def test_simulate_skips_windows_when_instant_is_disabled(capsys):
     config = AppConfig.model_validate(
         {
             "instant": {"enabled": False},
-            "spike": {"enabled": False},
             "trend": {"enabled": False},
             "dormant": {"enabled": False},
-            "reversal": {"enabled": False},
             "alerts": {"console_colors": False},
         }
     )
@@ -210,13 +201,12 @@ def test_simulate_includes_one_alert_per_launch_direction(capsys):
         {
             "trend": {"enabled": False},
             "dormant": {"enabled": False},
-            "reversal": {"enabled": False},
             "alerts": {"console_colors": False},
         }
     )
 
-    # 瞬时、短时异动各两个窗口，加放量上涨一条。
-    assert asyncio.run(cli.simulate(config)) == 5 == cli.expected_simulated_alerts(config)
+    # 瞬时异动两个窗口，加放量上涨一条。
+    assert asyncio.run(cli.simulate(config)) == 3 == cli.expected_simulated_alerts(config)
     assert capsys.readouterr().out.count("[放量上涨]") == 1
 
     both = AppConfig.model_validate(
@@ -224,11 +214,10 @@ def test_simulate_includes_one_alert_per_launch_direction(capsys):
             "trend": {"enabled": False},
             "launch": {"fall": {"enabled": True}},
             "dormant": {"enabled": False},
-            "reversal": {"enabled": False},
             "alerts": {"console_colors": False},
         }
     )
-    assert asyncio.run(cli.simulate(both)) == 6 == cli.expected_simulated_alerts(both)
+    assert asyncio.run(cli.simulate(both)) == 4 == cli.expected_simulated_alerts(both)
     output = capsys.readouterr().out
     assert output.count("[放量上涨]") == 1 and output.count("[放量下跌]") == 1
 
@@ -281,9 +270,8 @@ def test_check_config_lists_streak_rule_with_gap_following_cooldown(tmp_path, mo
     cli.main()
 
     output = capsys.readouterr().out
-    # 连续提醒只属于瞬时异动；两种异动的窗口都按名称列出。
+    assert "瞬时异动·短窗口：30秒内" in output
     assert "瞬时异动·连续提醒：短窗口同方向提醒连续 3 次、相邻间隔 ≤ 75 秒" in output
-    assert "短时异动·短窗口：10秒内" in output and "短时异动·连续提醒" not in output
 
 
 def test_preview_sounds_plays_every_kind_in_order(monkeypatch, capsys):
@@ -313,10 +301,8 @@ def test_simulate_includes_one_dormant_alert(capsys):
     config = AppConfig.model_validate(
         {
             "instant": {"enabled": False},
-            "spike": {"enabled": False},
             "trend": {"enabled": False},
             "launch": {"rise": {"enabled": False}},
-            "reversal": {"enabled": False},
             "alerts": {"console_colors": False},
         }
     )
@@ -329,10 +315,8 @@ def test_simulate_runs_each_enabled_dormant_group(capsys):
     config = AppConfig.model_validate(
         {
             "instant": {"enabled": False},
-            "spike": {"enabled": False},
             "trend": {"enabled": False},
             "launch": {"rise": {"enabled": False}},
-            "reversal": {"enabled": False},
             "dormant": {"slow": {"enabled": True}},
             "alerts": {"console_colors": False},
         }

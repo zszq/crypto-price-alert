@@ -40,12 +40,7 @@ from price_alert.detectors.replay import (
     normalize_symbol,
     parse_time,
 )
-from price_alert.detectors.reversal.alerts import describe_reversal_rule
-from price_alert.detectors.reversal.replay import plan_reversal_replay, render_reversal_replay, run_reversal_replay
-from price_alert.detectors.reversal.rule import CANDLE_INTERVAL as REVERSAL_INTERVAL
-from price_alert.detectors.reversal.simulate import simulate_reversal
-from price_alert.detectors.spike.alerts import NAMES as SPIKE_NAMES
-from price_alert.detectors.spike.config import AtrSpikeConfig
+from price_alert.detectors.spike.alerts import NAME as INSTANT_NAME
 from price_alert.detectors.spike.replay import plan_replay, render_replay, run_replay
 from price_alert.detectors.spike.simulate import simulate_spike
 from price_alert.detectors.spike.streak import describe_streak_rule
@@ -61,15 +56,13 @@ from price_alert.notify.sounds import SOUND_LABELS, SOUND_NAMES, SOUND_PRIORITY
 from price_alert.service import run_monitor
 
 LOGGER = logging.getLogger(__name__)
-# 以下是只给开始时间时各回放的时长。瞬时、短时异动：覆盖长窗口一个完整周期及前后行情。
+# 以下是只给开始时间时各回放的时长。瞬时异动：覆盖长窗口一个完整周期及前后行情。
 DEFAULT_REPLAY_MINUTES = 15
 # 趋势以十几分钟到数小时计，要容下一段完整的开始到结束。
 DEFAULT_TREND_REPLAY_HOURS = 3
 # 放量、冷门启动：看完一段启动及之后的几波拉升。
 DEFAULT_LAUNCH_REPLAY_HOURS = 6
 DEFAULT_DORMANT_REPLAY_HOURS = 6
-# 反弹回落是秒级判定，还要多取 1 小时成交作基准，区间不宜太长。
-DEFAULT_REVERSAL_REPLAY_MINUTES = 30
 SOUND_PREVIEW_PAUSE_SECONDS = 0.8
 # REST 重试用尽后会原样抛出的错误：回放命令把它们转成一行提示退出。
 FETCH_ERRORS = (OSError, ValueError, TypeError, http.client.HTTPException)
@@ -85,22 +78,19 @@ def build_parser() -> argparse.ArgumentParser:
         ("universe", "查看当前满足成交额条件的合约"),
         ("check-config", "校验配置文件"),
         ("simulate", "使用合成行情验证各类提醒"),
-        ("replay", "用历史成交回放某个合约的短时异动提醒，逐秒解释为什么提醒或没有提醒"),
         ("instant-replay", "用历史成交回放某个合约的瞬时异动提醒，逐秒解释为什么提醒或没有提醒"),
         ("trend-replay", "用历史 1 分钟 K 线回放某个合约的趋势提醒，逐根解释判定结果"),
         ("launch-replay", "用历史 1 分钟 K 线回放某个合约的放量启动提醒，逐分钟解释判定结果"),
         ("dormant-replay", "用历史 1 分钟 K 线回放某个合约的冷门启动提醒，逐分钟解释判定结果"),
-        ("reversal-replay", "用历史成交回放某个合约的反弹回落提醒，逐秒解释判定结果"),
         ("sounds", "依次试听各类提醒的提示音"),
     ):
         command = commands.add_parser(name, help=help_text)
         command.add_argument("--config", default="config/default", help="配置文件，或目录（合并其中全部 .yaml）")
-    for name in ("replay", "instant-replay"):
-        _add_replay_arguments(
-            commands.choices[name],
-            f"默认开始后 {DEFAULT_REPLAY_MINUTES} 分钟",
-            "输出每一秒每个窗口的判定，而不只是达标的秒",
-        )
+    _add_replay_arguments(
+        commands.choices["instant-replay"],
+        f"默认开始后 {DEFAULT_REPLAY_MINUTES} 分钟",
+        "输出每一秒每个窗口的判定，而不只是达标的秒",
+    )
     _add_replay_arguments(
         commands.choices["trend-replay"],
         f"默认开始后 {DEFAULT_TREND_REPLAY_HOURS} 小时",
@@ -116,11 +106,6 @@ def build_parser() -> argparse.ArgumentParser:
         f"默认开始后 {DEFAULT_DORMANT_REPLAY_HOURS} 小时",
         "输出每一分钟的判定，而不只是满足条件的分钟",
     )
-    _add_replay_arguments(
-        commands.choices["reversal-replay"],
-        f"默认开始后 {DEFAULT_REVERSAL_REPLAY_MINUTES} 分钟",
-        "输出每一秒的判定，而不只是急动达标的秒",
-    )
     return parser
 
 
@@ -132,21 +117,18 @@ def _add_replay_arguments(command: argparse.ArgumentParser, end_default: str, al
 
 
 def expected_simulated_alerts(config: AppConfig) -> int:
-    windows = sum(len(build_windows(spike)) for spike in (config.instant, config.spike) if spike.enabled)
+    windows = len(build_windows(config.instant)) if config.instant.enabled else 0
     trend_periods = len(config.trend.rules()) if config.trend.enabled else 0
-    singles = len(config.dormant.rules()) + int(config.reversal.enabled)
-    return windows + trend_periods + len(config.launch.sides()) + singles
+    return windows + trend_periods + len(config.launch.sides()) + len(config.dormant.rules())
 
 
 async def simulate(config: AppConfig) -> int:
-    """为瞬时、短时异动每个启用的观察窗口和每个趋势周期、放量方向、冷门启动参数组、反弹回落各跑一遍合成行情，
+    """为瞬时异动每个启用的观察窗口和每个趋势周期、放量方向、冷门启动参数组各跑一遍合成行情，
     返回提醒总数；正常时等于 expected_simulated_alerts。"""
     notifier = ConsoleNotifier(beep=False, colors=config.alerts.console_colors)
     alert_count = 0
-    for spike in (config.instant, config.spike):
-        if not spike.enabled:
-            continue
-        for alert in simulate_spike(spike):
+    if config.instant.enabled:
+        for alert in simulate_spike(config.instant):
             alert_count += 1
             await notifier.send(alert)
     if config.trend.enabled:
@@ -159,10 +141,6 @@ async def simulate(config: AppConfig) -> int:
             await notifier.send(alert)
     if config.dormant.enabled:
         for alert in simulate_dormant(config.dormant):
-            alert_count += 1
-            await notifier.send(alert)
-    if config.reversal.enabled:
-        for alert in simulate_reversal(config.reversal):
             alert_count += 1
             await notifier.send(alert)
     return alert_count
@@ -179,8 +157,8 @@ async def preview_sounds() -> None:
         await asyncio.sleep(SOUND_PREVIEW_PAUSE_SECONDS)
 
 
-def replay(config: AppConfig, args: argparse.Namespace, spike: AtrSpikeConfig) -> None:
-    """replay 回放短时异动（spike 段），instant-replay 回放瞬时异动（instant 段）；两者判定代码相同、参数不同。"""
+def instant_replay(config: AppConfig, args: argparse.Namespace) -> None:
+    spike = config.instant
     plan = _plan_or_exit(
         args,
         timedelta(minutes=DEFAULT_REPLAY_MINUTES),
@@ -188,17 +166,6 @@ def replay(config: AppConfig, args: argparse.Namespace, spike: AtrSpikeConfig) -
     )
     data = _fetch_trades_or_exit(config, plan, spike.candle_interval)
     print("\n".join(render_replay(run_replay(spike, plan, data), show_all=args.all)))
-
-
-def reversal_replay(config: AppConfig, args: argparse.Namespace) -> None:
-    rule = config.reversal.to_rule()
-    plan = _plan_or_exit(
-        args,
-        timedelta(minutes=DEFAULT_REVERSAL_REPLAY_MINUTES),
-        lambda symbol, start, end: plan_reversal_replay(symbol, start, end, rule),
-    )
-    data = _fetch_trades_or_exit(config, plan, REVERSAL_INTERVAL)
-    print("\n".join(render_reversal_replay(run_reversal_replay(rule, plan, data), show_all=args.all)))
 
 
 def trend_replay(config: AppConfig, args: argparse.Namespace) -> None:
@@ -322,16 +289,14 @@ def main() -> None:
     if args.command == "check-config":
         ranges = "，".join(f"{entry.name} {entry.volume.describe()}" for entry in build_detectors(config))
         print(f"配置有效：Gate.io USDT 永续，24h 计价成交额范围：{ranges}")
-        for spike in (config.instant, config.spike):
-            detector = build_detector(spike)
-            name = SPIKE_NAMES[detector.kind]
-            if not spike.enabled:
-                print(f"  {name}提醒：已关闭")
-                continue
+        if config.instant.enabled:
+            detector = build_detector(config.instant)
             for window in detector.windows:
-                print(f"  {name}·{describe_rule(window)}")
+                print(f"  {INSTANT_NAME}·{describe_rule(window)}")
             if detector.streak_rule is not None:
-                print(f"  {name}·{describe_streak_rule(detector.streak_rule)}")
+                print(f"  {INSTANT_NAME}·{describe_streak_rule(detector.streak_rule)}")
+        else:
+            print(f"  {INSTANT_NAME}提醒：已关闭")
         if config.trend.enabled:
             for rule in config.trend.rules():
                 print(f"  {describe_trend_rule(rule)}")
@@ -356,14 +321,6 @@ def main() -> None:
                 print("  冷门慢启动提醒：已关闭")
         else:
             print("  冷门启动提醒：已关闭（含冷门慢启动）")
-        reversal = config.reversal
-        if reversal.enabled:
-            volume = f"24 小时成交额 > {format_amount(reversal.min_volume_24h_quote)}"
-            if reversal.max_volume_24h_quote is not None:
-                volume += f" 且 ≤ {format_amount(reversal.max_volume_24h_quote)}"
-            print(f"  {describe_reversal_rule(reversal.to_rule())}；合约池：{volume} USDT")
-        else:
-            print("  反弹回落提醒：已关闭")
         return
     if args.command == "universe":
         print_universe(config)
@@ -373,15 +330,12 @@ def main() -> None:
         produced = asyncio.run(simulate(config))
         if produced != expected:
             raise SystemExit(
-                f"模拟应产生 {expected} 条提醒（瞬时、短时异动每个窗口，每个趋势周期、每个放量方向、冷门启动、"
-                f"反弹回落各一条），实际 {produced} 条，请检查 instant、spike、trend、launch、dormant 与 reversal 配置"
+                f"模拟应产生 {expected} 条提醒（瞬时异动每个窗口，每个趋势周期、每个放量方向、冷门启动参数组各一条），"
+                f"实际 {produced} 条，请检查 instant、trend、launch 与 dormant 配置"
             )
         return
-    if args.command == "replay":
-        replay(config, args, config.spike)
-        return
     if args.command == "instant-replay":
-        replay(config, args, config.instant)
+        instant_replay(config, args)
         return
     if args.command == "trend-replay":
         trend_replay(config, args)
@@ -391,9 +345,6 @@ def main() -> None:
         return
     if args.command == "dormant-replay":
         dormant_replay(config, args)
-        return
-    if args.command == "reversal-replay":
-        reversal_replay(config, args)
         return
     if args.command == "sounds":
         asyncio.run(preview_sounds())

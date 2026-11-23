@@ -20,8 +20,6 @@ from price_alert.detectors.dormant import alerts as dormant_alerts
 from price_alert.detectors.dormant.alerts import DormantAlert
 from price_alert.detectors.launch import alerts as launch_alerts
 from price_alert.detectors.launch.alerts import LaunchAlert
-from price_alert.detectors.reversal import alerts as reversal_alerts
-from price_alert.detectors.reversal.alerts import ReversalAlert
 from price_alert.detectors.spike import alerts as spike_alerts
 from price_alert.detectors.spike import streak as streak_alerts
 from price_alert.detectors.spike.streak import StreakAlert
@@ -57,19 +55,12 @@ DROP_CHANGE_COLOR = Fore.LIGHTRED_EX
 TRADE_URL_COLOR = Fore.LIGHTBLACK_EX
 # 长窗口的窗口长度（3分钟）：亮青色。
 LONG_WINDOW_COLOR = Fore.LIGHTCYAN_EX
-# 短时异动提醒的标签（[短时急涨]/[短时急跌]）：青色。与瞬时异动的标签只差两个字，单独着色才能一眼分开；
-# 标准 16 色里尚未占用的只剩青、蓝、紫、白，蓝、紫在黑底上太暗，白像没着色；青色比长窗口长度的亮青偏蓝偏暗，
-# 同一行里也分得开。瞬时异动标签保持正文色。
-SPIKE_LABEL_COLOR = Fore.CYAN
-# 趋势提醒的标签（[趋势下跌] 等）：亮紫色，与瞬时、短时异动提醒一眼区分。
+# 趋势提醒的标签（[趋势下跌] 等）：亮紫色，与瞬时异动提醒一眼区分。
 TREND_LABEL_COLOR = Fore.LIGHTMAGENTA_EX
 # 放量启动提醒的标签（[放量上涨] 等）：亮黄色，放量启动优先级最高，用最醒目的颜色；与金黄的交易对分得开，不带涨跌含义。
 LAUNCH_LABEL_COLOR = Fore.LIGHTYELLOW_EX
 # 冷门启动提醒的标签：亮蓝色，与放量启动分开，可靠程度不同的两类一眼就能认出。
 DORMANT_LABEL_COLOR = Fore.LIGHTBLUE_EX
-# 反弹回落提醒的标签（[下跌反弹]/[冲高回落]）：亮白色，不与方向色、交易对、其他标签撞色；
-# 正文仍按急动方向着色，靠标签与瞬时、短时异动区分。
-REVERSAL_LABEL_COLOR = Fore.LIGHTWHITE_EX
 
 
 class Notifier(Protocol):
@@ -83,8 +74,6 @@ def format_alert(alert: Alert) -> str:
         return launch_alerts.format_launch_alert(alert)
     if isinstance(alert, DormantAlert):
         return dormant_alerts.format_dormant_alert(alert)
-    if isinstance(alert, ReversalAlert):
-        return reversal_alerts.format_reversal_alert(alert)
     if isinstance(alert, StreakAlert):
         return streak_alerts.format_streak_alert(alert)
     return spike_alerts.format_spike_alert(alert)
@@ -103,37 +92,29 @@ def colorize_alert(alert: Alert, text: str, enabled: bool = True) -> str:
         change = launch_alerts.format_change(alert)
     elif isinstance(alert, DormantAlert):
         change = dormant_alerts.format_change(alert)
-    elif isinstance(alert, ReversalAlert):
-        change = reversal_alerts.format_change(alert)
     elif isinstance(alert, StreakAlert):
         change = streak_alerts.format_change(alert)
     else:
         change = spike_alerts.format_change(alert)
     highlighted_change = f"{bright}{change}{Style.RESET_ALL}{color}"
     text = text.replace(alert.symbol, symbol, 1).replace(change, highlighted_change, 1)
-    if isinstance(alert, TrendAlert | LaunchAlert | DormantAlert | ReversalAlert):
+    if isinstance(alert, TrendAlert | LaunchAlert | DormantAlert):
         # 标签在行首，按首次出现替换不会误伤正文。
         label = f"[{alert.label}]"
         if isinstance(alert, TrendAlert):
             label_color = TREND_LABEL_COLOR
         elif isinstance(alert, LaunchAlert):
             label_color = LAUNCH_LABEL_COLOR
-        elif isinstance(alert, ReversalAlert):
-            label_color = REVERSAL_LABEL_COLOR
         else:
             label_color = DORMANT_LABEL_COLOR
         text = text.replace(label, f"{label_color}{label}{Style.RESET_ALL}{color}", 1)
     elif isinstance(alert, StreakAlert):
         # 连续提醒是瞬时异动的延伸，标签沿用方向色，靠文字区分即可。
         pass
-    else:
-        if alert.kind == "spike":
-            label = f"[{alert.label}]"
-            text = text.replace(label, f"{SPIKE_LABEL_COLOR}{label}{Style.RESET_ALL}{color}", 1)
-        if alert.window == "long":
-            # 只高亮长窗口，短窗口保持正文色。窗口字样带“秒”或“分钟”，按首次出现替换不会误伤。
-            window = spike_alerts.format_window(alert)
-            text = text.replace(window, f"{LONG_WINDOW_COLOR}{window}{Style.RESET_ALL}{color}", 1)
+    elif alert.window == "long":
+        # 只高亮长窗口，短窗口保持正文色。窗口字样带“秒”或“分钟”，按首次出现替换不会误伤。
+        window = spike_alerts.format_window(alert)
+        text = text.replace(window, f"{LONG_WINDOW_COLOR}{window}{Style.RESET_ALL}{color}", 1)
     return f"{color}{text}{Style.RESET_ALL}"
 
 

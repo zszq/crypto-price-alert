@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 import numba as nb
 import numpy as np
-from common import ALL_MONTHS, MONTHS
+from common import MONTHS
 from engine import rows_dir
 
 COLUMNS = (
@@ -98,7 +98,7 @@ def load(
             for c in columns:
                 parts[c].append(d[f"{variant}_{c}"])
         groups.append(np.full(n, len(symbols), np.int32))
-        mids.append(np.full(n, ALL_MONTHS.index(month), np.int8))
+        mids.append(np.full(n, MONTHS.index(month), np.int8))
         symbols.append(path.stem)
     cols = {c: np.concatenate(v) for c, v in parts.items()}
     return Rows(
@@ -169,8 +169,6 @@ class Params:
 
 
 GATE_COLUMNS = ("imb", "vr", "retr", "pre", "brk", "chg", "eff")
-# 第二轮新特征，只有 engine.py --extras 算出的变体里才有
-EXTRA_COLUMNS = ("burst", "pre300", "ext6h")
 
 
 def gate_mask_cols(cols: dict[str, np.ndarray], gate: tuple[str, float] | None) -> np.ndarray:
@@ -180,8 +178,6 @@ def gate_mask_cols(cols: dict[str, np.ndarray], gate: tuple[str, float] | None) 
     name, value = gate
     if name == "pre_neg":
         return cols["pre"] <= value
-    if name in ("pre300_neg", "ext6h"):
-        return cols[name.removesuffix("_neg")] <= value
     if name == "brk":
         return cols["brk"] > value
     if name in ("retr", "cap"):
@@ -228,7 +224,7 @@ class Simulator:
     def prepare(self, p: Params) -> Prepared:
         r = self.rows
         idx = self.eligible(p)
-        names = GATE_COLUMNS + tuple(c for c in EXTRA_COLUMNS if c in r.cols)
+        names = GATE_COLUMNS
         return Prepared(
             idx,
             r.group[idx],
@@ -251,7 +247,7 @@ class Simulator:
         if idx is None:
             idx = self.eligible(p)
         ok = (r["pool"][idx] >> p.pool) & 1 == 1
-        cols = {c: r[c][idx] for c in GATE_COLUMNS + EXTRA_COLUMNS if c in r.cols}
+        cols = {c: r[c][idx] for c in GATE_COLUMNS}
         for gate in gates:
             ok &= gate_mask_cols(cols, gate)
         hit = scan(

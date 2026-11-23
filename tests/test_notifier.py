@@ -20,8 +20,6 @@ from price_alert.notify.notifier import (
     LONG_WINDOW_COLOR,
     MACOS_SOUND_PLAYER,
     MUST_PLAY_MERGE_SECONDS,
-    REVERSAL_LABEL_COLOR,
-    SPIKE_LABEL_COLOR,
     SURGE_CHANGE_COLOR,
     SURGE_COLOR,
     SYMBOL_COLOR,
@@ -34,7 +32,7 @@ from price_alert.notify.notifier import (
     colorize_alert,
     format_alert,
 )
-from price_alert.notify.sounds import sound_duration, sound_for, synthesize
+from price_alert.notify.sounds import sound_duration, synthesize
 
 
 def test_jsonl_notifier_writes_atr_alert(tmp_path):
@@ -51,7 +49,6 @@ def test_jsonl_notifier_writes_atr_alert(tmp_path):
         trade_count=10,
         volume_24h_quote=1_000_000_000,
         timestamp=datetime(2026, 1, 1, tzinfo=UTC),
-        kind="instant",
     )
     target = tmp_path / "alerts.jsonl"
 
@@ -60,7 +57,7 @@ def test_jsonl_notifier_writes_atr_alert(tmp_path):
     payload = json.loads(target.read_text(encoding="utf-8"))
     assert payload["move_atr"] == 1.25
     assert payload["color"] == "green"
-    # 瞬时异动与短时异动写进同一个 JSONL，下游靠 kind 区分。
+    # 与其他提醒写进同一个 JSONL，下游靠 kind 区分。
     assert payload["kind"] == "instant"
     text = format_alert(alert)
     assert text.startswith("[瞬时急涨] ")
@@ -130,19 +127,7 @@ def make_alert(symbol: str = "BTC_USDT") -> PriceAlert:
         trade_count=10,
         volume_24h_quote=1_000_000_000,
         timestamp=datetime(2026, 1, 1, tzinfo=UTC),
-        # 这些用例针对瞬时异动：木琴音效、[瞬时急涨] 标签。
-        kind="instant",
     )
-
-
-def test_spike_kind_has_its_own_label_and_sound():
-    spike = replace(make_alert(), kind="spike")
-    assert format_alert(spike).startswith("[短时急涨] ")
-    assert format_alert(replace(spike, direction="drop", change_percent=-1.0)).startswith("[短时急跌] ")
-    assert spike.to_dict()["kind"] == "spike"
-    assert sound_for(spike) == "spike"
-    # 长窗口也是同一个音：短时异动不按窗口分音效。
-    assert sound_for(replace(spike, window="long", lookback_seconds=180)) == "spike"
 
 
 class FakeSoundProcess:
@@ -248,11 +233,11 @@ def test_higher_priority_sound_interrupts_and_lower_is_skipped(monkeypatch, tmp_
         notifier = ConsoleNotifier(beep=True, colors=False, sound_dir=tmp_path)
         await notifier.send(make_alert())
         await asyncio.sleep(0)
-        # 放量启动打断正在播放的短时异动，被打断的 afplay 要结束掉。
+        # 放量启动打断正在播放的瞬时异动，被打断的 afplay 要结束掉。
         await notifier.send(make_launch())
         await asyncio.sleep(0)
         assert calls[0][1].killed
-        # 放量启动正在播放，短时异动不能打断它。
+        # 放量启动正在播放，瞬时异动不能打断它。
         await notifier.send(make_alert("ETH_USDT"))
         await asyncio.sleep(0)
         assert [played_sound(call) for call in calls] == ["short", "launch"]
@@ -675,26 +660,17 @@ def test_only_long_window_length_is_highlighted_in_one_color_for_both_directions
     assert f"{LONG_WINDOW_COLOR}3分钟{Style.RESET_ALL}{DROP_COLOR}内价格下跌" in drop_text
     # 不能与正文、交易对、涨跌幅、地址、各类标签撞色，否则起不到区分作用。
     used = {SURGE_COLOR, DROP_COLOR, SYMBOL_COLOR, SURGE_CHANGE_COLOR, DROP_CHANGE_COLOR, TRADE_URL_COLOR}
-    used |= {TREND_LABEL_COLOR, LAUNCH_LABEL_COLOR, DORMANT_LABEL_COLOR, REVERSAL_LABEL_COLOR, SPIKE_LABEL_COLOR}
+    used |= {TREND_LABEL_COLOR, LAUNCH_LABEL_COLOR, DORMANT_LABEL_COLOR}
     assert LONG_WINDOW_COLOR not in used
-    assert len(used) == 11
+    assert len(used) == 9
 
 
-def test_only_spike_label_has_its_own_color():
+def test_instant_label_keeps_body_color():
     # 瞬时异动标签沿用正文色，行首直接是标签、不插入颜色码。
     instant = make_alert()
     assert colorize_alert(instant, format_alert(instant)).startswith(f"{SURGE_COLOR}[瞬时急涨] ")
-
-    surge = replace(make_alert(), kind="spike", lookback_seconds=10)
-    surge_text = colorize_alert(surge, format_alert(surge))
-    assert surge_text.startswith(f"{SURGE_COLOR}{SPIKE_LABEL_COLOR}[短时急涨]{Style.RESET_ALL}{SURGE_COLOR} ")
-    assert f"{SYMBOL_COLOR}BTC_USDT{Style.RESET_ALL}{SURGE_COLOR}" in surge_text
-
-    # 长窗口提醒标签与窗口长度各自着色，急跌之后恢复红色正文。
-    drop = replace(surge, direction="drop", change_percent=-2.5, lookback_seconds=180, window="long")
-    drop_text = colorize_alert(drop, format_alert(drop))
-    assert drop_text.startswith(f"{DROP_COLOR}{SPIKE_LABEL_COLOR}[短时急跌]{Style.RESET_ALL}{DROP_COLOR} ")
-    assert f"{LONG_WINDOW_COLOR}3分钟{Style.RESET_ALL}{DROP_COLOR}内价格下跌" in drop_text
+    drop = replace(instant, direction="drop", change_percent=-2.5, lookback_seconds=180, window="long")
+    assert colorize_alert(drop, format_alert(drop)).startswith(f"{DROP_COLOR}[瞬时急跌] ")
 
 
 def make_dormant() -> DormantAlert:

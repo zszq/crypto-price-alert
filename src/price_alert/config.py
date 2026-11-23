@@ -10,8 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from price_alert.detectors.dormant.config import DormantConfig
 from price_alert.detectors.launch.config import LaunchConfig
-from price_alert.detectors.reversal.config import ReversalConfig
-from price_alert.detectors.spike.config import InstantConfig, SpikeConfig
+from price_alert.detectors.spike.config import InstantConfig
 from price_alert.detectors.trend.config import TrendConfig
 from price_alert.exchange.config import GateConfig
 from price_alert.notify.config import AlertConfig
@@ -21,22 +20,19 @@ class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     gate: GateConfig = Field(default_factory=GateConfig)
-    # 六种提醒相互独立，模型定义在各自的检测器子包内；删除某种提醒时只需去掉对应一项。
-    # 瞬时异动与短时异动共用同一套检测器代码（spike 子包），只是参数不同。
+    # 四种提醒相互独立，模型定义在各自的检测器子包内；删除某种提醒时只需去掉对应一项。
     instant: InstantConfig = Field(default_factory=InstantConfig)
-    spike: SpikeConfig = Field(default_factory=SpikeConfig)
     trend: TrendConfig = Field(default_factory=TrendConfig)
     launch: LaunchConfig = Field(default_factory=LaunchConfig)
     dormant: DormantConfig = Field(default_factory=DormantConfig)
-    reversal: ReversalConfig = Field(default_factory=ReversalConfig)
     alerts: AlertConfig = Field(default_factory=AlertConfig)
 
     @model_validator(mode="after")
     def validate_any_detector(self) -> AppConfig:
-        detectors = (self.instant, self.spike, self.trend, self.launch, self.dormant, self.reversal)
+        detectors = (self.instant, self.trend, self.launch, self.dormant)
         if not any(detector.enabled for detector in detectors):
             # 没有检测器时 run 会一直按合约池刷新失败重试，不如在加载配置时直接指出。
-            raise ValueError("instant、spike、trend、launch、dormant、reversal 至少要启用一个")
+            raise ValueError("instant、trend、launch、dormant 至少要启用一个")
         return self
 
 

@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -10,7 +9,6 @@ from price_alert.assembly import build_detector, build_launch_detector, build_tr
 from price_alert.common.models import Candle, PriceTick
 from price_alert.config import AppConfig
 from price_alert.detection import MonitoredDetector
-from price_alert.exchange import gate
 from price_alert.exchange.gate import GateTradeFeed
 from price_alert.exchange.universe import VolumeRange
 
@@ -648,7 +646,7 @@ def test_resync_covers_symbols_stale_in_any_detector():
 
 
 def test_resync_and_warmup_serve_earlier_detectors_first():
-    """放量启动监控全市场，回补要几百次请求：瞬时、短时异动与趋势的合约排在前面，不必等它们排完才恢复判定。"""
+    """放量启动监控全市场，回补要几百次请求：瞬时异动与趋势的合约排在前面，不必等它们排完才恢复判定。"""
     atr, launch = RecordingDetector("atr"), RecordingDetector("launch")
     detectors = [
         MonitoredDetector("瞬时异动", atr, "1m", 50, ANY_VOLUME),
@@ -698,7 +696,7 @@ def test_tiers_follow_volume_floor_not_detector_order():
 
 
 def test_earlier_detectors_are_subscribed_before_later_ones_finish_warming():
-    """首次初始化时，瞬时、短时异动的合约预热完就订阅，不必等放量启动的几百个合约。"""
+    """首次初始化时，瞬时异动的合约预热完就订阅，不必等放量启动的几百个合约。"""
 
     class RecordingFeed:
         def __init__(self) -> None:
@@ -823,257 +821,3 @@ def test_detector_faults_throttle_logs_and_repairs_and_report_counts(caplog):
 
     assert faults.summary() == "，K 线趋势检测器出错 5 次，瞬时异动检测器出错 1 次"
     assert faults.summary() == ""
-
-
-# ---- 用 REST 补逐秒成交历史 ----
-
-
-class FakeHistory:
-    """按 HistoryBackfill 约定：live_starts 里的合约等待补历史，补上即移除；用例可改写起点模拟取数途中断线。"""
-
-    def __init__(self, live_starts: dict[str, datetime | None], span: int = 3600) -> None:
-        self.history_seconds = span
-        self.live_starts = dict(live_starts)
-        self.seeded: list[tuple[str, datetime]] = []
-
-    def history_backfill(self) -> dict[str, datetime | None]:
-        return dict(self.live_starts)
-
-    def seed_history(self, symbol, seconds, live_start) -> bool:
-        self.seeded.append((symbol, live_start))
-        if self.live_starts.get(symbol) != live_start:
-            return False
-        del self.live_starts[symbol]
-        return True
-
-
-class TradeSecondsRest:
-    def __init__(self, failures: dict[str, int] | None = None, on_fetch=None) -> None:
-        self.calls: list[tuple[str, datetime, datetime]] = []
-        self.failures = dict(failures or {})
-        self.on_fetch = on_fetch
-
-    def fetch_trade_seconds(self, symbol, start, end, max_trades, stop=None):
-        self.calls.append((symbol, start, end))
-        if self.on_fetch is not None:
-            self.on_fetch(symbol)
-        if self.failures.get(symbol, 0):
-            self.failures[symbol] -= 1
-            raise OSError("timed out")
-        return [(int(start.timestamp()), 100.0, 3)]
-
-
-def fetched_ranges(rest: TradeSecondsRest) -> dict[str, tuple[datetime, datetime]]:
-    """各合约实际取到的区间；同时检查分段首尾相接、不超过段长。"""
-    ranges: dict[str, tuple[datetime, datetime]] = {}
-    for symbol in {call[0] for call in rest.calls}:
-        parts = sorted((start, end) for name, start, end in rest.calls if name == symbol)
-        for (_, end), (start, _) in zip(parts, parts[1:], strict=False):
-            assert end == start
-        assert all(end - start <= timedelta(seconds=service._BACKFILL_SLICE_SECONDS) for start, end in parts)
-        ranges[symbol] = (parts[0][0], parts[-1][1])
-    return ranges
-
-
-def history_entry(name: str, history: FakeHistory) -> MonitoredDetector:
-    return MonitoredDetector(name, history, "1m", 50, ANY_VOLUME, history)
-
-
-async def wait_until(condition, timeout: float = 5.0) -> None:
-    # 取数在线程里跑，只让出事件循环不够，要真的等一会儿。
-    deadline = asyncio.get_running_loop().time() + timeout
-    while not condition():
-        assert asyncio.get_running_loop().time() < deadline
-        await asyncio.sleep(0.01)
-
-
-def test_backfill_fetches_each_symbol_once_up_to_the_live_start_and_reports_counts(caplog):
-    caplog.set_level(logging.INFO, logger="price_alert.service")
-    spike = FakeHistory({"AAA_USDT": BASE, "BBB_USDT": BASE + timedelta(seconds=5)})
-    reversal = FakeHistory({"AAA_USDT": BASE + timedelta(seconds=10)})
-    rest = TradeSecondsRest()
-    instance = monitor([history_entry("短时异动", spike), history_entry("反弹回落", reversal)], rest=rest)
-
-    asyncio.run(instance.backfill_history())
-
-    # 两个检测器的同一合约只取一次：从较早起点往前 1 小时（另留 60 秒余量），取到较晚的实时起点为止，分段并发取。
-    assert fetched_ranges(rest) == {
-        "AAA_USDT": (BASE - timedelta(seconds=3660), BASE + timedelta(seconds=10)),
-        "BBB_USDT": (BASE - timedelta(seconds=3655), BASE + timedelta(seconds=5)),
-    }
-    assert len(rest.calls) == 14
-    # 各检测器拿到的是自己读到的起点。
-    assert sorted(spike.seeded) == [("AAA_USDT", BASE), ("BBB_USDT", BASE + timedelta(seconds=5))]
-    assert reversal.seeded == [("AAA_USDT", BASE + timedelta(seconds=10))]
-    assert "开始为 2 个合约补拉最近 1 小时成交（短时异动、反弹回落，并发 6）" in caplog.text
-    assert "补拉成交完成：成功 2 个，失败 0 个，共 42 笔成交" in caplog.text
-
-
-def test_backfill_retries_failures_only_after_startup_finishes(monkeypatch, caplog):
-    caplog.set_level(logging.INFO, logger="price_alert.service")
-    monkeypatch.setattr(service, "_BACKFILL_RETRY_INITIAL_SECONDS", 0.0)
-    spike = FakeHistory({"AAA_USDT": BASE, "BBB_USDT": BASE})
-    rest = TradeSecondsRest(failures={"BBB_USDT": 1})
-    instance = monitor([history_entry("短时异动", spike)], rest=rest)
-
-    async def scenario() -> None:
-        task = asyncio.create_task(instance.backfill_history())
-        await wait_until(lambda: "等合约池初始化全部完成后重试" in caplog.text)
-        # 启动预热还没完成：失败的合约先不重试，不和几百个合约的 K 线预热抢限速额度。
-        await asyncio.sleep(0.05)
-        assert len(rest.calls) == 14 and not task.done()
-        instance.ready.set()
-        await asyncio.wait_for(task, 5)
-
-    asyncio.run(scenario())
-
-    # 只重取失败的合约（它的一段失败就整个合约重取）。
-    assert [call[0] for call in rest.calls[14:]] == ["BBB_USDT"] * 7
-    assert spike.live_starts == {}
-    assert "补拉成交完成：成功 1 个，失败 1 个（请求失败 1 个，取数期间行情中断、与实时成交接不上 0 个）" in caplog.text
-    # 重试那一轮只算上一轮失败的合约。
-    assert "开始为 1 个合约补拉最近 1 小时成交（短时异动，并发 6，其中 1 个是重试）" in caplog.text
-
-
-def test_backfill_refetches_when_the_live_stream_restarts_during_the_request(monkeypatch, caplog):
-    caplog.set_level(logging.INFO, logger="price_alert.service")
-    monkeypatch.setattr(service, "_BACKFILL_RETRY_INITIAL_SECONDS", 0.0)
-    restarted = BASE + timedelta(seconds=40)
-    spike = FakeHistory({"AAA_USDT": BASE})
-
-    def restart_once(symbol: str) -> None:
-        if len(rest.calls) == 1:
-            spike.live_starts[symbol] = restarted
-
-    rest = TradeSecondsRest(on_fetch=restart_once)
-    instance = monitor([history_entry("短时异动", spike)], rest=rest)
-    instance.ready.set()
-
-    asyncio.run(instance.backfill_history())
-
-    assert max(call[2] for call in rest.calls[:7]) == BASE
-    assert max(call[2] for call in rest.calls[7:]) == restarted
-    assert spike.seeded == [("AAA_USDT", BASE), ("AAA_USDT", restarted)]
-    assert "与实时成交接不上 1 个" in caplog.text
-
-
-def test_backfill_waits_for_symbols_without_live_trades(monkeypatch):
-    monkeypatch.setattr(service, "_BACKFILL_POLL_SECONDS", 0.01)
-    spike = FakeHistory({"AAA_USDT": None})
-    rest = TradeSecondsRest()
-    instance = monitor([history_entry("短时异动", spike)], rest=rest)
-
-    async def scenario() -> None:
-        task = asyncio.create_task(instance.backfill_history())
-        await asyncio.sleep(0.05)
-        # 没有实时成交就不知道补的历史接在哪里，不发请求。
-        assert rest.calls == [] and not task.done()
-        spike.live_starts["AAA_USDT"] = BASE
-        await asyncio.wait_for(task, 5)
-
-    asyncio.run(scenario())
-    assert fetched_ranges(rest) == {"AAA_USDT": (BASE - timedelta(seconds=3660), BASE)}
-
-
-def test_backfill_gathers_symbols_whose_first_live_trade_is_still_coming(monkeypatch, caplog):
-    caplog.set_level(logging.INFO, logger="price_alert.service")
-    monkeypatch.setattr(service, "_BACKFILL_POLL_SECONDS", 0.01)
-    spike = FakeHistory({"AAA_USDT": BASE, "BBB_USDT": None})
-    rest = TradeSecondsRest()
-    instance = monitor([history_entry("短时异动", spike)], rest=rest)
-
-    async def scenario() -> None:
-        task = asyncio.create_task(instance.backfill_history())
-        await asyncio.sleep(0.05)
-        # 刚连上时先等其余合约的第一笔实时成交，凑成一批，而不是先到的单独成一轮。
-        assert rest.calls == []
-        spike.live_starts["BBB_USDT"] = BASE + timedelta(seconds=2)
-        await asyncio.wait_for(task, 5)
-
-    asyncio.run(scenario())
-    assert set(fetched_ranges(rest)) == {"AAA_USDT", "BBB_USDT"}
-    assert caplog.text.count("开始为") == 1 and "开始为 2 个合约" in caplog.text
-
-
-def test_backfill_starts_only_while_streaming_and_stops_with_the_connection():
-    spike = FakeHistory({"AAA_USDT": None})
-    plain = monitor(FakeDetector())
-    instance = monitor([history_entry("短时异动", spike)], rest=TradeSecondsRest())
-
-    async def scenario() -> None:
-        instance.start_backfill()
-        assert instance._backfill_task is None
-        instance.streaming = True
-        instance.start_backfill()
-        task = instance._backfill_task
-        assert task is not None
-        # 已在补时不重复启动。
-        instance.start_backfill()
-        assert instance._backfill_task is task
-        await instance.stop_backfill()
-        assert task.cancelled() and instance._backfill_task is None
-        # 没有检测器需要逐秒历史时不启动。
-        plain.streaming = True
-        plain.start_backfill()
-        assert plain._backfill_task is None
-
-    asyncio.run(scenario())
-
-
-def test_stopping_backfill_tells_the_fetching_thread_to_stop_paging():
-    started = threading.Event()
-    seen: list[threading.Event] = []
-
-    class BlockingRest:
-        def fetch_trade_seconds(self, symbol, start, end, max_trades, stop=None):
-            # 模拟翻页途中：一直翻到被叫停。线程停不下来时这里会等满 5 秒，下面的断言会失败。
-            seen.append(stop)
-            started.set()
-            if not stop.wait(5):
-                raise AssertionError("停止补拉时没有通知线程")
-            raise gate.FetchCancelled(symbol)
-
-    spike = FakeHistory({"AAA_USDT": BASE})
-    instance = monitor([history_entry("短时异动", spike)], rest=BlockingRest())
-
-    async def scenario() -> float:
-        instance.streaming = True
-        instance.start_backfill()
-        await asyncio.to_thread(started.wait, 5)
-        loop = asyncio.get_running_loop()
-        begin = loop.time()
-        await instance.stop_backfill()
-        # 等线程收尾，确认它是因为停止标志结束的。
-        await asyncio.to_thread(lambda: [event.wait(5) for event in seen])
-        return loop.time() - begin
-
-    assert asyncio.run(scenario()) < 1
-    assert seen and all(event.is_set() for event in seen)
-
-
-def test_unexpected_backfill_error_is_logged_when_it_happens(caplog):
-    class BrokenHistory(FakeHistory):
-        def history_backfill(self):
-            raise RuntimeError("状态损坏")
-
-    broken = monitor([history_entry("短时异动", BrokenHistory({}))], rest=TradeSecondsRest())
-    healthy = monitor([history_entry("短时异动", FakeHistory({"AAA_USDT": None}))], rest=TradeSecondsRest())
-
-    async def scenario() -> None:
-        broken.streaming = healthy.streaming = True
-        broken.start_backfill()
-        task = broken._backfill_task
-        await asyncio.wait({task})
-        # 回调在任务结束后的下一轮事件循环才执行。
-        await asyncio.sleep(0)
-        # 出错后紧接着断线：不能把同一个异常再记一遍。
-        await broken.stop_backfill()
-        healthy.start_backfill()
-        await healthy.stop_backfill()
-
-    asyncio.run(scenario())
-    errors = [record for record in caplog.records if record.levelno == logging.ERROR]
-    # 出错当时就带堆栈记下；正常取消（断线）不算出错。
-    assert len(errors) == 1
-    assert "补拉成交任务异常退出" in errors[0].getMessage() and "状态损坏" in errors[0].getMessage()
-    assert errors[0].exc_info is not None

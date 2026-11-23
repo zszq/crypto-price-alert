@@ -12,7 +12,7 @@ def test_load_config_and_webhook_environment_override(tmp_path, monkeypatch):
     path = tmp_path / "config.yaml"
     path.write_text(
         """
-spike:
+instant:
   min_volume_24h_quote: 10000001
   short_window:
     trigger_atr_multiple: 1.25
@@ -25,14 +25,14 @@ alerts:
 
     config = load_config(path)
 
-    assert config.spike.min_volume_24h_quote == 10_000_001
-    assert config.spike.short_window.trigger_atr_multiple == 1.25
+    assert config.instant.min_volume_24h_quote == 10_000_001
+    assert config.instant.short_window.trigger_atr_multiple == 1.25
     assert config.alerts.webhook_url == "https://example.test/hook"
 
 
 def test_rejects_atr_configuration_without_enough_warmup_data():
     with pytest.raises(ValidationError, match="warmup_candles"):
-        AppConfig.model_validate({"spike": {"atr_period": 20, "warmup_candles": 20}})
+        AppConfig.model_validate({"instant": {"atr_period": 20, "warmup_candles": 20}})
 
 
 def test_noise_protection_defaults_are_enabled():
@@ -63,21 +63,21 @@ def test_default_config_passes_validation_and_covers_every_section(monkeypatch):
 def test_directory_config_merges_top_level_keys_of_every_yaml(tmp_path, monkeypatch):
     monkeypatch.delenv("PRICE_ALERT_WEBHOOK_URL", raising=False)
     (tmp_path / "common.yaml").write_text("gate:\n  rest_retries: 5\nalerts:\n  beep: false\n", encoding="utf-8")
-    (tmp_path / "spike.yaml").write_text("spike:\n  min_volume_24h_quote: 123\n", encoding="utf-8")
+    (tmp_path / "instant.yaml").write_text("instant:\n  min_volume_24h_quote: 123\n", encoding="utf-8")
     (tmp_path / "empty.yaml").write_text("# 只有注释\n", encoding="utf-8")
     # 只读 .yaml：备份、草稿等其他扩展名不参与合并。
     (tmp_path / "trend.yaml.bak").write_text("trend:\n  unknown: 1\n", encoding="utf-8")
 
     config = load_config(tmp_path)
 
-    assert (config.gate.rest_retries, config.alerts.beep, config.spike.min_volume_24h_quote) == (5, False, 123)
+    assert (config.gate.rest_retries, config.alerts.beep, config.instant.min_volume_24h_quote) == (5, False, 123)
 
 
 def test_directory_config_rejects_a_section_split_across_files(tmp_path):
-    (tmp_path / "a.yaml").write_text("spike:\n  enabled: true\n", encoding="utf-8")
-    (tmp_path / "b.yaml").write_text("spike:\n  min_volume_24h_quote: 1\n", encoding="utf-8")
+    (tmp_path / "a.yaml").write_text("instant:\n  enabled: true\n", encoding="utf-8")
+    (tmp_path / "b.yaml").write_text("instant:\n  min_volume_24h_quote: 1\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="顶层键 spike 同时出现在 a.yaml 与 b.yaml"):
+    with pytest.raises(ValueError, match="顶层键 instant 同时出现在 a.yaml 与 b.yaml"):
         load_config(tmp_path)
 
 
@@ -85,7 +85,7 @@ def test_rejects_empty_directory_and_non_mapping_file(tmp_path):
     with pytest.raises(ValueError, match="没有 .yaml 文件"):
         load_config(tmp_path)
 
-    (tmp_path / "list.yaml").write_text("- spike\n", encoding="utf-8")
+    (tmp_path / "list.yaml").write_text("- instant\n", encoding="utf-8")
     with pytest.raises(ValueError, match="顶层必须是键值对"):
         load_config(tmp_path)
 
@@ -120,22 +120,18 @@ def test_launch_f1_yaml_runs_both_launch_directions_on_its_own_file(monkeypatch)
     assert config.alerts.jsonl_path not in others
 
 
-def test_spike_can_be_disabled_but_not_every_detector():
-    names = ["瞬时异动", "短时异动", "放量上涨", "K 线趋势", "冷门启动", "反弹回落"]
+def test_instant_can_be_disabled_but_not_every_detector():
+    names = ["瞬时异动", "放量上涨", "K 线趋势", "冷门启动"]
     assert [entry.name for entry in build_detectors(AppConfig())] == names
-    # 瞬时异动与短时异动各自开关，关掉一个不影响另一个。
-    for section, name in (("instant", "瞬时异动"), ("spike", "短时异动")):
-        config = AppConfig.model_validate({section: {"enabled": False}})
-        assert [entry.name for entry in build_detectors(config)] == [item for item in names if item != name]
+    config = AppConfig.model_validate({"instant": {"enabled": False}})
+    assert [entry.name for entry in build_detectors(config)] == names[1:]
     with pytest.raises(ValidationError, match="至少要启用一个"):
         AppConfig.model_validate(
             {
                 "instant": {"enabled": False},
-                "spike": {"enabled": False},
                 "trend": {"enabled": False},
                 "launch": {"rise": {"enabled": False}},
                 "dormant": {"enabled": False},
-                "reversal": {"enabled": False},
             }
         )
 
@@ -149,61 +145,66 @@ def test_rejects_confirmation_longer_than_lookback():
     # 用精确的报错文字而不只是字段名：未知键的报错里同样会出现字段名，只匹配字段名会被误判为通过。
     # 长窗口的取值范围（窗口 ≥ 60、确认 ≤ 10）使它不可能违反此规则，只需验证短窗口。
     with pytest.raises(ValidationError, match="confirmation_seconds 不能大于 lookback_seconds"):
-        AppConfig.model_validate({"spike": {"short_window": {"lookback_seconds": 5, "confirmation_seconds": 6}}})
+        AppConfig.model_validate({"instant": {"short_window": {"lookback_seconds": 5, "confirmation_seconds": 6}}})
 
 
 def test_atr_age_default_follows_candle_interval_but_explicit_value_is_validated():
-    assert AppConfig.model_validate({"spike": {"candle_interval": "5m"}}).spike.max_atr_age_seconds == 900
+    assert AppConfig.model_validate({"instant": {"candle_interval": "5m"}}).instant.max_atr_age_seconds == 900
 
     with pytest.raises(ValidationError, match="max_atr_age_seconds"):
-        AppConfig.model_validate({"spike": {"candle_interval": "5m", "max_atr_age_seconds": 180}})
+        AppConfig.model_validate({"instant": {"candle_interval": "5m", "max_atr_age_seconds": 180}})
 
 
 def test_default_config_long_window_cooldown_follows_lookback(monkeypatch, tmp_path):
     # 运营只改长窗口长度时不应被冷却校验卡住，所以日常监控配置刻意不写死冷却。
     monkeypatch.delenv("PRICE_ALERT_WEBHOOK_URL", raising=False)
-    spike_yaml = (DEFAULT_CONFIG / "spike.yaml").read_text(encoding="utf-8")
+    instant_yaml = (DEFAULT_CONFIG / "instant.yaml").read_text(encoding="utf-8")
     edited = tmp_path / "config.yaml"
-    edited.write_text(spike_yaml.replace("lookback_seconds: 180", "lookback_seconds: 300"), encoding="utf-8")
+    edited.write_text(instant_yaml.replace("lookback_seconds: 180", "lookback_seconds: 300"), encoding="utf-8")
 
-    assert load_config(edited).spike.long_window.cooldown_seconds == 300
+    assert load_config(edited).instant.long_window.cooldown_seconds == 300
 
 
 def test_long_window_defaults_and_cooldown_follows_lookback():
-    long_window = AppConfig().spike.long_window
+    long_window = AppConfig().instant.long_window
     assert long_window.enabled is True
     assert (long_window.lookback_seconds, long_window.cooldown_seconds) == (180, 180)
 
     # 只改观察窗口长度时冷却自动跟随，不会因为忘改冷却而重复提醒同一段行情。
-    configured = AppConfig.model_validate({"spike": {"long_window": {"lookback_seconds": 300}}})
-    assert configured.spike.long_window.cooldown_seconds == 300
+    configured = AppConfig.model_validate({"instant": {"long_window": {"lookback_seconds": 300}}})
+    assert configured.instant.long_window.cooldown_seconds == 300
 
 
 def test_rejects_long_window_cooldown_shorter_than_its_lookback():
     # 匹配完整报错文字：只匹配字段名的话，键被改名后未知键的报错同样含该字段名，测试会误判通过。
     with pytest.raises(ValidationError, match="cooldown_seconds 不能小于 lookback_seconds"):
-        AppConfig.model_validate({"spike": {"long_window": {"lookback_seconds": 300, "cooldown_seconds": 120}}})
+        AppConfig.model_validate({"instant": {"long_window": {"lookback_seconds": 300, "cooldown_seconds": 120}}})
 
 
 def test_rejects_long_window_not_longer_than_short_window():
     with pytest.raises(ValidationError, match="必须大于 short_window.lookback_seconds"):
-        AppConfig.model_validate({"spike": {"short_window": {"lookback_seconds": 180}}})
+        AppConfig.model_validate({"instant": {"short_window": {"lookback_seconds": 180}}})
 
     # 关闭长窗口后不再要求它比短窗口长。
     AppConfig.model_validate(
-        {"spike": {"short_window": {"lookback_seconds": 180}, "long_window": {"enabled": False}}}
+        {"instant": {"short_window": {"lookback_seconds": 180}, "long_window": {"enabled": False}}}
     )
 
 
 @pytest.mark.parametrize(
     "legacy",
     [
-        {"spike": {"lookback_seconds": 30}},
-        {"spike": {"cooldown_seconds": 30}},
+        {"instant": {"lookback_seconds": 30}},
+        {"instant": {"cooldown_seconds": 30}},
         {"alerts": {"cooldown_seconds": 30}},
-        # 以前用过的段名（indicator、move）与写在 gate 里的合约池门槛。
+        # 以前用过的段名（indicator、move）、已删除的短时异动（spike）与反弹回落（reversal）、写在 gate 里的合约池门槛。
         {"indicator": {"atr_period": 14}},
         {"move": {"enabled": False}},
+        {"spike": {"enabled": False}},
+        {"reversal": {"enabled": False}},
+        # 只给短时异动、反弹回落用过的附加条件。
+        {"instant": {"short_window": {"min_trade_burst_ratio": 4}}},
+        {"instant": {"long_window": {"prior_seconds": 300}}},
         {"gate": {"min_volume_24h_quote": 8_000_000}},
     ],
 )
@@ -216,14 +217,14 @@ def test_legacy_window_keys_are_rejected_instead_of_ignored(legacy):
 
 
 def test_short_window_cooldown_is_configured_inside_the_window():
-    config = AppConfig.model_validate({"spike": {"short_window": {"cooldown_seconds": 45}}})
+    config = AppConfig.model_validate({"instant": {"short_window": {"cooldown_seconds": 45}}})
 
-    assert config.spike.short_window.cooldown_seconds == 45
+    assert config.instant.short_window.cooldown_seconds == 45
 
 
 def test_rejects_unknown_long_window_keys():
     with pytest.raises(ValidationError, match="long_window"):
-        AppConfig.model_validate({"spike": {"long_window": {"lookback": 300}}})
+        AppConfig.model_validate({"instant": {"long_window": {"lookback": 300}}})
 
 
 def test_streak_defaults_and_validation():
@@ -236,42 +237,3 @@ def test_streak_defaults_and_validation():
         AppConfig.model_validate({"instant": {"streak": {"min_alerts": 1}}})
     with pytest.raises(ValidationError):
         AppConfig.model_validate({"instant": {"streak": {"gap_tolerance_seconds": 0}}})
-    # 连续提醒只属于瞬时异动，短时异动段没有这个键。
-    with pytest.raises(ValidationError, match="streak"):
-        AppConfig.model_validate({"spike": {"streak": {"enabled": False}}})
-
-
-def test_spike_gates_default_off_and_validate_ranges():
-    # 瞬时异动代码默认不判两个附加条件；短时异动代码默认两个窗口都开。
-    config = AppConfig()
-    for window in (config.instant.short_window, config.instant.long_window):
-        assert (window.min_prior_move_percent, window.min_trade_burst_ratio, window.prior_seconds) == (None, None, 300)
-    for window in (config.spike.short_window, config.spike.long_window):
-        assert (window.min_prior_move_percent, window.min_trade_burst_ratio, window.prior_seconds) == (2.0, 4.0, 300)
-    # 填 null 关掉某一项。
-    off = AppConfig.model_validate({"spike": {"short_window": {"min_trade_burst_ratio": None}}})
-    assert off.spike.short_window.min_trade_burst_ratio is None
-    # 倍数理论上限是 60（全部成交都落在最近 1 分钟），门槛不小于它就永远不会提醒。
-    with pytest.raises(ValidationError, match="min_trade_burst_ratio"):
-        AppConfig.model_validate({"spike": {"long_window": {"min_trade_burst_ratio": 60}}})
-    with pytest.raises(ValidationError, match="min_prior_move_percent"):
-        AppConfig.model_validate({"spike": {"short_window": {"min_prior_move_percent": -1}}})
-
-
-def test_only_detectors_judging_trade_history_ask_for_backfill():
-    # 代码默认瞬时异动不判附加条件、不需要补逐秒成交；短时异动与反弹回落都要 1 小时成交暴增。
-    entries = {entry.name: entry for entry in build_detectors(AppConfig())}
-    assert entries["瞬时异动"].history is None
-    for name in ("短时异动", "反弹回落"):
-        assert entries[name].history is entries[name].detector
-        assert entries[name].history.history_seconds == 3600
-    for name in ("K 线趋势", "放量上涨", "冷门启动"):
-        assert entries[name].history is None
-
-    # 瞬时异动若也开了附加条件，同样要补。
-    gated = AppConfig.model_validate({"instant": {"short_window": {"min_trade_burst_ratio": 4}}})
-    instant = next(entry for entry in build_detectors(gated) if entry.name == "瞬时异动")
-    assert instant.history is instant.detector and instant.history.history_seconds == 3600
-
-    daily = {entry.name: entry for entry in build_detectors(load_config(Path("config/default")))}
-    assert daily["瞬时异动"].history is None and daily["短时异动"].history is not None

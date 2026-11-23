@@ -1,4 +1,4 @@
-"""瞬时异动、短时异动的历史成交回放（cli instant-replay / replay）。
+"""瞬时异动的历史成交回放（cli instant-replay）。
 
 用与实时监控完全相同的检测器逐秒重放一段行情，解释它为什么提醒或没有提醒。
 
@@ -17,8 +17,8 @@ from price_alert.assembly import build_detector, build_windows
 from price_alert.common.formatting import BEIJING_TIME, beijing_time, format_price
 from price_alert.common.models import INTERVAL_SECONDS, PriceTick
 from price_alert.detectors.replay import ReplayData, ReplayPlan, second_of
-from price_alert.detectors.spike.alerts import NAMES, PriceAlert
-from price_alert.detectors.spike.config import AtrSpikeConfig
+from price_alert.detectors.spike.alerts import NAME, PriceAlert
+from price_alert.detectors.spike.config import InstantConfig
 from price_alert.detectors.spike.detector import BASELINE_TOLERANCE_SECONDS
 from price_alert.detectors.spike.streak import StreakAlert, StreakRule, describe_streak_rule
 from price_alert.detectors.spike.windows import (
@@ -37,8 +37,6 @@ _NOTABLE_OUTCOMES = frozenset(
         Outcome.CONFIRMING,
         Outcome.CARRIED,
         Outcome.MOVE_FADED,
-        Outcome.PRIOR_TREND,
-        Outcome.NO_TRADE_BURST,
         Outcome.COOLDOWN,
         Outcome.ALERT,
     }
@@ -57,23 +55,20 @@ class ReplayResult:
     streak_rule: StreakRule | None = None
     # 区间内最后一个有成交的秒，没有后续成交来结算、因而缺少判定时才有值。
     unsettled_second: datetime | None = None
-    # 回放的是哪一种提醒（瞬时异动 / 短时异动），输出标题用。
-    name: str = ""
 
 
-def plan_replay(symbol: str, start: datetime, end: datetime, spike: AtrSpikeConfig) -> ReplayPlan:
+def plan_replay(symbol: str, start: datetime, end: datetime, spike: InstantConfig) -> ReplayPlan:
     if end <= start:
         raise ValueError("结束时间必须晚于开始时间")
     interval = INTERVAL_SECONDS[spike.candle_interval]
-    # 开了附加条件的窗口还要窗口之前的成交（前置走势、1 小时成交暴增），喂入起点按更早的那个留。
-    max_lookback = max(max(window.lookback_seconds, window.history_seconds) for window in build_windows(spike))
+    max_lookback = max(window.lookback_seconds for window in build_windows(spike))
     earliest = int(start.timestamp()) - max_lookback - BASELINE_TOLERANCE_SECONDS
     feed_start = datetime.fromtimestamp(earliest // interval * interval, tz=BEIJING_TIME)
     warmup_start = feed_start - timedelta(seconds=interval * spike.warmup_candles)
     return ReplayPlan(symbol, start, end, feed_start, warmup_start)
 
 
-def run_replay(spike: AtrSpikeConfig, plan: ReplayPlan, data: ReplayData) -> ReplayResult:
+def run_replay(spike: InstantConfig, plan: ReplayPlan, data: ReplayData) -> ReplayResult:
     """离线驱动检测器；冷却从空白开始，与实时进程当时的冷却状态可能不同。"""
     evaluations: list[WindowEvaluation] = []
     detector = build_detector(spike, observer=evaluations.append)
@@ -120,7 +115,6 @@ def run_replay(spike: AtrSpikeConfig, plan: ReplayPlan, data: ReplayData) -> Rep
         price_decimals=data.price_decimals,
         unsettled_second=unsettled if unsettled is not None and in_range(unsettled) else None,
         streak_rule=detector.streak_rule,
-        name=NAMES[detector.kind],
     )
 
 
@@ -152,13 +146,6 @@ def _format_row(evaluation: WindowEvaluation, window: SpikeWindow, decimals: int
         parts.append(f"{evaluation.trade_count} 笔")
     if evaluation.confirmed_seconds:
         parts.append(f"确认 {evaluation.confirmed_seconds}/{window.confirmation_seconds}")
-    if evaluation.outcome in (Outcome.PRIOR_TREND, Outcome.NO_TRADE_BURST, Outcome.ALERT):
-        if window.min_prior_move_percent is not None:
-            prior = evaluation.prior_change_percent
-            parts.append("此前走势 " + ("历史不足" if prior is None else f"{prior:+.2f}%"))
-        if window.min_trade_burst_ratio is not None:
-            burst = evaluation.trade_burst_ratio
-            parts.append("成交笔数 " + ("不足 1 小时历史" if burst is None else f"{burst:.1f} 倍"))
     parts.append(OUTCOME_LABELS[evaluation.outcome])
     return " | ".join(parts)
 
@@ -197,7 +184,7 @@ def render_replay(result: ReplayResult, show_all: bool = False) -> list[str]:
     plan = result.plan
     decimals = result.price_decimals
     lines = [
-        f"{result.name}回放 {plan.symbol}：{beijing_time(plan.start)} ～ {beijing_time(plan.end)}（北京时间）",
+        f"{NAME}回放 {plan.symbol}：{beijing_time(plan.start)} ～ {beijing_time(plan.end)}（北京时间）",
         f"数据：预热 K 线 {result.warmup_candles} 根，成交 {result.trades_fed:,} 笔"
         f"（自 {beijing_time(plan.feed_start, '%H:%M:%S')} 起喂入，为最长窗口预留历史）",
         *(describe_rule(window) for window in result.windows),
